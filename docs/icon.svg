@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0A84FF"/>
+      <stop offset="1" stop-color="#0054D6"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="216" fill="url(#g)"/>
+  <!-- back screen (outline) -->
+  <rect x="300" y="276" width="440" height="330" rx="44" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="44"/>
+  <!-- front screen (solid tile, offset) -->
+  <rect x="400" y="430" width="360" height="300" rx="40" fill="#0A84FF"/>
+  <rect x="400" y="430" width="360" height="300" rx="40" fill="none" stroke="#ffffff" stroke-width="44"/>
+  <!-- play glyph in front screen -->
+  <path d="M 545 520 L 635 580 L 545 640 Z" fill="#ffffff"/>
+</svg>
