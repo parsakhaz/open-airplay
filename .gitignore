@@ -1,0 +1,16 @@
+node_modules/
+target/
+engine/uxplay-src/
+engine/dist/
+sender/.venv/
+__pycache__/
+tmp/
+.agent-farm/
+ui/tokens.css
+src-tauri/gen/
+ui/components.css
+engine/runtime/
+
+# Go sender
+/bin
+/artifacts

@@ -1,0 +1,23 @@
+diff --git a/uxplay.cpp b/uxplay.cpp
+index be41031..a0310ad 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -2589,6 +2589,8 @@ extern "C" void display_pin(void *cls, char *pin) {
+     int margin = 10;
+     int spacing = 3;
+     char *image = create_pin_display(pin, margin, spacing);
++    /* open-airplay: machine-readable pin line for a supervising process */
++    printf("open-airplay: pin = %s\n", pin);
+     if (!image) {
+         LOGE("create_pin_display could not create pin image, pin = %s", pin);
+     } else {
+@@ -3285,6 +3287,9 @@ int main (int argc, char *argv[]) {
+     std::vector<char> server_hw_addr;
+     std::string config_file = "";
+ 
++    /* open-airplay: unbuffered stdout so a supervising process sees log lines immediately */
++    setvbuf(stdout, NULL, _IONBF, 0);
++
+ #ifdef _WIN32
+     /* initialise Windows kernel qpc frequency for recv timestamping */
+     ntp_global_init();

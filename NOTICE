@@ -1,0 +1,154 @@
+open-airplay is licensed under the GNU General Public License v3.0 (see LICENSE).
+The Windows installer ships this file and LICENSE next to the app.
+
+Third-party components used by open-airplay:
+
+Receiver engine (built by engine/build-engine.sh; source is not vendored in this repository)
+- UxPlay 1.74 (pinned commit in engine/UXPLAY_PIN), https://github.com/FDH2/UxPlay (GPL-3.0)
+  Includes playfair (GPL-3.0), llhttp (MIT) and a minimal mDNS responder (lib/mdnsd); see UxPlay's own notices.
+  open-airplay applies the patches in engine/patches/.
+
+Runtime bundled by the Windows installer (engine/stage-runtime.sh)
+  The installer ships uxplay.exe with 17 GStreamer plugins (app, coreelements, typefindfunctions,
+  videoparsersbad, playback, libav, d3d12, d3d11, videoconvertscale, autodetect, wasapi, wasapi2,
+  directsound, audioconvert, audioresample, volume, level) and every DLL they load. All of them are
+  unmodified MSYS2 UCRT64 packages. Package, version and licence as recorded by MSYS2 for the build
+  that produced the installer:
+
+  aom                   3.15.1-1                   BSD-2-Clause
+  brotli                1.2.0-1                    MIT
+  bzip2                 1.0.8-4                    custom
+  cairo                 1.18.6-2                   LGPL-2.1-or-later OR MPL-1.1
+  dav1d                 1.5.4-1                    BSD-2-Clause
+  expat                 2.9.0-1                    MIT
+  ffmpeg                9.0.2-1                    GPL-3.0-or-later
+  fontconfig            2.18.3-1                   custom
+  freetype              2.14.3-1                   GPL-2.0-or-later OR FTL
+  fribidi               1.0.17-1                   LGPL-2.1-or-later
+  gdk-pixbuf2           2.44.8-1                   LGPL-2.1-or-later
+  gettext-runtime       1.0-1                      GPL-3.0-or-later AND LGPL-2.1-or-later
+  ggml                  0.26.0-1                   MIT
+  glib2                 2.90.1-1                   LGPL-2.1-or-later
+  gmp                   6.3.0-2                    LGPL3 AND GPL
+  gnutls                3.8.13-3                   GPL-3.0-or-later AND LGPL-2.1-or-later
+  graphite2             1.3.15-1                   LGPL-2.1-or-later
+  gsm                   1.0.24-1                   custom
+  gst-libav             1.28.7-1                   LGPL-2.1-or-later
+  gst-plugins-bad       1.28.7-1                   LGPL-2.1-or-later
+  gst-plugins-bad-libs  1.28.7-1                   LGPL-2.1-or-later
+  gst-plugins-base      1.28.7-1                   LGPL-2.1-or-later
+  gst-plugins-good      1.28.7-1                   LGPL-2.1-or-later
+  gstreamer             1.28.7-1                   LGPL-2.1-or-later
+  harfbuzz              14.6.0-1                   MIT
+  highway               1.4.0-3                    Apache-2.0
+  jbigkit               2.1-6                      GPL-2.0
+  lame                  3.100-3                    LGPL
+  lcms2                 2.19.1-1                   MIT AND GPL-3.0-or-later
+  lerc                  4.1.1-1                    Apache-2.0
+  libass                0.17.5-1                   ISC
+  libbluray             1.5.0-1                    LGPL-2.1-or-later
+  libdatrie             0.2.14-1                   LGPL
+  libdeflate            1.26-1                     MIT
+  libdovi               3.4.0-1                    MIT
+  libffi                3.8.0-1                    MIT
+  libgcc                16.2.0-5                   GPL-3.0-or-later WITH GCC-exception-3.1 AND GFDL-1.3-or-later
+  libgme                0.6.5-2                    LGPL
+  libgomp               16.2.0-5                   GPL-3.0-or-later WITH GCC-exception-3.1 AND GFDL-1.3-or-later
+  libiconv              1.19-1                     LGPL-2.1-or-later AND documentation:GPL-3.0-or-later
+  libidn2               2.3.8-4                    GPL-2.0-or-later AND LGPL-3.0-or-later
+  libjpeg-turbo         3.2.0-1                    custom:BSD-like
+  libjxl                0.12.0-1                   BSD-3-Clause
+  liblc3                1.1.3-1                    Apache-2.0
+  libmodplug            0.8.9.0-5                  PublicDomain
+  libogg                1.3.6-1                    BSD-3-Clause
+  libplacebo            7.360.1-2                  LGPL2.1
+  libplist              2.7.0-4                    GPL-2.0-or-later AND LGPL-2.1-or-later
+  libpng                1.6.59-1                   custom
+  librsvg               2.63.2-1                   LGPL-2.1-or-later
+  libsoxr               0.1.3-5                    LGPL
+  libssh                0.12.2-1                   LGPL-2.1-or-later
+  libstdc++             16.2.0-5                   GPL-3.0-or-later WITH GCC-exception-3.1 AND GFDL-1.3-or-later
+  libtasn1              4.21.0-1                   GPL3, LGPL
+  libthai               0.1.30-1                   LGPL-2.1-or-later
+  libtheora             1.2.0-1                    BSD-3-Clause
+  libtiff               4.7.2-1                    MIT
+  libunibreak           7.0-1                      Zlib
+  libunistring          1.4.2-1                    LGPL-3.0-or-later OR GPL-3.0-or-later
+  libva                 2.24.1-1                   MIT
+  libvorbis             1.3.7-3                    custom
+  libvpl                2.17.0-1                   MIT
+  libvpx                1.17.0-1                   BSD-3-Clause
+  libwebp               1.6.0-1                    BSD-3-Clause
+  libwinpthread         14.0.0.r426.g4564ee4b5-1   MIT AND BSD-3-Clause-Clear
+  libx264               0.165.r3222.b35605a-3      custom
+  libxml2               2.15.4-1                   MIT
+  nettle                4.0-1                      GPL-2.0-or-later AND LGPL-3.0-or-later
+  opencore-amr          0.1.6-1                    Apache
+  openjpeg2             2.5.4-2                    BSD-2-Clause
+  openssl               3.6.5-1                    Apache-2.0
+  opus                  1.6.1-1                    BSD-3-Clause
+  orc                   0.4.44-1                   custom
+  p11-kit               0.26.5-1                   BSD-3-Clause
+  pango                 1.58.2-1                   LGPL-2.1
+  pcre2                 10.49-1                    BSD-3-Clause
+  pixman                0.46.4-3                   MIT
+  rav1e                 0.8.1-1                    BSD-2-Clause
+  rtmpdump              2.6-2                      GPL-2.0-or-later AND LGPL-2.1-or-later
+  shaderc               2026.4-1                   Apache-2.0
+  speex                 1.2.1-1                    BSD
+  spirv-cross           1~1.4.363.0-1              Apache-2.0
+  srt                   1.5.7-1                    MPL-2.0
+  svt-av1               4.2.0-1                    BSD-3-Clause-Clear
+  vid.stab              1.1.2-1                    GPL-2.0-or-later
+  whisper.cpp           1~1.9.4.r183.g60c0be6ac-1  MIT
+  x265                  4.3-1                      GPL
+  xvidcore              1.3.7-5                    GPL
+  xz                    5.8.4-1                    0BSD AND LGPL-2.1-or-later AND GPL-2.0-or-later
+  zimg                  3.0.6-3                    WTFPL
+  zlib                  1.3.2-2                    Zlib
+  zstd                  1.5.7-2                    BSD-3-Clause OR GPL-2.0-or-later
+  zvbi                  0.2.45-1                   GPL-2.0-or-later AND BSD-2-Clause AND LGPL-2.1-or-later AND MIT
+
+  Licence notes:
+  - MSYS2's FFmpeg build is GPL-3.0-or-later (it links x264, x265 and other GPL codec libraries).
+    open-airplay is GPL-3.0, so the combination is GPL-3.0.
+  - To check before a public release: MSYS2 lists jbigkit as "GPL-2.0" with no version qualifier, and
+    x265 and xvidcore as unversioned "GPL". Upstream, these are understood to allow "version 2 or later",
+    which is compatible with GPL-3.0, but that should be confirmed. Several of these libraries (jbigkit,
+    xvidcore, zvbi, rtmpdump, libbluray and others) are pulled in only because MSYS2's FFmpeg links them;
+    a minimal FFmpeg build would drop them.
+  - "custom" licences (bzip2, fontconfig, gsm, libjpeg-turbo, libpng, libvorbis, libx264, orc) are
+    permissive or GPL; the full texts are in each package's share/licenses directory in MSYS2.
+
+  Corresponding source (GPL/LGPL): open-airplay's source, including the engine patches, is at
+  https://github.com/parsakhaz/open-airplay. UxPlay's source is at https://github.com/FDH2/UxPlay (the
+  commit in engine/UXPLAY_PIN). The MSYS2 packages' sources are at https://github.com/msys2/MINGW-packages
+  and https://repo.msys2.org/mingw/sources/ for the versions listed above.
+
+FairPlay desktop mirror sender (Go; cmd/open-airplay, internal/airplay, internal/daemon)
+- The AirPlay sender protocol core, capture abstraction, daemon, command-line tools and their tests
+  were imported from doubletake:
+    Project:  omarroth/doubletake, https://github.com/omarroth/doubletake
+    Revision: 5e2f1cbe3e1070bcefec8e549c7baf884727bc00 (2026-10-04)
+    License:  GNU Lesser General Public License v3.0 or later
+  LGPL-3.0 lets that code be conveyed under the GNU GPL v3; in open-airplay it is distributed under
+  GPL-3.0 (see LICENSE) with this notice recording its origin and original license. Local changes
+  (the Windows capture backend, display selection, naming, documentation and tests) are in this
+  repository's Git history.
+- FairPlay provenance: doubletake credits prior AirPlay reverse-engineering work, including UxPlay and
+  related receiver projects. Its FairPlay SAP implementation contains reverse-engineered white-box
+  cryptographic material (see doubletake issue #59). FairPlay SAP authenticates an AirPlay sender; it is
+  not FairPlay Streaming DRM and does not decrypt protected commercial media. Review this provenance
+  before any binary release.
+- Go dependencies: versions and checksums are in go.mod and go.sum.
+- The Windows capture backend invokes an installed FFmpeg build (not vendored, not bundled); FFmpeg and
+  its codecs are licensed separately by their authors.
+
+Media cast sidecar
+- pyatv 0.18, https://github.com/postlund/pyatv (MIT), and its dependencies installed from PyPI.
+  The installer does not yet bundle the sender.
+
+Desktop shell
+- Tauri 2 and its Rust crates (MIT / Apache-2.0)
+- serde and serde_json (MIT / Apache-2.0)
+- windows-sys (MIT / Apache-2.0)

@@ -1,0 +1,174 @@
+/* Shared design tokens for open-airplay and open-airdrop-windows.
+   Canonical copy: design/tokens.css (with design/components.css). Apps copy both in at build time
+   (`npm run sync-tokens`). Neutral, macOS-like: gray surfaces, one restrained blue accent. */
+:root {
+  color-scheme: light;
+
+  /* surfaces */
+  --oai-bg: #e9eaed;               /* behind everything (window backdrop) */
+  --oai-window: #f5f5f7;           /* window body */
+  --oai-stage: #fbfbfd;            /* main content area */
+  --oai-panel: #ffffff;            /* cards, grouped lists, inputs */
+  --oai-sidebar: rgba(236, 236, 240, 0.72);
+  --oai-chrome: rgba(245, 245, 247, 0.78);   /* frosted title bar / toolbar */
+  --oai-fill: rgba(0, 0, 0, 0.05);
+  --oai-fill-strong: rgba(0, 0, 0, 0.08);
+  --oai-selected: rgba(0, 0, 0, 0.07);
+  --oai-video: #000000;
+
+  /* text */
+  --oai-ink: #1d1d1f;
+  --oai-ink-2: #6e6e73;
+  --oai-ink-3: #98989d;
+
+  /* lines */
+  --oai-hairline: rgba(0, 0, 0, 0.1);
+
+  /* accent and states */
+  --oai-accent: #0a7aff;
+  --oai-accent-hover: #0067e0;
+  --oai-accent-soft: rgba(10, 122, 255, 0.12);
+  --oai-on-accent: #ffffff;
+  --oai-ok: #30a46c;
+  --oai-warn: #c27c0e;
+  --oai-warn-soft: rgba(194, 124, 14, 0.13);
+  --oai-bad: #e5484d;
+  --oai-bad-soft: rgba(229, 72, 77, 0.12);
+  --oai-close-hover: #e81123;
+
+  /* decorative bloom behind the translucent sidebar */
+  --oai-bloom-a: #c7d7ff;
+  --oai-bloom-b: #ffd9c2;
+
+  /* type */
+  --oai-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --oai-font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --oai-font-rounded: ui-rounded, "SF Pro Rounded", -apple-system, "Segoe UI Variable Display", system-ui, sans-serif;
+  --oai-font-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  --oai-text-xs: 11px;
+  --oai-text-sm: 12px;
+  --oai-text-md: 13px;
+  --oai-text-base: 14px;
+  --oai-text-lg: 15px;
+  --oai-text-xl: 22px;
+  --oai-text-2xl: 26px;
+  --oai-text-display: 54px;
+  --oai-leading: 1.5;
+  --oai-tracking-tight: -0.02em;
+
+  /* spacing */
+  --oai-space-1: 4px;
+  --oai-space-2: 8px;
+  --oai-space-3: 12px;
+  --oai-space-4: 16px;
+  --oai-space-5: 20px;
+  --oai-space-6: 24px;
+  --oai-space-8: 32px;
+
+  /* shape */
+  --oai-radius-sm: 6px;
+  --oai-radius-md: 8px;
+  --oai-radius-lg: 10px;
+  --oai-radius-xl: 12px;
+  --oai-radius-2xl: 16px;
+  --oai-radius-pill: 999px;
+
+  /* elevation */
+  --oai-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --oai-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 6px 18px rgba(0, 0, 0, 0.08);
+  --oai-shadow-lg: 0 0 0 0.5px rgba(0, 0, 0, 0.14), 0 24px 60px rgba(0, 0, 0, 0.16), 0 4px 12px rgba(0, 0, 0, 0.06);
+
+  /* materials */
+  --oai-blur: blur(40px) saturate(1.8);
+  --oai-blur-sm: blur(20px) saturate(1.6);
+
+  /* motion */
+  --oai-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --oai-dur-fast: 150ms;
+  --oai-dur: 200ms;
+  --oai-dur-slow: 250ms;
+
+  /* popover (compact window) */
+  /* Near-opaque: CSS backdrop-filter cannot blur the desktop behind a transparent native window. */
+  --oai-popover: rgba(246, 246, 248, 0.985);
+  --oai-popover-inset: 10px;
+  --oai-shadow-popover: 0 0 0 0.5px rgba(0, 0, 0, 0.14), 0 12px 32px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
+
+  /* layout */
+  --oai-titlebar-h: 36px;
+  --oai-sidebar-w: 236px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --oai-bg: #0d0e10;
+    --oai-window: #1c1c1e;
+    --oai-stage: #141416;
+    --oai-panel: #232326;
+    --oai-sidebar: rgba(38, 38, 42, 0.7);
+    --oai-chrome: rgba(28, 28, 30, 0.78);
+    --oai-fill: rgba(255, 255, 255, 0.06);
+    --oai-fill-strong: rgba(255, 255, 255, 0.1);
+    --oai-selected: rgba(255, 255, 255, 0.09);
+    --oai-ink: #f5f5f7;
+    --oai-ink-2: #a1a1a6;
+    --oai-ink-3: #6e6e73;
+    --oai-hairline: rgba(255, 255, 255, 0.09);
+    --oai-accent: #3b9bff;
+    --oai-accent-hover: #5aabff;
+    --oai-accent-soft: rgba(59, 155, 255, 0.18);
+    --oai-ok: #4cc38a;
+    --oai-warn: #f0b955;
+    --oai-warn-soft: rgba(240, 185, 85, 0.16);
+    --oai-bad: #ff6369;
+    --oai-bad-soft: rgba(255, 99, 105, 0.16);
+    --oai-bloom-a: #24304d;
+    --oai-bloom-b: #3a2a22;
+    --oai-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --oai-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.07), 0 6px 18px rgba(0, 0, 0, 0.4);
+    --oai-shadow-lg: 0 0 0 0.5px rgba(255, 255, 255, 0.08), 0 30px 70px rgba(0, 0, 0, 0.6), 0 4px 12px rgba(0, 0, 0, 0.4);
+    --oai-popover: rgba(34, 34, 38, 0.985);
+    --oai-shadow-popover: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 16px 40px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --oai-bg: #0d0e10;
+  --oai-window: #1c1c1e;
+  --oai-stage: #141416;
+  --oai-panel: #232326;
+  --oai-sidebar: rgba(38, 38, 42, 0.7);
+  --oai-chrome: rgba(28, 28, 30, 0.78);
+  --oai-fill: rgba(255, 255, 255, 0.06);
+  --oai-fill-strong: rgba(255, 255, 255, 0.1);
+  --oai-selected: rgba(255, 255, 255, 0.09);
+  --oai-ink: #f5f5f7;
+  --oai-ink-2: #a1a1a6;
+  --oai-ink-3: #6e6e73;
+  --oai-hairline: rgba(255, 255, 255, 0.09);
+  --oai-accent: #3b9bff;
+  --oai-accent-hover: #5aabff;
+  --oai-accent-soft: rgba(59, 155, 255, 0.18);
+  --oai-ok: #4cc38a;
+  --oai-warn: #f0b955;
+  --oai-warn-soft: rgba(240, 185, 85, 0.16);
+  --oai-bad: #ff6369;
+  --oai-bad-soft: rgba(255, 99, 105, 0.16);
+  --oai-bloom-a: #24304d;
+  --oai-bloom-b: #3a2a22;
+  --oai-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --oai-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.07), 0 6px 18px rgba(0, 0, 0, 0.4);
+  --oai-shadow-lg: 0 0 0 0.5px rgba(255, 255, 255, 0.08), 0 30px 70px rgba(0, 0, 0, 0.6), 0 4px 12px rgba(0, 0, 0, 0.4);
+  --oai-popover: rgba(34, 34, 38, 0.985);
+  --oai-shadow-popover: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 16px 40px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --oai-dur-fast: 0ms;
+    --oai-dur: 0ms;
+    --oai-dur-slow: 0ms;
+  }
+}

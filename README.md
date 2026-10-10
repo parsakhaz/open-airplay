@@ -61,6 +61,8 @@ Then pick your PC from Screen Mirroring / AirPlay on your iPhone or Mac.
 - **Sender (mirroring)** — captures the chosen display via the Windows Desktop Duplication API, encodes H.264 live, performs the AirPlay 2 + FairPlay SAP pairing and handshake, and streams the encrypted mirror to the receiver in real time. The protocol core is ported from [doubletake](https://github.com/omarroth/doubletake).
 - **Sender (media)** — hands a video/audio URL to the receiver's AirPlay playback via [pyatv](https://github.com/postlund/pyatv).
 
+Building from source, the installer, the design system and the test suites are covered in **[docs/DEVELOPING.md](docs/DEVELOPING.md)**.
+
 ## Credits & acknowledgments
 
 This stands on years of open reverse‑engineering by others. See the **[reverse‑engineering timeline](docs/timeline.html)** and the credits section below for first‑party sources — including the SEEMOO Lab (TU Darmstadt) AWDL/AirPlay research, shairport, RPiPlay/UxPlay, pyatv, and especially **[doubletake](https://github.com/omarroth/doubletake)**, whose FairPlay work makes the mirroring sender possible. Licensed under **GPL‑3.0**; we build on doubletake (LGPL‑3.0) and UxPlay/RPiPlay (GPL‑3.0).
