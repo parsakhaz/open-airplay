@@ -1,0 +1,6 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Cast marker</title>
+<style>body{margin:0;height:100vh;display:grid;place-items:center;background:#ff00aa;color:#fff;font:700 9vw/1.1 "Segoe UI",sans-serif;text-align:center}
+small{display:block;font-size:3vw;font-weight:600}</style></head>
+<body><div>OPEN-AIRPLAY<br><span id="t"></span><small>if you can read this on the TV, it is the live desktop capture</small></div>
+<script>const t=document.getElementById("t");setInterval(()=>{const d=new Date();t.textContent=d.toLocaleTimeString([], {hour12:false})+"."+String(d.getMilliseconds()).padStart(3,"0").slice(0,1)},50)</script>
+</body></html>

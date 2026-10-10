@@ -117,3 +117,33 @@ def list_displays():
             primary=bool(info.dwFlags & 1),
         ))
     return displays
+
+
+_dwmapi = ctypes.windll.dwmapi
+
+
+def list_windows():
+    """Visible top-level windows with titles and their on-screen bounds in physical pixels."""
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        if not _user32.IsWindowVisible(hwnd) or _user32.IsIconic(hwnd):
+            return True
+        n = _user32.GetWindowTextLengthW(hwnd)
+        if not n:
+            return True
+        cloaked = wintypes.DWORD()
+        _dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), 4)  # DWMWA_CLOAKED: hidden UWP shells
+        if cloaked.value:
+            return True
+        buf = ctypes.create_unicode_buffer(n + 1)
+        _user32.GetWindowTextW(hwnd, buf, n + 1)
+        r = wintypes.RECT()
+        _dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(r), ctypes.sizeof(r))  # EXTENDED_FRAME_BOUNDS
+        if r.right - r.left >= 64 and r.bottom - r.top >= 64:
+            found.append({"hwnd": int(hwnd), "title": buf.value, "rect": (r.left, r.top, r.right, r.bottom)})
+        return True
+
+    _user32.EnumWindows(each, 0)
+    return found

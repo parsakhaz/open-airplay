@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screen Cast</title>
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --ink: #1b1b1a; --muted: #6b6a66; --line: #e3e2de;
+  --accent: #2563eb; --accent-ink: #fff; --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --chip: #efeee9;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #9b9a94; --line: #2e2d2a;
+          --accent: #60a5fa; --accent-ink: #0b1220; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --chip: #2a2926; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 0 0 20px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; cursor: pointer; background: transparent; color: inherit; text-align: left; font: inherit; }
+.card:hover { border-color: var(--muted); }
+.card[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.card[disabled] { opacity: .45; cursor: not-allowed; }
+.card b { display: block; }
+.card small { color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.chip { background: var(--chip); border-radius: 99px; padding: 1px 8px; font-size: 12px; }
+button.link { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 0; text-transform: none; letter-spacing: 0; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+select, input[type=number] { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; max-width: 100%; }
+label.opt { display: grid; grid-template-columns: 140px 1fr; gap: 10px; align-items: center; margin: 6px 0; }
+.primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 10px 22px; font: 600 15px "Segoe UI", system-ui, sans-serif; cursor: pointer; }
+.primary.stop { background: var(--bad); color: #fff; }
+.primary:disabled { opacity: .5; cursor: wait; }
+.summary { color: var(--muted); }
+.notes { margin: 10px 0 0; padding-left: 18px; color: var(--warn); }
+.status { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-top: 12px; }
+.stat { background: var(--chip); border-radius: 8px; padding: 8px 10px; }
+.stat small { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+details summary { cursor: pointer; font-weight: 600; }
+.muted { color: var(--muted); }
+code { font-size: 12px; word-break: break-all; }
+@media (max-width: 520px) { label.opt { grid-template-columns: 1fr; gap: 2px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Screen Cast</h1>
+  <p class="sub">Streams a display to an Apple TV as live video. Works without AirPlay mirroring's DRM, with a few seconds of delay.</p>
+
+  <section>
+    <h2>Receiver <button class="link" id="rescan">Scan again</button></h2>
+    <div class="grid" id="receivers"><span class="muted">Scanning…</span></div>
+  </section>
+
+  <section>
+    <h2>Display</h2>
+    <div class="grid" id="displays"><span class="muted">Detecting this PC…</span></div>
+    <div class="row" style="margin-top:10px">
+      <label for="window" class="muted">Capture</label>
+      <select id="window"><option value="">Whole display</option></select>
+      <button class="link" id="refreshWindows">Refresh windows</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="row" style="justify-content:space-between">
+      <div class="summary" id="summary">Pick a receiver and a display.</div>
+      <button class="primary" id="go" disabled>Start casting</button>
+    </div>
+    <ul class="notes" id="notes" hidden></ul>
+    <form id="pair" hidden style="margin-top:12px">
+      <p style="margin:0 0 8px"><b>First time with this receiver:</b> enter the 4-digit code shown on the TV. You only do this once.</p>
+      <div class="row">
+        <input id="pin" inputmode="numeric" autocomplete="one-time-code" maxlength="4" placeholder="0000" aria-label="PIN shown on the TV"
+               style="font:600 18px ui-monospace,monospace;letter-spacing:.3em;width:110px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)">
+        <button class="primary" type="submit">Pair and cast</button>
+        <button class="link" type="button" id="pairCancel">Cancel</button>
+      </div>
+      <p id="pairMsg" class="bad" style="margin:8px 0 0"></p>
+    </form>
+    <div id="live" hidden>
+      <div class="status" id="stats"></div>
+      <p id="liveMsg" style="margin:10px 0 0"></p>
+    </div>
+  </section>
+
+  <section>
+    <details id="advanced">
+      <summary>Advanced</summary>
+      <p class="muted" style="margin:8px 0">Only options this PC and the chosen receiver can both do are listed. Defaults are picked for you.</p>
+      <div id="opts"></div>
+      <p class="muted" id="machine" style="margin-top:12px"></p>
+    </details>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const S = { state: null, receiver: null, display: null, window: "", encoder: null, plan: null, overrides: {} };
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), { data: j });
+  return j;
+}
+
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k.startsWith("on") ? n.addEventListener(k.slice(2), v) : v !== false && n.setAttribute(k, v === true ? "" : v);
+  for (const k of kids) n.append(k);
+  return n;
+}
+
+function renderReceivers() {
+  const box = $("receivers"); box.replaceChildren();
+  const rxs = S.state.receivers;
+  if (!rxs.length) return box.append(el("span", { class: "muted" }, "No AirPlay receivers found on this network."));
+  for (const r of rxs) {
+    const c = r.caps, chips = el("div", { class: "chips" });
+    if (c.video) { chips.append(el("span", { class: "chip" }, c.hevc ? "HEVC" : "H.264 only"), el("span", { class: "chip" }, c.max.replace("x", "×").replace("@", " @ ") + "")); if (c.hdr) chips.append(el("span", { class: "chip" }, "HDR")); }
+    else chips.append(el("span", { class: "chip" }, "Audio only"));
+    box.append(el("button", { class: "card", "aria-pressed": String(S.receiver === r.identifier), disabled: !c.video,
+      title: c.video ? c.source : "This receiver can't play video",
+      onclick: () => { S.receiver = r.identifier; S.encoder = null; renderReceivers(); replan(); } },
+      el("b", {}, r.name), el("small", {}, c.source), chips));
+  }
+}
+
+function renderDisplays() {
+  const box = $("displays"); box.replaceChildren();
+  for (const d of S.state.machine.displays) {
+    box.append(el("button", { class: "card", "aria-pressed": String(S.display === d.index),
+      onclick: () => { S.display = d.index; S.encoder = null; renderDisplays(); replan(); } },
+      el("b", {}, `Display ${d.index + 1}${d.primary ? " (main)" : ""}`),
+      el("small", {}, `${d.width}×${d.height} @ ${d.refresh} Hz · ${Math.round(d.scale * 100)}% scaling`)));
+  }
+}
+
+async function loadWindows() {
+  const ws = await api("/api/windows");
+  const sel = $("window"), keep = sel.value; sel.replaceChildren(el("option", { value: "" }, "Whole display"));
+  for (const w of ws) sel.append(el("option", { value: w.hwnd }, "Window: " + (w.title.length > 70 ? w.title.slice(0, 70) + "…" : w.title)));
+  sel.value = [...sel.options].some(o => o.value === keep) ? keep : "";
+}
+
+function option(label, key, opts, current, onchange) {
+  const sel = el("select", { onchange: (e) => onchange(JSON.parse(e.target.value)) });
+  for (const o of opts) sel.append(el("option", { value: JSON.stringify(o.value), selected: JSON.stringify(o.value) === JSON.stringify(current) }, o.label));
+  return el("label", { class: "opt" }, el("span", {}, label), sel);
+}
+
+function renderPlan() {
+  const p = S.plan, box = $("opts"); box.replaceChildren();
+  if (!p) return;
+  const d = p.defaults, o = p.options, cur = (k) => S.overrides[k] ?? d[k];
+  const codecs = o.codec, encs = o.encoder;
+  box.append(option("Codec", "codec", codecs, d.codec, (v) => { S.encoder = encs.find(e => e.codec === v).value; replan(); }));
+  box.append(option("Encoder", "encoder", encs.filter(e => e.codec === d.codec), d.encoder, (v) => { S.encoder = v; replan(); }));
+  box.append(option("Resolution", "scale", o.scale, cur("scale"), (v) => { S.overrides.scale = v; summarize(); }));
+  box.append(option("Frame rate", "fps", o.fps, cur("fps"), (v) => { S.overrides.fps = v; summarize(); }));
+  box.append(option("Quality", "bitrate_kbps", o.bitrate_kbps, cur("bitrate_kbps"), (v) => { S.overrides.bitrate_kbps = v; summarize(); }));
+  box.append(option("Latency", "latency", o.latency, cur("latency"), (v) => { S.overrides.latency = v; summarize(); }));
+  if (o.audio) box.append(option("System audio", "audio", o.audio, cur("audio"), (v) => { S.overrides.audio = v; summarize(); }));
+  else box.append(el("label", { class: "opt" }, el("span", {}, "System audio"), el("span", { class: "muted" }, "Unavailable: no loopback audio device on this PC")));
+  const notes = $("notes"); notes.replaceChildren(...p.notes.map(n => el("li", {}, n))); notes.hidden = !p.notes.length;
+  summarize();
+}
+
+function summarize() {
+  const p = S.plan; if (!p) return;
+  const d = p.defaults, cur = (k) => S.overrides[k] ?? d[k];
+  const scale = p.options.scale.find(s => s.value === cur("scale"));
+  const codec = p.options.codec.find(c => c.value === d.codec).label;
+  const lat = { low: "low latency", balanced: "balanced latency", quality: "quality-first latency" }[cur("latency")];
+  $("summary").textContent = `${codec} · ${scale.label.replace(" (full)", "")} · ${cur("fps")} fps · ${(cur("bitrate_kbps") / 1000).toFixed(0)} Mb/s · ${lat}`;
+}
+
+async function replan() {
+  S.plan = null; $("go").disabled = true;
+  if (!S.receiver || S.display === null) return;
+  try {
+    S.plan = await api("/api/plan", { receiver: S.receiver, display: S.display, window: S.window || null, encoder: S.encoder });
+    for (const k of Object.keys(S.overrides)) if (!(S.plan.options[k] || []).some(o => o.value === S.overrides[k])) delete S.overrides[k];
+    renderPlan(); $("go").disabled = false;
+  } catch (e) { $("summary").textContent = e.message; $("opts").replaceChildren(); }
+}
+
+function renderMachine() {
+  const m = S.state.machine;
+  const hw = m.encoders.filter(e => e.hardware).map(e => e.name), sw = m.encoders.filter(e => !e.hardware).map(e => `${e.name} ≤${e.max_height}p${e.max_fps}`);
+  $("machine").textContent = `This PC: ${m.cpus} CPU threads · hardware encoders: ${hw.join(", ") || "none"} · software: ${sw.join(", ") || "none"} · audio loopback: ${m.audio.join(", ") || "none"}.`;
+}
+
+function renderSession(s) {
+  const go = $("go"), live = $("live");
+  if (!s) { go.textContent = "Start casting"; go.classList.remove("stop"); live.hidden = true; return; }
+  go.textContent = "Stop"; go.classList.add("stop"); live.hidden = false;
+  const st = s.stats || {};
+  $("stats").replaceChildren(
+    el("div", { class: "stat" }, el("small", {}, "Status"), s.error ? el("span", { class: "bad" }, "Error") : s.phase),
+    el("div", { class: "stat" }, el("small", {}, "Encoder"), `${st.fps ?? "–"} fps · ${st.speed ?? "–"}`),
+    el("div", { class: "stat" }, el("small", {}, "Receiver fetching"), s.receiver_pulling ? el("span", { class: "ok" }, `yes (${s.pulls} requests)`) : el("span", { class: "warn" }, "not yet")),
+    el("div", { class: "stat" }, el("small", {}, "Running"), `${s.uptime}s`));
+  $("liveMsg").replaceChildren(s.error ? el("span", { class: "bad" }, s.error) : s.hint ? el("span", { class: "warn" }, s.hint) : el("span", { class: "muted" }, "Stream: ", el("code", {}, s.url || "")));
+}
+
+async function refresh() {
+  try {
+    const st = await api("/api/state"); S.state.session = st.session; renderSession(st.session);
+    const sig = (m) => JSON.stringify(m.displays);
+    if (sig(st.machine) !== sig(S.state.machine)) {  // a monitor was plugged in or removed
+      S.state.machine = st.machine;
+      if (!st.machine.displays.some(d => d.index === S.display)) S.display = (st.machine.displays.find(d => d.primary) || st.machine.displays[0])?.index ?? null;
+      renderDisplays(); replan();
+    }
+  } catch {}
+}
+
+function startBody() { return { receiver: S.receiver, display: S.display, window: S.window || null, encoder: S.encoder, overrides: S.overrides }; }
+
+async function showPairing() {
+  $("pair").hidden = false; $("pairMsg").textContent = ""; $("pin").value = "";
+  try { await api("/api/pair/begin", { receiver: S.receiver }); $("pin").focus(); }
+  catch (e) { $("pairMsg").textContent = "Could not start pairing: " + e.message; }
+}
+
+$("pair").onsubmit = async (ev) => {
+  ev.preventDefault();
+  $("pairMsg").textContent = "";
+  try {
+    await api("/api/pair/finish", { pin: $("pin").value });
+    $("pair").hidden = true;
+    $("go").click();
+  } catch (e) { $("pairMsg").textContent = e.message + " A new code is on the TV; try again."; showPairing(); }
+};
+$("pairCancel").onclick = () => { $("pair").hidden = true; };
+
+$("go").onclick = async () => {
+  const go = $("go"); go.disabled = true;
+  try {
+    if (S.state.session) { const st = await api("/api/stop", {}); S.state.session = null; renderSession(null); }
+    else {
+      go.textContent = "Starting…";
+      const s = await api("/api/start", startBody());
+      S.state.session = s; renderSession(s);
+    }
+  } catch (e) {
+    renderSession(null);
+    if (e.data && e.data.pairing_required) { summarize(); showPairing(); }
+    else $("summary").textContent = "Could not start: " + e.message;
+  }
+  go.disabled = false;
+};
+$("rescan").onclick = async () => { $("receivers").replaceChildren(el("span", { class: "muted" }, "Scanning…")); S.state = { ...S.state, ...(await api("/api/scan", {})) }; renderReceivers(); };
+$("refreshWindows").onclick = loadWindows;
+$("window").onchange = (e) => { S.window = e.target.value; replan(); };
+
+(async () => {
+  S.state = await api("/api/state");
+  const firstVideo = S.state.receivers.find(r => r.caps.video);
+  if (firstVideo && S.state.receivers.filter(r => r.caps.video).length === 1) S.receiver = firstVideo.identifier;
+  S.display = (S.state.machine.displays.find(d => d.primary) || S.state.machine.displays[0])?.index ?? null;
+  renderReceivers(); renderDisplays(); renderMachine(); renderSession(S.state.session); loadWindows(); replan();
+  setInterval(refresh, 1000);
+})();
+</script>
+</body>
+</html>
