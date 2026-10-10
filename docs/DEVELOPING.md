@@ -78,8 +78,20 @@ npm run build                                                                   
 - Size: the runtime is about 174 MB on disk and the installer is about 49 MB. Most of that is MSYS2's FFmpeg, which links every codec library (x265, aom, svt-av1, …) even though UxPlay only decodes H.264/H.265, AAC and ALAC. A minimal FFmpeg build would shrink it a lot; that is a follow-up.
 - The installer is unsigned for now (code signing is an ask-first decision), so Windows SmartScreen warns on first run.
 
+## FairPlay desktop mirror sender (Go)
+
+The sender that mirrors this PC's desktop to an Apple TV lives in `cmd/open-airplay` (CLI), `internal/airplay` (protocol: discovery, pairing, FairPlay SAP, encrypted H.264 mirroring, capture) and `internal/daemon`. Its protocol core comes from [doubletake](https://github.com/omarroth/doubletake); provenance is in `NOTICE`. It needs Go 1.25+ and an FFmpeg build with `ddagrab` on `PATH`; usage is in the README's quick start.
+
+- `go run ./cmd/open-airplay -list-displays` and `-display 0 -capture-smoke -hwaccel none -no-audio` check capture without contacting a receiver.
+- `go run ./cmd/doubletake-test-receiver -listen 127.0.0.1:7000 -profile modern -auth none` is a local receiver fixture for protocol tests.
+- Validation evidence and limits: `research/mirror-sender-validation.md`; protocol survey: `research/mirror-sender-feasibility.md`.
+- The Go CLI builds an executable also named `open-airplay.exe`; it is separate from the Tauri app (not yet folded into its UI or installer).
+
 ## Tests
 
 ```powershell
-npm test   # Rust unit tests (engine seam, supervisor with a fake engine, sender protocol) + sender sidecar tests
+npm test        # Rust unit tests (engine seam, supervisor, sender bridge, prefs, doctor) + pyatv sidecar tests
+go test ./...   # FairPlay mirror sender
+go vet ./...
 ```
+The engine's C tests (window sizing, maximized/full-screen reshow) run inside `engine/build-engine.sh`. CI runs all of these on Windows, plus the Rust check and tests and the Go suite on Linux.
