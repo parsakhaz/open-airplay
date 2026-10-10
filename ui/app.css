@@ -25,18 +25,17 @@
 
 /* mirroring: a "now playing" panel; video lives in its own fitted window */
 .now { width: min(560px, 100%, calc((100vh - 300px) * 16 / 9)); margin: 0 auto; border-radius: var(--oai-radius-2xl); overflow: hidden; background: var(--oai-video); box-shadow: var(--oai-shadow-lg); }
-.now .art { aspect-ratio: 16 / 9; position: relative; display: grid; place-items: center;
-  background:
-    radial-gradient(55% 75% at 28% 32%, rgba(255, 159, 110, 0.85) 0, transparent 60%),
-    radial-gradient(50% 70% at 76% 64%, rgba(110, 139, 255, 0.85) 0, transparent 60%),
-    linear-gradient(135deg, #2b2e4a, #1b1d2e); }
-.now .art svg { width: 64px; height: 64px; opacity: 0.95; }
-.now .live { position: absolute; top: 12px; left: 12px; display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: var(--oai-radius-pill); background: rgba(0, 0, 0, 0.45); color: #fff; font-size: var(--oai-text-xs); font-weight: 600; letter-spacing: 0.04em; backdrop-filter: blur(8px); }
-.now .live i { width: 6px; height: 6px; border-radius: 50%; background: #ff453a; animation: blink 1.6s ease-in-out infinite; }
+/* An honest schematic, not a preview: the video itself is in the engine's window. */
+.now .art { aspect-ratio: 16 / 9; display: grid; place-items: center; background: var(--oai-fill); }
+.now .screen { display: grid; place-items: center; border: 2px solid var(--oai-ink-3); border-radius: 18px; background: var(--oai-panel); transition: width var(--oai-dur-slow) var(--oai-ease), height var(--oai-dur-slow) var(--oai-ease); }
+.now .screen.is-portrait { height: 72%; aspect-ratio: 9 / 19.5; }
+.now .screen.is-landscape { width: 62%; aspect-ratio: 19.5 / 9; }
+.now .screen svg { width: 44px; height: 44px; }
 .now .bar { display: flex; align-items: center; gap: 12px; padding: 14px 16px; color: #f5f5f7; background: rgba(28, 28, 30, 0.92); }
 .now .bar .who { flex: 1; min-width: 0; }
 .now .bar b { display: block; font-weight: 600; }
-.now .bar small { color: rgba(255, 255, 255, 0.65); font-size: var(--oai-text-sm); font-variant-numeric: tabular-nums; }
+.now .bar small { display: block; color: rgba(255, 255, 255, 0.65); font-size: var(--oai-text-sm); font-variant-numeric: tabular-nums; }
+.pop-hero .acts { display: flex; gap: 6px; }
 .note { margin-top: 14px; font-size: var(--oai-text-sm); color: var(--oai-ink-2); text-align: center; }
 
 /* PIN */

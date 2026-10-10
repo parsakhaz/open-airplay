@@ -248,10 +248,10 @@ function renderReceive() {
       setToolbar(`Mirroring ${device}`, "Video plays in its own open-airplay window", btn("stop", "Stop receiving", "is-danger is-small"));
       setStage("mirroring", `<div class="oai-view" style="width:100%">
         <div class="now">
-          <div class="art"><span class="live"><i></i>LIVE</span><svg><use href="#i-app"/></svg></div>
-          <div class="bar"><div class="who"><b>${esc(device)}</b><small data-elapsed>Mirroring · ${elapsed(ui.mirrorSince)}</small></div></div>
+          <div class="art"><div class="screen ${orientation()}"><svg><use href="#i-app"/></svg></div></div>
+          <div class="bar"><div class="who"><b>${esc(device)}</b><small data-elapsed>Mirroring · ${elapsed(ui.mirrorSince)}</small>${videoSize()}</div>${btn("show-video", "Show video window", "is-small")}</div>
         </div>
-        <p class="note">Show the video window from the taskbar. It fits the phone's screen and follows rotation; stop mirroring from the phone or with Stop.</p></div>`);
+        <p class="note">The video plays in its own open-airplay window, sized to the phone's screen. It follows rotation. Stop mirroring from the phone, or with Stop.</p></div>`);
       break;
     case "pin": {
       const digits = String(s.pin).split("").map((d) => `<span>${esc(d)}</span>`).join("");
@@ -352,7 +352,7 @@ function compactStatus() {
     case "connecting":
       return `<div class="pop-hero"><div class="dots" style="justify-content:center;margin:6px 0 10px"><i></i><i></i><i></i></div><h3>${esc(device)} is connecting</h3><p>The video window opens in a moment.</p></div>`;
     case "mirroring":
-      return `<div class="pop-hero is-live"><div class="who"><div class="badge"><i></i>MIRRORING</div><h3>${esc(device)}</h3><p data-elapsed>${elapsed(ui.mirrorSince)}</p></div>${btn("stop", "Stop", "is-danger is-small")}</div>`;
+      return `<div class="pop-hero is-live"><div class="who"><div class="badge"><i></i>MIRRORING</div><h3>${esc(device)}</h3><p data-elapsed>${elapsed(ui.mirrorSince)}</p></div><div class="acts">${btn("show-video", "Show", "is-small")}${btn("stop", "Stop", "is-danger is-small")}</div></div>`;
     case "pin": {
       const digits = String(s.pin).split("").map((d) => `<span>${esc(d)}</span>`).join("");
       return `<div class="pop-hero"><h3>Enter this code on ${esc(deviceOf(s) || "your iPhone")}</h3><div class="pop-pin">${digits}</div><p>PIN mode is on</p></div>`;
@@ -399,8 +399,19 @@ function renderCompact() {
   lastPage.key = key;
 }
 
+// Shape and size of the mirrored picture, from the engine's "video WxH" report.
+function orientation() {
+  const v = ui.status.video;
+  return v && v[0] > v[1] ? "is-landscape" : "is-portrait";
+}
+function videoSize() {
+  const v = ui.status.video;
+  return v ? `<small class="size">${v[0]} × ${v[1]}</small>` : "";
+}
+
 function render() {
   const phase = phaseOf(ui.status);
+  if (phase === "mirroring" && ui.status.mirroring_since_ms) ui.mirrorSince = ui.status.mirroring_since_ms;
   if (phase === "mirroring" && !ui.mirrorSince) ui.mirrorSince = Date.now();
   if (phase !== "mirroring") ui.mirrorSince = null;
   if (ui.mode === "full") renderFull(); else renderCompact();
@@ -498,6 +509,7 @@ document.addEventListener("click", (e) => {
   switch (action.dataset.action) {
     case "start": return startReceiver(currentSettings());
     case "stop": return stopReceiver();
+    case "show-video": return invoke("show_video_window").catch(() => {});
     case "scan": return scan();
     case "home": ui.page = "home"; return render();
     case "settings": if (ui.mode === "full") ui.view = "settings"; else ui.page = "settings"; return render();

@@ -18,10 +18,10 @@ index 01a4eed..cb37539 100644
  
 diff --git a/renderers/oap_window.c b/renderers/oap_window.c
 new file mode 100644
-index 0000000..6c37028
+index 0000000..7c068c5
 --- /dev/null
 +++ b/renderers/oap_window.c
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,243 @@
 +/* open-airplay: engine-owned mirror window. See oap_window.h. */
 +#include "oap_window.h"
 +#include <gst/video/videooverlay.h>
@@ -39,6 +39,7 @@ index 0000000..6c37028
 +
 +#define OAP_WM_VIDEO_SIZE (WM_APP + 1)
 +#define OAP_WM_HIDE       (WM_APP + 2)
++#define OAP_WM_FULLSCREEN (WM_APP + 3)
 +/* largest share of the monitor's work area the window takes when it (re)sizes itself */
 +#define OAP_MAX_SCREEN_SHARE 0.85
 +
@@ -46,10 +47,45 @@ index 0000000..6c37028
 +static HANDLE ready = NULL;
 +static wchar_t title[256] = L"open-airplay";
 +static int last_w = 0, last_h = 0;
++static bool fullscreen = false;
++static WINDOWPLACEMENT windowed_placement = { .length = sizeof(WINDOWPLACEMENT) };
++static LONG_PTR windowed_style = 0;
++
++/* Borderless full screen on the window's current monitor; leaving it restores the exact previous placement. */
++static void set_fullscreen(HWND hwnd, bool on) {
++    if (on == fullscreen) return;
++    if (on) {
++        windowed_style = GetWindowLongPtrW(hwnd, GWL_STYLE);
++        GetWindowPlacement(hwnd, &windowed_placement);
++        MONITORINFO mi = { .cbSize = sizeof(mi) };
++        GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi);
++        SetWindowLongPtrW(hwnd, GWL_STYLE, (windowed_style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
++        SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
++                     mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
++    } else {
++        SetWindowLongPtrW(hwnd, GWL_STYLE, windowed_style);
++        SetWindowPlacement(hwnd, &windowed_placement);
++        SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
++    }
++    fullscreen = on;
++}
++
++/* F11 or double-click toggles full screen, Esc leaves it. Returns true when the input was handled. */
++static bool handle_input(HWND hwnd, UINT msg, WPARAM wp) {
++    if ((msg == WM_KEYDOWN && wp == VK_F11) || msg == WM_LBUTTONDBLCLK) {
++        set_fullscreen(hwnd, !fullscreen);
++        return true;
++    }
++    if (msg == WM_KEYDOWN && wp == VK_ESCAPE && fullscreen) {
++        set_fullscreen(hwnd, false);
++        return true;
++    }
++    return false;
++}
 +
 +static void fit_to_video(HWND hwnd, int vw, int vh) {
 +    bool visible = IsWindowVisible(hwnd);
-+    if (IsZoomed(hwnd)) {
++    if (IsZoomed(hwnd) || fullscreen) {
 +        /* maximized: the sink letterboxes inside it, so no resize. A maximized window that was
 +         * hidden at the end of the last stream must still come back for this one. */
 +        if (!visible) {
@@ -98,6 +134,13 @@ index 0000000..6c37028
 +    case OAP_WM_VIDEO_SIZE:
 +        fit_to_video(hwnd, (int) wp, (int) lp);
 +        return 0;
++    case OAP_WM_FULLSCREEN:
++        set_fullscreen(hwnd, !fullscreen);
++        return 0;
++    case WM_KEYDOWN:
++    case WM_LBUTTONDBLCLK:
++        if (handle_input(hwnd, msg, wp)) return 0;
++        break;
 +    case OAP_WM_HIDE:
 +        ShowWindow(hwnd, SW_HIDE);
 +        last_w = last_h = 0;
@@ -130,6 +173,7 @@ index 0000000..6c37028
 +    }
 +    WNDCLASSEXW wc = { .cbSize = sizeof(wc) };
 +    wc.lpfnWndProc = window_proc;
++    wc.style = CS_DBLCLKS;
 +    wc.hInstance = inst;
 +    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
 +    wc.hbrBackground = (HBRUSH) GetStockObject(BLACK_BRUSH);
@@ -142,6 +186,8 @@ index 0000000..6c37028
 +    SetEvent(ready);
 +    MSG msg;
 +    while (window && GetMessageW(&msg, NULL, 0, 0) > 0) {
++        /* The video sink may render into a child window; its keys and double-clicks still count as ours. */
++        if (msg.hwnd != window && IsChild(window, msg.hwnd) && handle_input(window, msg.message, msg.wParam)) continue;
 +        TranslateMessage(&msg);
 +        DispatchMessageW(&msg);
 +    }
@@ -176,12 +222,17 @@ index 0000000..6c37028
 +    if (window) PostMessageW(window, OAP_WM_HIDE, 0, 0);
 +}
 +
++void oap_window_toggle_fullscreen(void) {
++    if (window) PostMessageW(window, OAP_WM_FULLSCREEN, 0, 0);
++}
++
 +#else  /* not Windows */
 +
 +void oap_window_init(const char *server_name) { (void) server_name; }
 +uintptr_t oap_window_handle(void) { return 0; }
 +void oap_window_video_size(int w, int h) { (void) w; (void) h; }
 +void oap_window_hide(void) {}
++void oap_window_toggle_fullscreen(void) {}
 +
 +#endif
 +
@@ -216,10 +267,10 @@ index 0000000..6c37028
 +}
 diff --git a/renderers/oap_window.h b/renderers/oap_window.h
 new file mode 100644
-index 0000000..06315ce
+index 0000000..fb2a628
 --- /dev/null
 +++ b/renderers/oap_window.h
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,23 @@
 +/* open-airplay: a mirror window owned by the engine (Windows), so the video can be letterboxed,
 + * sized to the stream's aspect ratio, and carry the app's title and icon.
 + * On other platforms these are no-ops and GStreamer keeps creating its own window. */
@@ -239,6 +290,8 @@ index 0000000..06315ce
 +void oap_window_video_size(int w, int h);
 +/* Thread-safe: hide the window (stream ended). */
 +void oap_window_hide(void);
++/* Thread-safe: toggle borderless full screen (also F11 / double-click; Esc leaves it). */
++void oap_window_toggle_fullscreen(void);
 +
 +#endif
 diff --git a/renderers/oap_window_fit.h b/renderers/oap_window_fit.h

@@ -31,6 +31,27 @@ static int child(void) {
     if (!wait_for(h, TRUE)) { printf("FAIL: maximized window did not reappear for the next stream\n"); return 1; }
     if (!IsZoomed(h)) { printf("FAIL: window lost its maximized state\n"); return 1; }
 
+    /* Full screen (F11 / double-click / this call) covers the monitor and comes back to the same place. */
+    ShowWindow(h, SW_RESTORE);
+    RECT before, full, after;
+    GetWindowRect(h, &before);
+    oap_window_toggle_fullscreen();
+    Sleep(300);
+    GetWindowRect(h, &full);
+    MONITORINFO mi = { .cbSize = sizeof(mi) };
+    GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
+    if (!EqualRect(&full, &mi.rcMonitor)) { printf("FAIL: full screen doesn't cover the monitor\n"); return 1; }
+    oap_window_hide();                                 /* stream ends while full screen */
+    if (!wait_for(h, FALSE)) { printf("FAIL: full-screen window not hidden at stream end\n"); return 1; }
+    oap_window_video_size(1920, 886);                 /* next stream */
+    if (!wait_for(h, TRUE)) { printf("FAIL: full-screen window did not reappear for the next stream\n"); return 1; }
+    GetWindowRect(h, &full);
+    if (!EqualRect(&full, &mi.rcMonitor)) { printf("FAIL: window left full screen on the next stream\n"); return 1; }
+    oap_window_toggle_fullscreen();
+    Sleep(300);
+    GetWindowRect(h, &after);
+    if (!EqualRect(&before, &after)) { printf("FAIL: leaving full screen didn't restore the window\n"); return 1; }
+
     printf("window reshow: all tests passed\n");
     return 0;
 }

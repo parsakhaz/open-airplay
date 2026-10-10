@@ -184,14 +184,26 @@ fn exe_name(stem: &str) -> String {
     if cfg!(windows) { format!("{stem}.exe") } else { stem.to_string() }
 }
 
-/// OAP_ENGINE, then the dev build (engine/dist), then the bundled resource.
-fn find_engine(app: &AppHandle) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = std::env::var_os("OAP_ENGINE").map(PathBuf::from).into_iter().collect();
-    candidates.push(repo_root().join("engine").join("dist").join(exe_name("uxplay")));
+/// Where the engine comes from decides how its runtime is found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EngineSource {
+    /// OAP_ENGINE or engine/dist from build-engine.sh: needs the MSYS2 GStreamer runtime.
+    Dev,
+    /// Installed with the app (engine/bin + engine/lib/gstreamer-1.0): GStreamer finds its plugins by itself.
+    Bundled,
+}
+
+/// The installed engine wins, then OAP_ENGINE, then the dev build (engine/dist).
+fn find_engine(app: &AppHandle) -> Option<(PathBuf, EngineSource)> {
+    let mut candidates: Vec<(PathBuf, EngineSource)> = Vec::new();
     if let Ok(res) = app.path().resource_dir() {
-        candidates.push(res.join("engine").join(exe_name("uxplay")));
+        candidates.push((res.join("engine").join("bin").join(exe_name("uxplay")), EngineSource::Bundled));
     }
-    candidates.into_iter().find(|p| p.is_file())
+    if let Some(p) = std::env::var_os("OAP_ENGINE") {
+        candidates.push((PathBuf::from(p), EngineSource::Dev));
+    }
+    candidates.push((repo_root().join("engine").join("dist").join(exe_name("uxplay")), EngineSource::Dev));
+    candidates.into_iter().find(|(p, _)| p.is_file())
 }
 
 /// The app icon, for the engine's mirror window: dev checkout first, then the bundled resource.
@@ -230,9 +242,41 @@ fn tray_text(status: &ReceiverStatus) -> String {
     }
 }
 
+/// Which tray icon a phase shows: the plain app icon, a green "receiving" dot, or an orange "problem" dot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayLook {
+    Normal = 0,
+    Receiving = 1,
+    Problem = 2,
+}
+
+fn tray_look(phase: Phase) -> TrayLook {
+    match phase {
+        Phase::Connecting | Phase::Mirroring | Phase::Pin => TrayLook::Receiving,
+        Phase::Error => TrayLook::Problem,
+        Phase::Stopped | Phase::Starting | Phase::Ready => TrayLook::Normal,
+    }
+}
+
+fn set_tray_look(app: &AppHandle, tray: &tauri::tray::TrayIcon, look: TrayLook) {
+    static CURRENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(TrayLook::Normal as u8);
+    if CURRENT.swap(look as u8, Ordering::SeqCst) == look as u8 {
+        return;
+    }
+    let icon = match look {
+        TrayLook::Normal => app.default_window_icon().cloned(),
+        TrayLook::Receiving => tauri::image::Image::from_bytes(include_bytes!("../icons/tray-receiving.png")).ok(),
+        TrayLook::Problem => tauri::image::Image::from_bytes(include_bytes!("../icons/tray-problem.png")).ok(),
+    };
+    if let Some(icon) = icon {
+        let _ = tray.set_icon(Some(icon));
+    }
+}
+
 fn publish(app: &AppHandle, snapshot: &ReceiverStatus) {
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(tray_text(snapshot)));
+        set_tray_look(app, &tray, tray_look(snapshot.phase));
     }
     let _ = app.emit("receiver-status", snapshot);
 }
@@ -240,9 +284,12 @@ fn publish(app: &AppHandle, snapshot: &ReceiverStatus) {
 fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
     let state = app.state::<AppState>();
     state.update_prefs(|p| p.receiver = settings.clone());
-    let engine = find_engine(app).ok_or("The receiver engine isn't built yet. Run engine/build-engine.sh (see README).")?;
+    let (engine, source) = find_engine(app).ok_or("The receiver engine isn't installed. Reinstall open-airplay (or, in development, run engine/build-engine.sh).")?;
     state.sidecars.replace_supervisor(None);
-    let (path_prepend, mut env) = engine_runtime();
+    let (path_prepend, mut env) = match source {
+        EngineSource::Dev => engine_runtime(),
+        EngineSource::Bundled => (vec![], vec![]),
+    };
     env.extend(settings.engine_env(find_window_icon(app).as_deref()));
     let snapshot = {
         let mut st = state.status.lock().unwrap();
@@ -311,6 +358,27 @@ fn receiver_status(app: AppHandle) -> ReceiverStatus {
 #[tauri::command]
 fn default_settings(app: AppHandle) -> ReceiverSettings {
     app.state::<AppState>().prefs.lock().unwrap().receiver.clone()
+}
+
+/// Brings the engine's mirror window to the front (it belongs to the uxplay process).
+#[tauri::command]
+fn show_video_window() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW};
+        let class: Vec<u16> = "OpenAirplayMirrorWindow".encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            let hwnd = FindWindowW(class.as_ptr(), std::ptr::null());
+            if hwnd.is_null() {
+                return Err("The video window isn't open.".into());
+            }
+            ShowWindow(hwnd, if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW });
+            SetForegroundWindow(hwnd);
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    Err("Not supported on this platform yet.".into())
 }
 
 #[tauri::command]
@@ -496,7 +564,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, receiver_start, receiver_stop, sender_send])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, receiver_start, receiver_stop, sender_send])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
@@ -515,6 +583,16 @@ mod tests {
 
     fn running(advertised: bool) -> ReceiverStatus {
         ReceiverStatus { wanted: true, running: true, advertised, ..Default::default() }
+    }
+
+    #[test]
+    fn tray_shows_receiving_during_a_session_and_problem_on_error() {
+        assert_eq!(tray_look(Phase::Ready), TrayLook::Normal);
+        assert_eq!(tray_look(Phase::Stopped), TrayLook::Normal);
+        assert_eq!(tray_look(Phase::Connecting), TrayLook::Receiving);
+        assert_eq!(tray_look(Phase::Mirroring), TrayLook::Receiving);
+        assert_eq!(tray_look(Phase::Pin), TrayLook::Receiving);
+        assert_eq!(tray_look(Phase::Error), TrayLook::Problem);
     }
 
     #[test]
