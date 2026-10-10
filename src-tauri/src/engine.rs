@@ -8,7 +8,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ReceiverSettings {
     /// Name shown in the iPhone's Screen Mirroring list.
     pub name: String,

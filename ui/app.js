@@ -13,15 +13,22 @@ const use = (id) => `<svg><use href="#${id}"/></svg>`;
 const COMPACT = { w: 340, h: 540 };
 const FULL = { w: 1100, h: 700 };
 
-// ---------- preferences (per viewer, best effort) ----------
-const prefs = {
-  get openFullOnMirror() {
-    try { return localStorage.getItem("oap.openFullOnMirror") === "1"; } catch { return false; }
-  },
-  set openFullOnMirror(v) {
-    try { localStorage.setItem("oap.openFullOnMirror", v ? "1" : "0"); } catch { /* storage unavailable */ }
-  },
-};
+// ---------- app preferences (saved by the Rust side in the app's config folder) ----------
+const prefs = { openFullOnMirror: false, startAtLogin: false };
+
+async function loadPrefs() {
+  try {
+    const p = await invoke("get_prefs");
+    prefs.openFullOnMirror = !!p.open_full_view_on_mirror;
+    prefs.startAtLogin = !!p.start_at_login;
+  } catch { /* keep defaults */ }
+}
+
+async function savePrefs() {
+  const p = await invoke("set_prefs", { openFullViewOnMirror: prefs.openFullOnMirror, startAtLogin: prefs.startAtLogin });
+  prefs.openFullOnMirror = !!p.open_full_view_on_mirror;
+  prefs.startAtLogin = !!p.start_at_login;
+}
 
 // ---------- state ----------
 const ui = {
@@ -278,7 +285,8 @@ function settingsRows(rowClass) {
     <label class="${rowClass}"><span class="oai-grow"><span>Name</span><small class="oai-sub" style="display:block">Shown in Screen Mirroring</small></span><input class="oai-input" data-set="name" required maxlength="63" value="${esc(s.name)}"></label>
     <label class="${rowClass}"><span class="oai-grow"><span>Require a PIN</span><small class="oai-sub" style="display:block">Every new connection enters a code</small></span><input type="checkbox" class="oai-switch" data-set="pin_mode" ${s.pin_mode ? "checked" : ""}></label>
     <label class="${rowClass}"><span class="oai-grow"><span>Prefer H.265</span><small class="oai-sub" style="display:block">Try this if iOS 27 won't connect</small></span><input type="checkbox" class="oai-switch" data-set="h265" ${s.h265 ? "checked" : ""}></label>
-    <label class="${rowClass}"><span class="oai-grow"><span>Open full view when mirroring starts</span><small class="oai-sub" style="display:block">Otherwise the app stays in the tray</small></span><input type="checkbox" class="oai-switch" data-pref="openFullOnMirror" ${prefs.openFullOnMirror ? "checked" : ""}></label>`;
+    <label class="${rowClass}"><span class="oai-grow"><span>Open full view when mirroring starts</span><small class="oai-sub" style="display:block">Otherwise the app stays in the tray</small></span><input type="checkbox" class="oai-switch" data-pref="openFullOnMirror" ${prefs.openFullOnMirror ? "checked" : ""}></label>
+    <label class="${rowClass}"><span class="oai-grow"><span>Start at login</span><small class="oai-sub" style="display:block">Open quietly in the tray when you sign in</small></span><input type="checkbox" class="oai-switch" data-pref="startAtLogin" ${prefs.startAtLogin ? "checked" : ""}></label>`;
 }
 
 function renderSettings() {
@@ -508,8 +516,19 @@ document.addEventListener("input", (e) => {
   if (e.target.dataset.cast === "file") ui.castFile = e.target.value;
 });
 
-document.addEventListener("change", (e) => {
-  if (e.target.dataset.pref === "openFullOnMirror") prefs.openFullOnMirror = e.target.checked;
+document.addEventListener("change", async (e) => {
+  const key = e.target.dataset.pref;
+  if (!key) return;
+  const before = prefs[key];
+  prefs[key] = e.target.checked;
+  try {
+    await savePrefs();
+  } catch (err) {
+    prefs[key] = before;
+    e.target.checked = before;
+    const line = document.querySelector("[data-settings-status]");
+    if (line) line.textContent = String(err);
+  }
 });
 
 document.addEventListener("submit", async (e) => {
@@ -561,6 +580,7 @@ listen("sender-exit", (e) => {
 });
 
 (async () => {
+  await loadPrefs();
   try {
     const status = await invoke("receiver_status");
     if (!status.settings) status.settings = await invoke("default_settings");

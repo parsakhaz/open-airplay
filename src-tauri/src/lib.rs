@@ -1,4 +1,5 @@
 pub mod engine;
+pub mod prefs;
 pub mod process_guard;
 pub mod sender;
 pub mod supervisor;
@@ -15,6 +16,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, RunEvent, WebviewWindow};
 
 use engine::{EngineEvent, ReceiverSettings};
+use prefs::AppPrefs;
 use sender::SenderSidecar;
 use supervisor::{EngineCommand, Supervisor, SupervisorEvent};
 
@@ -156,6 +158,22 @@ impl Sidecars {
 struct AppState {
     sidecars: Sidecars,
     status: Arc<Mutex<ReceiverStatus>>,
+    prefs: Mutex<AppPrefs>,
+    /// Where prefs are saved; set during setup (None in tests or if there's no config folder).
+    prefs_path: Mutex<Option<PathBuf>>,
+}
+
+impl AppState {
+    fn update_prefs(&self, change: impl FnOnce(&mut AppPrefs)) -> AppPrefs {
+        let mut prefs = self.prefs.lock().unwrap();
+        change(&mut prefs);
+        if let Some(path) = self.prefs_path.lock().unwrap().as_ref() {
+            if let Err(e) = prefs.save(path) {
+                eprintln!("open-airplay: could not save settings to {}: {e}", path.display());
+            }
+        }
+        prefs.clone()
+    }
 }
 
 fn repo_root() -> PathBuf {
@@ -221,6 +239,7 @@ fn publish(app: &AppHandle, snapshot: &ReceiverStatus) {
 
 fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
     let state = app.state::<AppState>();
+    state.update_prefs(|p| p.receiver = settings.clone());
     let engine = find_engine(app).ok_or("The receiver engine isn't built yet. Run engine/build-engine.sh (see README).")?;
     state.sidecars.replace_supervisor(None);
     let (path_prepend, mut env) = engine_runtime();
@@ -290,8 +309,32 @@ fn receiver_status(app: AppHandle) -> ReceiverStatus {
 }
 
 #[tauri::command]
-fn default_settings() -> ReceiverSettings {
-    ReceiverSettings { name: default_name(), pin_mode: false, h265: false }
+fn default_settings(app: AppHandle) -> ReceiverSettings {
+    app.state::<AppState>().prefs.lock().unwrap().receiver.clone()
+}
+
+#[tauri::command]
+fn get_prefs(app: AppHandle) -> AppPrefs {
+    app.state::<AppState>().prefs.lock().unwrap().clone()
+}
+
+/// Saves the app-level prefs (receiver settings are saved by receiver_start) and applies start-at-login.
+#[tauri::command]
+fn set_prefs(app: AppHandle, open_full_view_on_mirror: bool, start_at_login: bool) -> Result<AppPrefs, String> {
+    let prefs = app.state::<AppState>().update_prefs(|p| {
+        p.open_full_view_on_mirror = open_full_view_on_mirror;
+        p.start_at_login = start_at_login;
+    });
+    apply_start_at_login(&app, prefs.start_at_login)?;
+    Ok(prefs)
+}
+
+fn apply_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    let result = if enabled { launcher.enable() } else { launcher.disable() };
+    // Disabling when it was never enabled is fine.
+    result.or_else(|e| if enabled { Err(format!("Could not turn on start at login: {e}")) } else { Ok(()) })
 }
 
 /// Async + spawn_blocking: stopping the old engine joins a thread, which must never happen on the UI thread.
@@ -386,8 +429,28 @@ fn toggle_popover(window: &WebviewWindow, icon_rect: tauri::Rect) {
 
 pub fn run() {
     let app = tauri::Builder::default()
+        // A second launch focuses the running app instead of starting a rival receiver on the same ports.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
         .setup(|app| {
+            // Load saved prefs before anything reads them.
+            {
+                let state = app.state::<AppState>();
+                let path = app.path().app_config_dir().ok().map(|d| d.join("settings.json"));
+                let prefs = path.as_deref().map(|p| AppPrefs::load(p, &default_name())).unwrap_or_else(|| {
+                    let mut p = AppPrefs::default();
+                    p.receiver.name = default_name();
+                    p
+                });
+                *state.prefs.lock().unwrap() = prefs;
+                *state.prefs_path.lock().unwrap() = path;
+            }
             let show = MenuItem::with_id(app, "show", "Open open-airplay", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -418,7 +481,8 @@ pub fn run() {
             // Start receiving right away so the PC shows up in Screen Mirroring without a click.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                if let Err(e) = start_receiver_inner(&handle, default_settings()) {
+                let saved = handle.state::<AppState>().prefs.lock().unwrap().receiver.clone();
+                if let Err(e) = start_receiver_inner(&handle, saved) {
                     let state = handle.state::<AppState>();
                     let snapshot = {
                         let mut st = state.status.lock().unwrap();
@@ -432,7 +496,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, receiver_start, receiver_stop, sender_send])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, receiver_start, receiver_stop, sender_send])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
