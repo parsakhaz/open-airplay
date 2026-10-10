@@ -94,4 +94,4 @@ npm test        # Rust unit tests (engine seam, supervisor, sender bridge, prefs
 go test ./...   # FairPlay mirror sender
 go vet ./...
 ```
-The engine's C tests (window sizing, maximized/full-screen reshow) run inside `engine/build-engine.sh`. CI runs all of these on Windows, plus the Rust check and tests and the Go suite on Linux.
+The engine's C tests (window sizing, maximized/full-screen reshow) run inside `engine/build-engine.sh`. On Windows, Tauri's build script needs `engine/runtime/` to exist (it is the installer's engine resource); `build-engine.sh` creates it, or `mkdir engine/runtime` is enough for running the Rust tests. CI runs all of these on Windows, plus the Rust check and tests and the Go suite on Linux.

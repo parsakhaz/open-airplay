@@ -48,6 +48,12 @@ jobs:
           npm ci
           npm run sync-tokens
 
+      # The Windows bundle config lists engine/runtime as a resource and Tauri's build script requires
+      # it to exist. The engine job builds the real runtime; tests only need the folder.
+      - name: Placeholder engine runtime
+        shell: bash
+        run: mkdir -p engine/runtime/bin
+
       - name: cargo test
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
