@@ -1,38 +1,161 @@
 pub mod engine;
+pub mod process_guard;
 pub mod sender;
 pub mod supervisor;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
 use engine::{EngineEvent, ReceiverSettings};
 use sender::SenderSidecar;
 use supervisor::{EngineCommand, Supervisor, SupervisorEvent};
 
+/// What the receiver is doing, as the UI shows it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    #[default]
+    Stopped,
+    Starting,
+    Ready,
+    Connecting,
+    Mirroring,
+    Pin,
+    Error,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ReceiverStatus {
+    pub phase: Phase,
+    /// The user wants the receiver on (Start/Apply pressed, or auto-start); false after Stop.
+    pub wanted: bool,
     pub running: bool,
     pub engine_path: Option<String>,
     pub settings: Option<ReceiverSettings>,
     pub advertised: bool,
     pub connections: u32,
     pub last_device: Option<String>,
+    /// Size of the mirrored video once frames arrive (reported by engine patch 0002).
+    pub video: Option<(u32, u32)>,
+    /// Unix time in ms when the current mirroring session's video started.
+    pub mirroring_since_ms: Option<u64>,
     pub pin: Option<String>,
     pub last_error: Option<String>,
 }
 
+pub fn phase(s: &ReceiverStatus) -> Phase {
+    if !s.running {
+        return match (s.wanted, s.last_error.is_some()) {
+            (false, _) => Phase::Stopped,
+            (true, true) => Phase::Error,
+            (true, false) => Phase::Starting,
+        };
+    }
+    if s.pin.is_some() {
+        Phase::Pin
+    } else if s.video.is_some() {
+        Phase::Mirroring
+    } else if s.last_device.is_some() && s.connections > 0 {
+        Phase::Connecting
+    } else if s.advertised {
+        Phase::Ready
+    } else {
+        Phase::Starting
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+fn end_session(status: &mut ReceiverStatus) {
+    status.connections = 0;
+    status.last_device = None;
+    status.video = None;
+    status.mirroring_since_ms = None;
+    status.pin = None;
+}
+
+pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
+    match event {
+        SupervisorEvent::Started { .. } => {
+            status.running = true;
+            status.last_error = None;
+        }
+        SupervisorEvent::Exited { code } => {
+            status.running = false;
+            status.advertised = false;
+            end_session(status);
+            if status.wanted {
+                status.last_error = Some(format!("The receiver stopped unexpectedly (exit code {code:?}). Restarting…"));
+            }
+        }
+        SupervisorEvent::SpawnFailed { message } => {
+            status.running = false;
+            status.last_error = Some(format!("Could not start the receiver: {message}"));
+        }
+        SupervisorEvent::Engine { event } => match event {
+            EngineEvent::Advertised => status.advertised = true,
+            EngineEvent::ConnectionRequest { name, model, .. } => status.last_device = Some(format!("{name} ({model})")),
+            EngineEvent::OpenConnections { count } => {
+                if *count == 0 {
+                    end_session(status);
+                } else {
+                    status.connections = *count;
+                }
+            }
+            EngineEvent::Video { width, height } => {
+                status.video = Some((*width, *height));
+                status.pin = None;
+                status.mirroring_since_ms.get_or_insert_with(now_ms);
+            }
+            EngineEvent::Pin { code } => status.pin = Some(code.clone()),
+            EngineEvent::ClientLost => status.last_error = Some("Lost the connection to the sender.".into()),
+            EngineEvent::Error { message } => status.last_error = Some(message.clone()),
+        },
+        SupervisorEvent::Log { .. } => {}
+    }
+    status.phase = phase(status);
+}
+
+/// The processes the app owns. `shutdown` stops and reaps all of them; it runs on every exit path.
+#[derive(Default)]
+pub struct Sidecars {
+    supervisor: Mutex<Option<Supervisor>>,
+    /// (generation, sidecar): the generation lets a late exit notice skip a newer sidecar.
+    sender: Mutex<Option<(u64, SenderSidecar)>>,
+    sender_generation: AtomicU64,
+}
+
+impl Sidecars {
+    pub fn replace_supervisor(&self, sup: Option<Supervisor>) {
+        let old = std::mem::replace(&mut *self.supervisor.lock().unwrap(), sup);
+        if let Some(old) = old {
+            old.stop();
+        }
+    }
+
+    pub fn shutdown(&self) {
+        self.replace_supervisor(None);
+        let sender = self.sender.lock().unwrap().take();
+        if let Some((_, s)) = sender {
+            s.stop();
+        }
+    }
+}
+
 #[derive(Default)]
 struct AppState {
-    supervisor: Mutex<Option<Supervisor>>,
+    sidecars: Sidecars,
     status: Arc<Mutex<ReceiverStatus>>,
-    sender: Mutex<Option<SenderSidecar>>,
 }
 
 fn repo_root() -> PathBuf {
@@ -76,60 +199,44 @@ fn engine_runtime() -> (Vec<PathBuf>, Vec<(String, String)>) {
     (vec![msys.join("bin")], vec![("GST_PLUGIN_SYSTEM_PATH_1_0".into(), plugins)])
 }
 
-fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
-    match event {
-        SupervisorEvent::Started { .. } => {
-            status.running = true;
-            status.last_error = None;
-        }
-        SupervisorEvent::Exited { code } => {
-            status.running = false;
-            status.advertised = false;
-            status.connections = 0;
-            status.last_error = Some(format!("engine exited (code {code:?}); restarting"));
-        }
-        SupervisorEvent::SpawnFailed { message } => {
-            status.running = false;
-            status.last_error = Some(format!("could not start engine: {message}"));
-        }
-        SupervisorEvent::Engine { event } => match event {
-            EngineEvent::Advertised => status.advertised = true,
-            EngineEvent::ConnectionRequest { name, model, .. } => status.last_device = Some(format!("{name} ({model})")),
-            EngineEvent::OpenConnections { count } => {
-                status.connections = *count;
-                if *count == 0 {
-                    status.pin = None;
-                }
-            }
-            EngineEvent::Pin { code } => status.pin = Some(code.clone()),
-            EngineEvent::ClientLost => status.last_error = Some("lost connection with the sender".into()),
-            EngineEvent::Error { message } => status.last_error = Some(message.clone()),
-        },
-        SupervisorEvent::Log { .. } => {}
-    }
-}
-
 fn tray_text(status: &ReceiverStatus) -> String {
     let name = status.settings.as_ref().map(|s| s.name.as_str()).unwrap_or("this PC");
-    match (status.running, status.advertised, status.connections) {
-        (_, _, n) if n > 0 => format!("open-airplay: receiving on '{name}'"),
-        (true, true, _) => format!("open-airplay: visible as '{name}'"),
-        (true, false, _) => "open-airplay: starting…".into(),
-        _ => "open-airplay: receiver stopped".into(),
+    match status.phase {
+        Phase::Mirroring => format!("open-airplay: mirroring on '{name}'"),
+        Phase::Connecting => "open-airplay: connecting…".into(),
+        Phase::Pin => "open-airplay: enter the code on your device".into(),
+        Phase::Ready => format!("open-airplay: ready to receive as '{name}'"),
+        Phase::Starting => "open-airplay: starting…".into(),
+        Phase::Error => "open-airplay: needs attention".into(),
+        Phase::Stopped => "open-airplay: receiver off".into(),
     }
 }
 
-fn start_receiver_inner(app: &AppHandle, state: &AppState, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
-    let engine = find_engine(app).ok_or("UxPlay engine not found. Run engine/build-engine.sh (see README).")?;
-    if let Some(old) = state.supervisor.lock().unwrap().take() {
-        old.stop();
+fn publish(app: &AppHandle, snapshot: &ReceiverStatus) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(tray_text(snapshot)));
     }
+    let _ = app.emit("receiver-status", snapshot);
+}
+
+fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
+    let state = app.state::<AppState>();
+    let engine = find_engine(app).ok_or("The receiver engine isn't built yet. Run engine/build-engine.sh (see README).")?;
+    state.sidecars.replace_supervisor(None);
     let (path_prepend, mut env) = engine_runtime();
     env.extend(settings.engine_env(find_window_icon(app).as_deref()));
-    {
+    let snapshot = {
         let mut st = state.status.lock().unwrap();
-        *st = ReceiverStatus { engine_path: Some(engine.display().to_string()), settings: Some(settings.clone()), ..Default::default() };
-    }
+        *st = ReceiverStatus {
+            wanted: true,
+            engine_path: Some(engine.display().to_string()),
+            settings: Some(settings.clone()),
+            ..Default::default()
+        };
+        st.phase = phase(&st);
+        st.clone()
+    };
+    publish(app, &snapshot);
     let cmd = EngineCommand { program: engine, args: settings.engine_args(), path_prepend, env, restart_delay: Duration::from_secs(2) };
     let (status, handle) = (state.status.clone(), app.clone());
     // Every engine line and lifecycle event goes to <app log dir>/engine.log for diagnosis.
@@ -137,6 +244,7 @@ fn start_receiver_inner(app: &AppHandle, state: &AppState, settings: ReceiverSet
         std::fs::create_dir_all(&dir).ok()?;
         std::fs::OpenOptions::new().create(true).append(true).open(dir.join("engine.log")).ok()
     });
+    // Runs on the supervisor's delivery thread, never on a thread that waits for the supervisor.
     let sup = Supervisor::start(cmd, move |event| {
         if let Some(mut f) = log.as_ref() {
             use std::io::Write;
@@ -151,19 +259,34 @@ fn start_receiver_inner(app: &AppHandle, state: &AppState, settings: ReceiverSet
             apply_event(&mut st, &event);
             st.clone()
         };
-        if let Some(tray) = handle.tray_by_id("main") {
-            let _ = tray.set_tooltip(Some(tray_text(&snapshot)));
-        }
         let _ = handle.emit("receiver-event", &event);
-        let _ = handle.emit("receiver-status", &snapshot);
+        publish(&handle, &snapshot);
     });
-    *state.supervisor.lock().unwrap() = Some(sup);
-    Ok(state.status.lock().unwrap().clone())
+    state.sidecars.replace_supervisor(Some(sup));
+    let snapshot = state.status.lock().unwrap().clone();
+    Ok(snapshot)
+}
+
+fn stop_receiver_inner(app: &AppHandle) -> ReceiverStatus {
+    let state = app.state::<AppState>();
+    state.sidecars.replace_supervisor(None);
+    let snapshot = {
+        let mut st = state.status.lock().unwrap();
+        st.wanted = false;
+        st.running = false;
+        st.advertised = false;
+        st.last_error = None;
+        end_session(&mut st);
+        st.phase = phase(&st);
+        st.clone()
+    };
+    publish(app, &snapshot);
+    snapshot
 }
 
 #[tauri::command]
-fn receiver_status(state: State<AppState>) -> ReceiverStatus {
-    state.status.lock().unwrap().clone()
+fn receiver_status(app: AppHandle) -> ReceiverStatus {
+    app.state::<AppState>().status.lock().unwrap().clone()
 }
 
 #[tauri::command]
@@ -171,50 +294,75 @@ fn default_settings() -> ReceiverSettings {
     ReceiverSettings { name: default_name(), pin_mode: false, h265: false }
 }
 
+/// Async + spawn_blocking: stopping the old engine joins a thread, which must never happen on the UI thread.
 #[tauri::command]
-fn receiver_start(app: AppHandle, state: State<AppState>, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
-    start_receiver_inner(&app, &state, settings)
+async fn receiver_start(app: AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || start_receiver_inner(&app, settings)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn receiver_stop(state: State<AppState>) -> ReceiverStatus {
-    if let Some(sup) = state.supervisor.lock().unwrap().take() {
-        sup.stop();
-    }
-    let mut st = state.status.lock().unwrap();
-    st.running = false;
-    st.advertised = false;
-    st.connections = 0;
-    st.last_error = None;
-    st.clone()
+async fn receiver_stop(app: AppHandle) -> Result<ReceiverStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || stop_receiver_inner(&app)).await.map_err(|e| e.to_string())
 }
 
-/// Sends one command to the pyatv sidecar, starting it on first use. Replies arrive as "sender-event".
-#[tauri::command]
-fn sender_send(app: AppHandle, state: State<AppState>, command: Value) -> Result<(), String> {
-    let mut guard = state.sender.lock().unwrap();
-    if guard.is_none() {
-        let python = std::env::var_os("OAP_PYTHON").map(PathBuf::from).unwrap_or_else(|| {
-            let venv = repo_root().join("sender").join(".venv");
-            let p = if cfg!(windows) { venv.join("Scripts").join("python.exe") } else { venv.join("bin").join("python") };
-            if p.is_file() { p } else { PathBuf::from(if cfg!(windows) { "python" } else { "python3" }) }
-        });
-        let script = repo_root().join("sender").join("oap_sender.py");
-        let handle = app.clone();
-        let sidecar = SenderSidecar::start(python, script, move |event| {
-            let _ = handle.emit("sender-event", &event);
-        })
-        .map_err(|e| format!("could not start sender: {e}"))?;
-        *guard = Some(sidecar);
-    }
-    guard.as_ref().unwrap().send(&command).map_err(|e| {
-        *guard = None;
-        format!("sender sidecar is gone: {e}")
+fn sender_python() -> PathBuf {
+    std::env::var_os("OAP_PYTHON").map(PathBuf::from).unwrap_or_else(|| {
+        let venv = repo_root().join("sender").join(".venv");
+        let p = if cfg!(windows) { venv.join("Scripts").join("python.exe") } else { venv.join("bin").join("python") };
+        if p.is_file() { p } else { PathBuf::from(if cfg!(windows) { "python" } else { "python3" }) }
     })
 }
 
+/// Sends one command to the pyatv sidecar, (re)starting it if needed. Replies arrive as "sender-event".
+/// If the sidecar dies, "sender-exit" is emitted so the UI can fail outstanding requests and retry.
+#[tauri::command]
+async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let sidecars = &state.sidecars;
+        let mut guard = sidecars.sender.lock().unwrap();
+        if guard.as_ref().is_some_and(|(_, s)| !s.is_running()) {
+            *guard = None;
+        }
+        if guard.is_none() {
+            let generation = sidecars.sender_generation.fetch_add(1, Ordering::SeqCst) + 1;
+            let script = repo_root().join("sender").join("oap_sender.py");
+            let (events, exits) = (app.clone(), app.clone());
+            let sidecar = SenderSidecar::start(
+                sender_python(),
+                script,
+                move |event| {
+                    let _ = events.emit("sender-event", &event);
+                },
+                move |exit| {
+                    if exit.requested {
+                        return;
+                    }
+                    let state = exits.state::<AppState>();
+                    let mut current = state.sidecars.sender.lock().unwrap();
+                    if current.as_ref().is_some_and(|(g, _)| *g == generation) {
+                        *current = None;
+                    }
+                    drop(current);
+                    let code = exit.code.map(|c| format!(" (exit code {c})")).unwrap_or_default();
+                    let _ = exits.emit("sender-exit", json!({ "message": format!("The sender stopped unexpectedly{code}. Try again.") }));
+                },
+            )
+            .map_err(|e| format!("Could not start the sender: {e}"))?;
+            *guard = Some((generation, sidecar));
+        }
+        let result = guard.as_ref().unwrap().1.send(&command);
+        result.map_err(|e| {
+            *guard = None;
+            format!("The sender isn't running: {e}. Try again.")
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(AppState::default())
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Open open-airplay", true, None::<&str>)?;
@@ -238,13 +386,126 @@ pub fn run() {
 
             // Start receiving right away so the PC shows up in Screen Mirroring without a click.
             let handle = app.handle().clone();
-            let state = app.state::<AppState>();
-            if let Err(e) = start_receiver_inner(&handle, &state, default_settings()) {
-                state.status.lock().unwrap().last_error = Some(e);
-            }
+            std::thread::spawn(move || {
+                if let Err(e) = start_receiver_inner(&handle, default_settings()) {
+                    let state = handle.state::<AppState>();
+                    let snapshot = {
+                        let mut st = state.status.lock().unwrap();
+                        st.wanted = true;
+                        st.last_error = Some(e);
+                        st.phase = phase(&st);
+                        st.clone()
+                    };
+                    publish(&handle, &snapshot);
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![receiver_status, default_settings, receiver_start, receiver_stop, sender_send])
-        .run(tauri::generate_context!())
-        .expect("error while running open-airplay");
+        .build(tauri::generate_context!())
+        .expect("error while building open-airplay");
+
+    // Tauri's run loop ends the process without running destructors, so stop and reap the sidecars
+    // explicitly on every way out (tray Quit, closing the last window, OS shutdown).
+    app.run(|app, event| {
+        if let RunEvent::Exit = event {
+            app.state::<AppState>().sidecars.shutdown();
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn running(advertised: bool) -> ReceiverStatus {
+        ReceiverStatus { wanted: true, running: true, advertised, ..Default::default() }
+    }
+
+    #[test]
+    fn phase_follows_the_receiver_lifecycle() {
+        assert_eq!(phase(&ReceiverStatus::default()), Phase::Stopped);
+        assert_eq!(phase(&ReceiverStatus { wanted: true, ..Default::default() }), Phase::Starting);
+        assert_eq!(phase(&running(false)), Phase::Starting);
+        assert_eq!(phase(&running(true)), Phase::Ready);
+        let error = ReceiverStatus { wanted: true, last_error: Some("boom".into()), ..Default::default() };
+        assert_eq!(phase(&error), Phase::Error);
+    }
+
+    #[test]
+    fn a_probe_connection_is_not_a_session() {
+        // Other Apple devices open short connections to query the receiver; that's still "ready".
+        let mut s = running(true);
+        apply_event(&mut s, &SupervisorEvent::Engine { event: EngineEvent::OpenConnections { count: 1 } });
+        assert_eq!(s.phase, Phase::Ready);
+    }
+
+    #[test]
+    fn a_session_goes_connecting_then_mirroring_then_back_to_ready() {
+        let mut s = running(true);
+        let engine = |event| SupervisorEvent::Engine { event };
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(
+            &mut s,
+            &engine(EngineEvent::ConnectionRequest { name: "Parsa's iPhone".into(), model: "iPhone16,1".into(), device_id: "x".into() }),
+        );
+        assert_eq!(s.phase, Phase::Connecting);
+        apply_event(&mut s, &engine(EngineEvent::Video { width: 886, height: 1920 }));
+        assert_eq!(s.phase, Phase::Mirroring);
+        assert!(s.mirroring_since_ms.is_some());
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 0 }));
+        assert_eq!(s.phase, Phase::Ready);
+        assert_eq!((s.last_device.clone(), s.video), (None, None));
+    }
+
+    #[test]
+    fn pin_shows_until_video_starts() {
+        let mut s = running(true);
+        apply_event(&mut s, &SupervisorEvent::Engine { event: EngineEvent::Pin { code: "4821".into() } });
+        assert_eq!(s.phase, Phase::Pin);
+        apply_event(&mut s, &SupervisorEvent::Engine { event: EngineEvent::Video { width: 1920, height: 886 } });
+        assert_eq!(s.phase, Phase::Mirroring);
+    }
+
+    #[test]
+    fn an_unexpected_exit_is_an_error_but_a_requested_stop_is_not() {
+        let mut s = running(true);
+        apply_event(&mut s, &SupervisorEvent::Exited { code: Some(1) });
+        assert_eq!(s.phase, Phase::Error);
+        let mut stopped = ReceiverStatus { wanted: false, running: true, ..Default::default() };
+        apply_event(&mut stopped, &SupervisorEvent::Exited { code: Some(1) });
+        assert_eq!(stopped.phase, Phase::Stopped);
+    }
+
+    fn pid_alive(pid: u32) -> bool {
+        if cfg!(windows) {
+            let out = std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).contains(&pid.to_string())
+        } else {
+            std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false)
+        }
+    }
+
+    #[test]
+    fn shutdown_kills_and_reaps_the_receiver_engine() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cmd = EngineCommand {
+            program: if cfg!(windows) { "python".into() } else { "python3".into() },
+            args: vec!["-c".into(), "import time\ntime.sleep(30)".into()],
+            path_prepend: vec![],
+            env: vec![],
+            restart_delay: Duration::from_secs(60),
+        };
+        let sup = Supervisor::start(cmd, move |e| {
+            let _ = tx.send(e);
+        });
+        let SupervisorEvent::Started { pid } = rx.recv_timeout(Duration::from_secs(10)).unwrap() else {
+            panic!("expected Started");
+        };
+        let sidecars = Sidecars::default();
+        sidecars.replace_supervisor(Some(sup));
+        assert!(pid_alive(pid));
+        sidecars.shutdown();
+        assert!(!pid_alive(pid), "engine {pid} still running after shutdown");
+    }
 }

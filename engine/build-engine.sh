@@ -47,6 +47,10 @@ ninja -C "$SRC/build"
 gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_window_fit.c" -o "$SRC/build/test_window_fit.exe"
 "$SRC/build/test_window_fit.exe"
 
+# Regression test: a maximized mirror window reappears for the next stream (runs on a private desktop).
+gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_window_reshow.c" "$SRC/renderers/oap_window.c"   $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-video-1.0) -luser32 -lgdi32 -o "$SRC/build/test_window_reshow.exe"
+"$SRC/build/test_window_reshow.exe"
+
 # Manual check for the mirror window without an iPhone: engine/dist/window_demo.exe
 gcc -Wall -O1 -I "$SRC/renderers" "$HERE/tests/window_demo.c" "$SRC/renderers/oap_window.c"   $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-video-1.0) -luser32 -lgdi32 -o "$SRC/build/window_demo.exe"
 

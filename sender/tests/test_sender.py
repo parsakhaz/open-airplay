@@ -33,6 +33,13 @@ class SidecarProtocol(unittest.TestCase):
         self.assertEqual([e for e in events if e.get("id") == 7][0]["event"], "error")
         self.assertEqual([e for e in events if e.get("id") == 8][0]["event"], "pong")
 
+    def test_valid_json_that_is_not_an_object_is_an_error_not_a_crash(self):
+        events = run_sidecar([], None, 7, {"id": 9, "cmd": "ping"})
+        errors = [e for e in events if e.get("event") == "error"]
+        self.assertEqual(len(errors), 3)
+        self.assertTrue(all("object" in e["message"] for e in errors))
+        self.assertEqual([e for e in events if e.get("id") == 9][0]["event"], "pong")
+
     def test_play_on_unknown_device_reports_not_found(self):
         events = run_sidecar({"id": 2, "cmd": "play_url", "identifier": "no-such-device", "url": "http://x/y.mp4", "timeout": 1})
         reply = [e for e in events if e.get("id") == 2][0]

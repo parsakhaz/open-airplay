@@ -18,14 +18,15 @@ index 01a4eed..cb37539 100644
  
 diff --git a/renderers/oap_window.c b/renderers/oap_window.c
 new file mode 100644
-index 0000000..f7352cf
+index 0000000..6c37028
 --- /dev/null
 +++ b/renderers/oap_window.c
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,192 @@
 +/* open-airplay: engine-owned mirror window. See oap_window.h. */
 +#include "oap_window.h"
 +#include <gst/video/videooverlay.h>
 +#include <gst/video/video.h>
++#include <stdio.h>
 +
 +#ifdef _WIN32
 +#ifndef _WIN32_WINNT
@@ -47,8 +48,16 @@ index 0000000..f7352cf
 +static int last_w = 0, last_h = 0;
 +
 +static void fit_to_video(HWND hwnd, int vw, int vh) {
-+    if (IsZoomed(hwnd)) return;   /* maximized: the sink letterboxes inside it */
 +    bool visible = IsWindowVisible(hwnd);
++    if (IsZoomed(hwnd)) {
++        /* maximized: the sink letterboxes inside it, so no resize. A maximized window that was
++         * hidden at the end of the last stream must still come back for this one. */
++        if (!visible) {
++            ShowWindow(hwnd, SW_SHOWMAXIMIZED);
++            SetForegroundWindow(hwnd);
++        }
++        return;
++    }
 +    if (visible && vw == last_w && vh == last_h) return;
 +    last_w = vw; last_h = vh;
 +
@@ -185,6 +194,8 @@ index 0000000..f7352cf
 +        int w = info.width;
 +        if (info.par_n > 0 && info.par_d > 0) w = (int) ((gint64) info.width * info.par_n / info.par_d);
 +        oap_window_video_size(w, info.height);
++        /* machine-readable line for the supervising shell: video is flowing, at this size */
++        printf("open-airplay: video %dx%d\n", w, info.height);
 +    }
 +    gst_caps_unref(caps);
 +}

@@ -1,12 +1,13 @@
 //! Runs a sidecar process, turns its output into events, and restarts it when it dies.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -32,6 +33,16 @@ pub struct EngineCommand {
     pub restart_delay: Duration,
 }
 
+const POLL: Duration = Duration::from_millis(25);
+/// After the engine exits, how long to wait for its last output lines before reporting the exit.
+const DRAIN: Duration = Duration::from_millis(500);
+
+/// Owns the engine process. Threads:
+/// - the worker spawns the engine, polls it with `try_wait` (never blocking while holding the
+///   child lock, so `stop()` can always reach it to kill it) and restarts it after it exits;
+/// - a reader per engine run turns stdout into events (bytes, so bad UTF-8 can't end the loop);
+/// - a delivery thread calls `on_event`. `stop()` never waits for it, so a callback that needs the
+///   UI thread can't deadlock a UI-thread caller of `stop()`.
 pub struct Supervisor {
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
@@ -42,32 +53,19 @@ impl Supervisor {
     pub fn start(cmd: EngineCommand, on_event: impl Fn(SupervisorEvent) + Send + 'static) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let child: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+        let (events, inbox) = mpsc::channel::<SupervisorEvent>();
+        thread::spawn(move || {
+            for event in inbox {
+                on_event(event);
+            }
+        });
         let (stop2, child2) = (stop.clone(), child.clone());
         let handle = thread::spawn(move || {
             while !stop2.load(Ordering::SeqCst) {
-                match spawn(&cmd) {
-                    Ok(mut c) => {
-                        on_event(SupervisorEvent::Started { pid: c.id() });
-                        let stdout = c.stdout.take();
-                        *child2.lock().unwrap() = Some(c);
-                        if let Some(out) = stdout {
-                            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                                match parse_line(&line) {
-                                    Some(event) => on_event(SupervisorEvent::Engine { event }),
-                                    None => on_event(SupervisorEvent::Log { line }),
-                                }
-                            }
-                        }
-                        let code = child2.lock().unwrap().take().and_then(|mut c| c.wait().ok()).and_then(|s| s.code());
-                        on_event(SupervisorEvent::Exited { code });
-                    }
-                    Err(e) => on_event(SupervisorEvent::SpawnFailed { message: e.to_string() }),
-                }
-                // Sleep in small steps so stop() returns promptly.
-                let mut waited = Duration::ZERO;
-                while waited < cmd.restart_delay && !stop2.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(20));
-                    waited += Duration::from_millis(20);
+                run_once(&cmd, &stop2, &child2, &events);
+                let deadline = Instant::now() + cmd.restart_delay;
+                while Instant::now() < deadline && !stop2.load(Ordering::SeqCst) {
+                    thread::sleep(POLL);
                 }
             }
         });
@@ -93,6 +91,68 @@ impl Drop for Supervisor {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// One engine run: spawn, stream output, wait for exit (or kill it when stopping).
+fn run_once(cmd: &EngineCommand, stop: &AtomicBool, child: &Mutex<Option<Child>>, events: &Sender<SupervisorEvent>) {
+    let mut c = match spawn(cmd) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = events.send(SupervisorEvent::SpawnFailed { message: e.to_string() });
+            return;
+        }
+    };
+    crate::process_guard::tie_to_app(&c);
+    let _ = events.send(SupervisorEvent::Started { pid: c.id() });
+    let reader = c.stdout.take().map(|out| spawn_reader(out, events.clone()));
+    *child.lock().unwrap() = Some(c);
+
+    let code = loop {
+        let mut guard = child.lock().unwrap();
+        let Some(c) = guard.as_mut() else { break None };
+        if stop.load(Ordering::SeqCst) {
+            let _ = c.kill();
+        }
+        match c.try_wait() {
+            Ok(Some(status)) => break status.code(),
+            Ok(None) => {}
+            Err(_) => break None,
+        }
+        drop(guard);
+        thread::sleep(POLL);
+    };
+    child.lock().unwrap().take();
+    if let Some(done) = reader {
+        let _ = done.recv_timeout(DRAIN);
+    }
+    let _ = events.send(SupervisorEvent::Exited { code });
+}
+
+/// Reads engine output line by line until EOF or a read error. Returns a channel that closes when done.
+fn spawn_reader(out: impl Read + Send + 'static, events: Sender<SupervisorEvent>) -> mpsc::Receiver<()> {
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let _done = done_tx;
+        let mut reader = BufReader::new(out);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let line = String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string();
+                    let event = match parse_line(&line) {
+                        Some(event) => SupervisorEvent::Engine { event },
+                        None => SupervisorEvent::Log { line },
+                    };
+                    if events.send(event).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    done_rx
 }
 
 fn spawn(cmd: &EngineCommand) -> std::io::Result<Child> {
@@ -147,6 +207,62 @@ mod tests {
         assert_eq!(events[1], SupervisorEvent::Engine { event: EngineEvent::OpenConnections { count: 1 } });
         assert!(matches!(events[2], SupervisorEvent::Exited { .. }));
         assert!(matches!(events[3], SupervisorEvent::Started { .. }), "restarted: {events:?}");
+    }
+
+    /// A fake engine written in Python, so it can emit exact bytes and stay alive.
+    fn python_engine(script: &str) -> EngineCommand {
+        EngineCommand {
+            program: if cfg!(windows) { "python".into() } else { "python3".into() },
+            args: vec!["-c".into(), script.into()],
+            path_prepend: vec![],
+            env: vec![],
+            restart_delay: Duration::from_secs(60),
+        }
+    }
+
+    fn stop_within(sup: Supervisor, limit: Duration) {
+        let started = std::time::Instant::now();
+        sup.stop();
+        assert!(started.elapsed() < limit, "stop took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn invalid_utf8_is_logged_and_later_lines_still_parse_and_stop_is_prompt() {
+        let (tx, rx) = mpsc::channel();
+        let script = "import sys,time\nsys.stdout.buffer.write(b'\\xff\\xfe bad\\nOpen connections: 1\\n')\nsys.stdout.flush()\ntime.sleep(30)";
+        let sup = Supervisor::start(python_engine(script), move |e| {
+            let _ = tx.send(e);
+        });
+        let events = collect(&rx, 3);
+        assert!(matches!(events[0], SupervisorEvent::Started { .. }));
+        assert!(matches!(&events[1], SupervisorEvent::Log { line } if line.contains('\u{FFFD}')), "{events:?}");
+        assert_eq!(events[2], SupervisorEvent::Engine { event: EngineEvent::OpenConnections { count: 1 } });
+        stop_within(sup, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn stop_is_prompt_when_the_engine_closes_stdout_but_keeps_running() {
+        let (tx, rx) = mpsc::channel();
+        let sup = Supervisor::start(python_engine("import os,time\nos.close(1)\ntime.sleep(30)"), move |e| {
+            let _ = tx.send(e);
+        });
+        collect(&rx, 1);
+        std::thread::sleep(Duration::from_millis(500)); // let the reader hit EOF while the engine lives on
+        stop_within(sup, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn stop_never_waits_for_a_blocked_event_callback() {
+        // Models the tray callback that needs the UI thread while the UI thread is the one calling stop().
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let sup = Supervisor::start(python_engine("import time\ntime.sleep(30)"), move |e| {
+            let _ = seen_tx.send(e);
+            let _ = release_rx.recv(); // blocks until the test releases it
+        });
+        seen_rx.recv_timeout(Duration::from_secs(10)).expect("started");
+        stop_within(sup, Duration::from_secs(2));
+        drop(release_tx);
     }
 
     #[test]

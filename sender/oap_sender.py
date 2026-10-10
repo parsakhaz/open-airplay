@@ -96,6 +96,9 @@ async def main():
         except json.JSONDecodeError as e:
             emit({"event": "error", "message": f"bad json: {e}"})
             continue
+        if not isinstance(cmd, dict):
+            emit({"event": "error", "message": "each command must be a JSON object"})
+            continue
         try:
             reply = await handle(loop, cmd)
         except Exception as e:  # report every failure to the shell; never crash the sidecar

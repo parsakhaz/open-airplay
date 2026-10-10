@@ -26,6 +26,8 @@ pub enum EngineEvent {
     OpenConnections { count: u32 },
     ClientLost,
     Pin { code: String },
+    /// First frame / new resolution of the mirrored video (engine patch 0002).
+    Video { width: u32, height: u32 },
     Error { message: String },
 }
 
@@ -66,6 +68,10 @@ pub fn parse_line(line: &str) -> Option<EngineEvent> {
     }
     if let Some(n) = line.strip_prefix("Open connections: ") {
         return n.trim().parse().ok().map(|count| EngineEvent::OpenConnections { count });
+    }
+    if let Some(size) = line.strip_prefix("open-airplay: video ") {
+        let (w, h) = size.split_once('x')?;
+        return Some(EngineEvent::Video { width: w.trim().parse().ok()?, height: h.trim().parse().ok()? });
     }
     if let Some(code) = line.strip_prefix("open-airplay: pin = ") {
         return Some(EngineEvent::Pin { code: code.into() });
@@ -150,6 +156,12 @@ mod tests {
             parse_line("*** ERROR: failed to open DACP export file \"x\""),
             Some(EngineEvent::Error { message: "failed to open DACP export file \"x\"".into() })
         );
+    }
+
+    #[test]
+    fn parses_video_size_from_patched_engine() {
+        assert_eq!(parse_line("open-airplay: video 886x1920"), Some(EngineEvent::Video { width: 886, height: 1920 }));
+        assert_eq!(parse_line("open-airplay: video 0xbogus"), None);
     }
 
     #[test]
