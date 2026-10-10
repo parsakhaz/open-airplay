@@ -17,7 +17,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from . import caps, receiver
+from . import caps, firewall, receiver
 from .negotiate import apply_overrides, negotiate
 from .pipeline import MASTER, ffmpeg_command
 
@@ -163,6 +163,7 @@ class App:
         self.receivers: list[dict] = []
         self.session: Session | None = None
         self.pairing: receiver.Pairing | None = None
+        self.firewall: dict | None = None
         self.lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ helpers
@@ -214,7 +215,16 @@ class App:
             "receivers": [{**{k: v for k, v in r.items() if k != "caps"}, "caps": receiver.caps_json(r["caps"])}
                           for r in self.receivers],
             "session": self.session.status() if self.session else None,
+            "setup": {"firewall": self.firewall, "paired": sorted(receiver.load_credentials())},
         })
+
+    async def firewall_check(self, request):
+        self.firewall = await asyncio.get_running_loop().run_in_executor(None, firewall.status, self.port)
+        return web.json_response(self.firewall)
+
+    async def firewall_allow(self, request):
+        ok = firewall.request_allow(self.port)  # Windows shows its own UAC prompt; the user decides
+        return web.json_response({"requested": ok})
 
     async def scan(self, request):
         self.receivers = await receiver.scan()
@@ -319,6 +329,7 @@ class App:
     async def on_startup(self, app):
         loop = asyncio.get_running_loop()
         self.machine = await loop.run_in_executor(None, load_machine, self.reprobe)
+        self.firewall = await loop.run_in_executor(None, firewall.status, self.port)
         self.receivers = await receiver.scan()
 
     async def on_cleanup(self, app):
@@ -337,6 +348,8 @@ class App:
         app.router.add_post("/api/stop", self.stop)
         app.router.add_post("/api/pair/begin", self.pair_begin)
         app.router.add_post("/api/pair/finish", self.pair_finish)
+        app.router.add_post("/api/setup/firewall/check", self.firewall_check)
+        app.router.add_post("/api/setup/firewall/allow", self.firewall_allow)
         app.router.add_get("/hls/{name}", self.hls)
         app.on_startup.append(self.on_startup)
         app.on_cleanup.append(self.on_cleanup)

@@ -53,6 +53,11 @@ code { font-size: 12px; word-break: break-all; }
   <h1>Screen Cast</h1>
   <p class="sub">Streams a display to an Apple TV as live video. Works without AirPlay mirroring's DRM, with a few seconds of delay.</p>
 
+  <section id="setup" hidden>
+    <h2>Setup</h2>
+    <div id="setupItems"></div>
+  </section>
+
   <section>
     <h2>Receiver <button class="link" id="rescan">Scan again</button></h2>
     <div class="grid" id="receivers"><span class="muted">Scanning…</span></div>
@@ -77,7 +82,7 @@ code { font-size: 12px; word-break: break-all; }
     <form id="pair" hidden style="margin-top:12px">
       <p style="margin:0 0 8px"><b>First time with this receiver:</b> enter the 4-digit code shown on the TV. You only do this once.</p>
       <div class="row">
-        <input id="pin" inputmode="numeric" autocomplete="one-time-code" maxlength="4" placeholder="0000" aria-label="PIN shown on the TV"
+        <input id="pin" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="0000" aria-label="PIN shown on the TV"
                style="font:600 18px ui-monospace,monospace;letter-spacing:.3em;width:110px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)">
         <button class="primary" type="submit">Pair and cast</button>
         <button class="link" type="button" id="pairCancel">Cancel</button>
@@ -127,7 +132,7 @@ function renderReceivers() {
     else chips.append(el("span", { class: "chip" }, "Audio only"));
     box.append(el("button", { class: "card", "aria-pressed": String(S.receiver === r.identifier), disabled: !c.video,
       title: c.video ? c.source : "This receiver can't play video",
-      onclick: () => { S.receiver = r.identifier; S.encoder = null; renderReceivers(); replan(); } },
+      onclick: () => { S.receiver = r.identifier; S.encoder = null; renderReceivers(); renderSetup(); replan(); } },
       el("b", {}, r.name), el("small", {}, c.source), chips));
   }
 }
@@ -191,6 +196,22 @@ async function replan() {
   } catch (e) { $("summary").textContent = e.message; $("opts").replaceChildren(); }
 }
 
+function renderSetup() {
+  const st = S.state.setup || {}, fw = st.firewall, box = $("setupItems"); box.replaceChildren();
+  const rx = S.state.receivers.find(r => r.identifier === S.receiver);
+  const row = (ok, title, detail, action) => el("div", { class: "row", style: "margin:6px 0" },
+    el("span", { class: ok ? "ok" : ok === null ? "muted" : "warn", style: "width:1.2em" }, ok ? "✓" : ok === null ? "•" : "!"),
+    el("span", { style: "flex:1" }, el("b", {}, title), " ", el("span", { class: "muted" }, detail)), action || "");
+  const fwOk = fw ? fw.allowed : null;
+  box.append(row(fwOk, "Firewall", fw ? fw.detail : "checking…", fwOk === false ? el("button", { class: "primary", style: "padding:6px 14px;font-size:13px",
+    onclick: async () => { await api("/api/setup/firewall/allow", {}); setTimeout(async () => { S.state.setup.firewall = await api("/api/setup/firewall/check", {}); renderSetup(); }, 4000); } }, "Allow (asks Windows)") : null));
+  if (rx) {
+    const paired = (st.paired || []).includes(rx.identifier);
+    box.append(row(paired ? true : null, "Pairing", paired ? `This PC is paired with ${rx.name}.` : `The first cast to ${rx.name} shows a 4-digit code on the TV; you type it here once.`));
+  }
+  $("setup").hidden = fwOk === true && (!rx || (st.paired || []).includes(rx.identifier));
+}
+
 function renderMachine() {
   const m = S.state.machine;
   const hw = m.encoders.filter(e => e.hardware).map(e => e.name), sw = m.encoders.filter(e => !e.hardware).map(e => `${e.name} ≤${e.max_height}p${e.max_fps}`);
@@ -236,6 +257,7 @@ $("pair").onsubmit = async (ev) => {
   try {
     await api("/api/pair/finish", { pin: $("pin").value });
     $("pair").hidden = true;
+    S.state.setup.paired = [...(S.state.setup.paired || []), S.receiver]; renderSetup();
     $("go").click();
   } catch (e) { $("pairMsg").textContent = e.message + " A new code is on the TV; try again."; showPairing(); }
 };
@@ -266,7 +288,7 @@ $("window").onchange = (e) => { S.window = e.target.value; replan(); };
   const firstVideo = S.state.receivers.find(r => r.caps.video);
   if (firstVideo && S.state.receivers.filter(r => r.caps.video).length === 1) S.receiver = firstVideo.identifier;
   S.display = (S.state.machine.displays.find(d => d.primary) || S.state.machine.displays[0])?.index ?? null;
-  renderReceivers(); renderDisplays(); renderMachine(); renderSession(S.state.session); loadWindows(); replan();
+  renderReceivers(); renderDisplays(); renderMachine(); renderSetup(); renderSession(S.state.session); loadWindows(); replan();
   setInterval(refresh, 1000);
 })();
 </script>
