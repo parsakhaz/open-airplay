@@ -1,5 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" rx="224" fill="#2f7d4f"/>
-  <path d="M232 256h560a40 40 0 0 1 40 40v352a40 40 0 0 1-40 40H688l-48-56h132V312H252v320h132l-48 56H232a40 40 0 0 1-40-40V296a40 40 0 0 1 40-40z" fill="#fbfaf6"/>
-  <path d="M512 560l184 216H328z" fill="#fbfaf6"/>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5ab0ff"/>
+      <stop offset="1" stop-color="#0a6cff"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="224" fill="url(#sheen)"/>
+  <rect x="208" y="256" width="608" height="416" rx="64" fill="none" stroke="#ffffff" stroke-width="56"/>
+  <path d="M512 576 L672 784 H352 Z" fill="#ffffff" stroke="url(#bg)" stroke-width="40" stroke-linejoin="round" paint-order="stroke"/>
 </svg>

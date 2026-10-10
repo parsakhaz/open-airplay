@@ -20,7 +20,7 @@ iPhone / Mac ──AirPlay──▶ uxplay.exe (UxPlay 1.74 fork, built-in mDNS,
 - `src-tauri/src/engine.rs`: settings → UxPlay flags, UxPlay output → events (the engine seam).
 - `src-tauri/src/supervisor.rs`: runs the engine without a console window, restarts it if it exits.
 - `src-tauri/src/sender.rs` + `sender/oap_sender.py`: the pyatv sender sidecar.
-- `design/tokens.css`: design tokens shared with open-airdrop-windows (copied into `ui/` at build time).
+- `design/`: the design system shared with open-airdrop-windows (see below).
 
 ## Run it (Windows, development)
 
@@ -45,6 +45,27 @@ On a network set to **Public**, Windows allows the app only if you tick Public i
 Engine output is logged to `%LOCALAPPDATA%\org.openairplay.app\logs\engine.log`.
 
 Overrides: `OAP_ENGINE` (path to uxplay.exe), `OAP_MSYS2_ROOT` (default `C:\msys64`), `OAP_PYTHON` (sender interpreter).
+
+## Design system
+
+`design/` is the shared look for open-airplay and open-airdrop-windows. It has a neutral, macOS-like style with one blue accent, light and dark themes, and reduced-motion support.
+
+- `design/tokens.css` holds the variables only, all prefixed `--oai-`: colours, type, spacing, radii, shadows, blur materials and motion timings. Light and dark follow `prefers-color-scheme`. You can force a theme with `<html data-theme="light|dark">`.
+- `design/components.css` holds the building blocks, as classes prefixed `oai-`:
+  - window chrome: `.oai-window`, `.oai-titlebar`, `.oai-window-controls`
+  - layout: `.oai-sidebar`, `.oai-toolbar`, `.oai-stage`
+  - the tray popover: `.oai-popover`, `.oai-list-row`
+  - controls: `.oai-btn`, `.oai-switch`, `.oai-segmented`, `.oai-input`, grouped settings lists (`.oai-group`, `.oai-row`)
+  - feedback: `.oai-card`, `.oai-spinner`, `.oai-hero` (empty states), `.oai-banner`
+- `design/icon.svg` is the app icon. Regenerate the bundle icons with `npx tauri icon design/icon.svg -o src-tauri/icons`, then delete the mobile and Store variants.
+
+To use it in another app, such as open-airdrop-windows:
+1. Copy `design/` in, or reference it as a git subtree.
+2. Copy both stylesheets into the web root at build time. This repo does that with `npm run sync-tokens`, which `npm run dev` and `beforeBuildCommand` already run. Keep the copies gitignored.
+3. Load them before your own styles: `tokens.css`, then `components.css`, then `app.css`.
+4. Use only `--oai-*` variables in app styles, so both apps keep the same look and both themes keep working.
+
+The app window has two modes built from these pieces. The **compact** mode is the primary surface: a frosted popover above the tray with status, a receiving switch, Send to devices and quick settings. The **full** mode opens on demand with Expand, or automatically when mirroring starts if you turn that on in Settings. It has a device sidebar and a large stage. F11 toggles full screen, and Esc returns to compact.
 
 ## Tests
 

@@ -8,3 +8,4 @@ tmp/
 .agent-farm/
 ui/tokens.css
 src-tauri/gen/
+ui/components.css
