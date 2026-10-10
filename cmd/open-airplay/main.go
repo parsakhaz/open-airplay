@@ -93,6 +93,16 @@ func validateWindowsCaptureFlags(hwaccel, videoCodec string) error {
 	return nil
 }
 
+func validateVideoRateFlags(fps, bitrate int) error {
+	if fps < 0 {
+		return fmt.Errorf("-fps must be 0 (auto) or a positive value")
+	}
+	if bitrate < 0 {
+		return fmt.Errorf("-bitrate must be 0 (auto) or a positive value")
+	}
+	return nil
+}
+
 func main() {
 	target := flag.String("target", "", "AirPlay receiver IP address or hostname (skip discovery)")
 	receiver := flag.String("receiver", "", "Exact receiver name or 1-based index from -list-receivers (discovery mode only)")
@@ -101,7 +111,7 @@ func main() {
 	credFile := flag.String("creds", airplay.DefaultCredentialsPath(), "Path to saved pairing credentials")
 	credBackend := flag.String("cred-backend", defaultCredentialBackend(), "Credential storage backend: file or keyring (Windows Credential Manager or the platform keyring)")
 	forcePair := flag.Bool("pair", false, "Force new pairing even if credentials exist")
-	fps := flag.Int("fps", 30, "Frames per second")
+	fps := flag.Int("fps", 0, "Frames per second (0 = auto, up to receiver-advertised 60 fps)")
 	bitrate := flag.Int("bitrate", 0, "Video bitrate in kbps (0 = auto, default tunes for resolution/FPS)")
 	targetLatencyMs := flag.Int("target-latency-ms", 0, "Joint audio/video playout latency override in milliseconds (0 = automatic connection profile)")
 	hwaccel := flag.String("hwaccel", "auto", hwAccelFlagHelp())
@@ -138,6 +148,9 @@ func main() {
 	if err := airplay.ValidateVideoCodec(*videoCodec); err != nil {
 		log.Fatalf("invalid -video-codec: %v", err)
 	}
+	if err := validateVideoRateFlags(*fps, *bitrate); err != nil {
+		log.Fatalf("invalid video rate: %v", err)
+	}
 	if runtime.GOOS == "windows" {
 		if err := validateWindowsCaptureFlags(*hwaccel, *videoCodec); err != nil {
 			log.Fatalf("invalid Windows capture options: %v", err)
@@ -164,6 +177,7 @@ func main() {
 	}
 
 	selectedDisplay := *displayIndex
+	sourceWidth, sourceHeight := 0, 0
 	if *listDisplays {
 		displays, err := airplay.ListDisplays()
 		if err != nil {
@@ -186,19 +200,33 @@ func main() {
 		if err != nil {
 			log.Fatalf("select display: %v", err)
 		}
+		for _, display := range displays {
+			if display.Index == selectedDisplay {
+				sourceWidth, sourceHeight = display.Width, display.Height
+				break
+			}
+		}
 	} else if selectedDisplay < 0 {
 		selectedDisplay = 0
 	}
 	if *captureSmoke {
 		smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelSmoke()
+		smokeFPS := *fps
+		if smokeFPS == 0 {
+			smokeFPS = 60
+		}
+		smokeWidth, smokeHeight := sourceWidth, sourceHeight
+		if smokeWidth <= 0 || smokeHeight <= 0 {
+			smokeWidth, smokeHeight = 1920, 1080
+		}
 		cfg := airplay.CaptureConfig{
-			FPS:          *fps,
+			FPS:          smokeFPS,
 			Bitrate:      *bitrate,
 			HWAccel:      *hwaccel,
 			VideoCodec:   airplay.VideoCodecH264,
-			MaxWidth:     1280,
-			MaxHeight:    720,
+			MaxWidth:     smokeWidth,
+			MaxHeight:    smokeHeight,
 			DisplayIndex: selectedDisplay,
 			ShowCursor:   !*noCursor,
 		}
@@ -455,14 +483,16 @@ func main() {
 	}
 
 	streamCfg := airplay.StreamConfig{
-		FPS:        *fps,
-		Bitrate:    *bitrate,
-		VideoCodec: airplay.VideoCodec(*videoCodec),
-		NoEncrypt:  *noEncrypt,
-		DirectKey:  *directKey,
-		NoAudio:    *noAudio,
-		PortMin:    portMin,
-		PortMax:    portMax,
+		FPS:          *fps,
+		Bitrate:      *bitrate,
+		VideoCodec:   airplay.VideoCodec(*videoCodec),
+		SourceWidth:  sourceWidth,
+		SourceHeight: sourceHeight,
+		NoEncrypt:    *noEncrypt,
+		DirectKey:    *directKey,
+		NoAudio:      *noAudio,
+		PortMin:      portMin,
+		PortMax:      portMax,
 	}
 	// Complete the potentially interactive Wayland portal request before SETUP,
 	// but delay encoder startup until control SETUP returns session-time display
@@ -509,7 +539,7 @@ func main() {
 	var capture *airplay.ScreenCapture
 	var broadcast *airplay.BroadcastCapture
 	var broadcastDone chan error
-	startedWidth, startedHeight := -1, -1
+	startedWidth, startedHeight, startedFPS := -1, -1, -1
 	startedCodec := airplay.VideoCodec("")
 	var liveVideoLead time.Duration
 	prepareH264Fallback := func(cause error) error {
@@ -524,17 +554,18 @@ func main() {
 		liveVideoLead = 0
 		return fmt.Errorf("%w: %v", airplay.ErrAutomaticVideoCodecUnavailable, cause)
 	}
-	prepareVideo := func(width, height int, codec airplay.VideoCodec) (airplay.VideoPreparationResult, error) {
+	prepareVideo := func(profile airplay.VideoProfile) (airplay.VideoPreparationResult, error) {
+		width, height, fps, codec := profile.Width, profile.Height, profile.FPS, profile.Codec
 		if capture != nil {
 			if codec == startedCodec {
-				if width != startedWidth || height != startedHeight {
-					log.Printf("receiver updated the %s canvas to %dx%d after capture started; keeping %dx%d for this session", codec, width, height, startedWidth, startedHeight)
+				if width != startedWidth || height != startedHeight || fps != startedFPS {
+					log.Printf("receiver updated the %s profile to %dx%d@%dfps after capture started; keeping %dx%d@%dfps for this session", codec, width, height, fps, startedWidth, startedHeight, startedFPS)
 				}
 				return airplay.VideoPreparationResult{MinimumVideoLead: liveVideoLead}, nil
 			}
-			return airplay.VideoPreparationResult{}, fmt.Errorf("receiver changed video from %s %dx%d to %s %dx%d during setup", startedCodec, startedWidth, startedHeight, codec, width, height)
+			return airplay.VideoPreparationResult{}, fmt.Errorf("receiver changed video from %s %dx%d@%dfps to %s %dx%d@%dfps during setup", startedCodec, startedWidth, startedHeight, startedFPS, codec, width, height, fps)
 		}
-		startedCapture, startErr := capturePreparation.StartWithCodec(width, height, codec)
+		startedCapture, startErr := capturePreparation.StartWithProfile(profile)
 		if startErr != nil {
 			if captureCfg.VideoCodec == airplay.VideoCodecAuto && codec == airplay.VideoCodecHEVC {
 				return airplay.VideoPreparationResult{}, prepareH264Fallback(startErr)
@@ -542,7 +573,7 @@ func main() {
 			return airplay.VideoPreparationResult{}, startErr
 		}
 		if codec == airplay.VideoCodecHEVC && !airplay.HasExplicitTargetLatency() {
-			liveVideoLead, startErr = airplay.MeasureVideoCaptureLatency(ctx, startedCapture, *fps)
+			liveVideoLead, startErr = airplay.MeasureVideoCaptureLatency(ctx, startedCapture, fps)
 			if startErr != nil {
 				startedCapture.Stop()
 				measurementErr := fmt.Errorf("measure production HEVC timing: %w", startErr)
@@ -553,17 +584,17 @@ func main() {
 			}
 			log.Printf("[CAPTURE] production HEVC timing requires at least %v video lead", liveVideoLead)
 		}
-		activeBroadcast := airplay.NewBroadcastCaptureWithFrameRate(startedCapture, *fps)
+		activeBroadcast := airplay.NewBroadcastCaptureWithFrameRate(startedCapture, fps)
 		done := make(chan error, 1)
 		capture = startedCapture
 		broadcast = activeBroadcast
 		broadcastDone = done
-		startedWidth, startedHeight = width, height
+		startedWidth, startedHeight, startedFPS = width, height, fps
 		startedCodec = codec
 		go func(active *airplay.BroadcastCapture, result chan<- error) {
 			result <- active.Run()
 		}(activeBroadcast, done)
-		log.Printf("screen capture started at %dx%d using %s", width, height, codec)
+		log.Printf("screen capture started at %dx%d@%dfps using %s", width, height, fps, codec)
 		return airplay.VideoPreparationResult{MinimumVideoLead: liveVideoLead}, nil
 	}
 	defer func() {
@@ -574,7 +605,7 @@ func main() {
 		}
 	}()
 
-	session, err := client.SetupMirrorWithCalibratedVideoPreparation(ctx, streamCfg, prepareVideo)
+	session, err := client.SetupMirrorWithVideoProfilePreparation(ctx, streamCfg, prepareVideo)
 	if errors.Is(err, airplay.ErrCredentialsRequired) {
 		// Some legacy receivers do not advertise their configured password in
 		// /info. They reveal it only by challenging the first media SETUP. Keep
@@ -594,7 +625,7 @@ func main() {
 			// the already safe concrete codec for the remainder of this session.
 			streamCfg.VideoCodec = startedCodec
 		}
-		session, err = client.SetupMirrorWithCalibratedVideoPreparation(ctx, streamCfg, prepareVideo)
+		session, err = client.SetupMirrorWithVideoProfilePreparation(ctx, streamCfg, prepareVideo)
 	}
 	if err != nil {
 		log.Fatalf("mirror setup failed: %v", err)

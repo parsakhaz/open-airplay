@@ -14,10 +14,17 @@ receiver. The protocol code is based on a pinned revision of
 The Windows sender now enumerates displays, captures the selected display with
 FFmpeg's DXGI Desktop Duplication source, and produces a low-latency H.264
 Annex-B stream. A local integration fixture has exercised pairing, FairPlay,
-encrypted setup, RECORD, feedback, video transport, and teardown. End-to-end
-mirroring has **not** been verified against physical Apple hardware from this
-branch. See [the validation report](research/mirror-sender-validation.md) for
-the exact evidence and remaining limits, and
+encrypted setup, RECORD, feedback, video transport, and teardown.
+
+On October 10, 2026, an owner-run session also completed pairing and FairPlay
+setup with a physical Apple TV 4K (`AppleTV14,1`) and displayed the real Windows
+desktop. The owner described latency as near-instant; that is a qualitative
+observation, not an instrumented measurement. This first confirmed hardware
+run used the previous automatic profile: `1280x720` at `30 fps` and `1843
+kbps`. It validates one receiver model and configuration, not every Apple TV,
+firmware version, or third-party implementation. See
+[the validation report](research/mirror-sender-validation.md) for the exact
+evidence and remaining limits, and
 [the feasibility report](research/mirror-sender-feasibility.md) for the
 protocol survey and risk analysis.
 
@@ -55,6 +62,24 @@ runs, omit `-pair` to reuse them:
 go run ./cmd/open-airplay -receiver "MY APPLE TV NAME" -display 0
 ```
 
+With `-fps 0` and `-bitrate 0` (the defaults), the sender resolves the final
+profile after it receives the Apple TV's session-time display capabilities. It
+prefers the selected Windows display's native resolution without upscaling
+when the receiver's advertised decoder limit and the low-latency H.264 ceiling
+allow it. Larger sources are aspect-fitted to those limits, with H.264 capped
+at `1920x1080`; without usable maximum-size metadata, a source that fits the
+nominal canvas keeps its native size and a larger source retains the nominal
+canvas. Frame rate uses the receiver-advertised maximum up to `60 fps`, or a
+conservative `30 fps` when that metadata is absent. Automatic bitrate is then
+derived from the resolved resolution and frame rate.
+
+On the `1440x900` validation display, a receiver advertising at least that
+canvas and `60 fps` now resolves to `1440x900` at `60 fps` and `5184 kbps`.
+That revised default still needs a physical-device regression run. Positive
+`-fps` and `-bitrate` values remain explicit overrides; an FPS above the
+receiver-advertised maximum is rejected. Existing `-video-codec` and
+`-hwaccel` overrides are unchanged.
+
 You can instead pass the one-based index from the immediately preceding
 discovery result, for example `-receiver 2`. Indices can change when devices
 join or leave the network, so the exact name is safer. An all-numeric
@@ -75,11 +100,33 @@ The planned product is one application whose default transport is this direct
 FairPlay sender, with streaming/HLS used as an automatic compatibility
 fallback. The settings toggle and fallback are intentionally outside this
 change. Discovery, capture, pairing, FairPlay, and transport remain in the
-`internal/airplay` package. Before GUI integration, the remaining command
-orchestration should move into a small reusable sender facade so the CLI and
-application invoke exactly the same session flow. A fallback must retain the
-exact user-selected receiver and must not trigger for a wrong PIN, user
-cancellation, or ambiguous target.
+`internal/airplay` package. Its `StreamConfig` accepts source dimensions and
+its profile-aware setup hook passes the final canvas, FPS, and codec to an
+embedding caller, so the protocol and capture path do not depend on CLI flag
+parsing. Before GUI integration, the remaining foreground orchestration should
+move into a small reusable sender facade so the CLI and application invoke
+exactly the same complete lifecycle. A fallback must retain the exact
+user-selected receiver and must not trigger for a wrong PIN, user cancellation,
+or ambiguous target.
+
+## Remaining work and ETA
+
+The direct video path is proven on one physical Apple TV, but a polished
+Windows preview still needs:
+
+- a real-device regression of the new native-resolution/automatic-FPS profile,
+  saved-credential reconnect, teardown, and a 30-60 minute soak;
+- WASAPI loopback capture, audio transport, A/V synchronization, and drift
+  testing;
+- Windows packaging, signing, and an FFmpeg dependency/distribution strategy;
+- validation that exact by-name receiver selection and its failure UX work from
+  the packaged, shipped build, not only `go run` during development; and
+- first-pass mixed-DPI, docking, rotation, HDR, GPU, and interrupted-network
+  rough-edge coverage.
+
+Assuming no receiver-firmware, audio-driver, or packaging blockers, the
+estimate for that polished Windows preview is **7-10 business days**, targeting
+**October 20-23, 2026**.
 
 ## Development
 
@@ -105,6 +152,7 @@ addressable by the current `ddagrab` path.
 
 Pairing credentials default to Windows Credential Manager on Windows.
 
-Do not interpret successful unit tests as real-device validation. Receiver
-model, firmware, pairing mode, timing mode, and video acceptance must be
-recorded separately during hardware testing.
+Do not interpret successful unit tests as broad real-device validation. The
+confirmed hardware result covers one `AppleTV14,1` session; receiver firmware,
+pairing mode, negotiated profile, timing, visible acceptance, duration, and
+teardown should continue to be recorded during hardware testing.

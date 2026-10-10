@@ -55,6 +55,95 @@ func TestAutomaticVideoSelectionUsesNominalH264(t *testing.T) {
 	}
 }
 
+func TestAutomaticVideoSelectionPrefersNativeSourceWithinAdvertisedMaximum(t *testing.T) {
+	info := &ReceiverInfo{Displays: []DisplayInfo{{
+		WidthPixels: 1280, HeightPixels: 720,
+		WidthPixelsMax: 3840, HeightPixelsMax: 2160,
+	}}}
+	selection, err := info.selectVideoForSource(VideoCodecAuto, false, 1440, 900)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.codec != VideoCodecH264 || selection.width != 1440 || selection.height != 900 {
+		t.Fatalf("selection = %s %dx%d, want H.264 1440x900", selection.codec, selection.width, selection.height)
+	}
+	if !strings.Contains(selection.reason, "native size") {
+		t.Fatalf("reason = %q, want native source reason", selection.reason)
+	}
+}
+
+func TestSourceVideoSelectionFitsCodecLimitAndRoundsEven(t *testing.T) {
+	info := &ReceiverInfo{Displays: []DisplayInfo{{
+		WidthPixels: 1280, HeightPixels: 720,
+		WidthPixelsMax: 3840, HeightPixelsMax: 2160,
+	}}}
+	selection, err := info.selectVideoForSource(VideoCodecH264, false, 2561, 1601)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.width != 1728 || selection.height != 1080 {
+		t.Fatalf("H.264 fitted source = %dx%d, want 1728x1080", selection.width, selection.height)
+	}
+	if selection.width%2 != 0 || selection.height%2 != 0 {
+		t.Fatalf("H.264 fitted source = %dx%d, want even dimensions", selection.width, selection.height)
+	}
+}
+
+func TestSourceVideoSelectionAvoidsUpscaleWithoutExplicitMaximum(t *testing.T) {
+	info := &ReceiverInfo{Displays: []DisplayInfo{{WidthPixels: 1280, HeightPixels: 720}}}
+
+	smaller, err := info.selectVideoForSource(VideoCodecAuto, false, 1024, 576)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if smaller.width != 1024 || smaller.height != 576 {
+		t.Fatalf("smaller source = %dx%d, want native 1024x576", smaller.width, smaller.height)
+	}
+
+	larger, err := info.selectVideoForSource(VideoCodecAuto, false, 1440, 900)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if larger.width != 1280 || larger.height != 720 {
+		t.Fatalf("larger source without maximum = %dx%d, want nominal 1280x720", larger.width, larger.height)
+	}
+}
+
+func TestVideoFrameRateSelection(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		info      *ReceiverInfo
+		requested int
+		want      int
+		wantErr   string
+	}{
+		{name: "auto receiver 60", info: &ReceiverInfo{Displays: []DisplayInfo{{MaxFPS: 60}}}, want: 60},
+		{name: "auto caps above 60", info: &ReceiverInfo{Displays: []DisplayInfo{{MaxFPS: 120}}}, want: 60},
+		{name: "auto receiver 30", info: &ReceiverInfo{Displays: []DisplayInfo{{MaxFPS: 30}}}, want: 30},
+		{name: "auto missing metadata", info: &ReceiverInfo{}, want: 30},
+		{name: "explicit override", info: &ReceiverInfo{Displays: []DisplayInfo{{MaxFPS: 60}}}, requested: 50, want: 50},
+		{name: "explicit without metadata", info: &ReceiverInfo{}, requested: 60, want: 60},
+		{name: "explicit above maximum", info: &ReceiverInfo{Displays: []DisplayInfo{{MaxFPS: 30}}}, requested: 60, wantErr: "exceeds receiver maximum"},
+		{name: "negative", info: &ReceiverInfo{}, requested: -1, wantErr: "cannot be negative"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.info.selectVideoFrameRate(test.requested)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("selectVideoFrameRate(%d) error = %v, want %q", test.requested, err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("selectVideoFrameRate(%d) = %d, want %d", test.requested, got, test.want)
+			}
+		})
+	}
+}
+
 func TestExplicitHEVCSelectionCapsMaximumPreservingAspect(t *testing.T) {
 	info := &ReceiverInfo{
 		Features: uint64(1) << featureScreenMultiCodec,

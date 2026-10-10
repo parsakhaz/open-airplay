@@ -78,6 +78,7 @@ func TestReceiverInfoMaxVideoSize(t *testing.T) {
 			"heightPixels":    uint64(720),
 			"widthPixelsMax":  uint64(1920),
 			"heightPixelsMax": uint64(1080),
+			"maxFPS":          uint64(60),
 		}},
 	})
 	if w, h := info.DisplaySize(); w != 1280 || h != 720 {
@@ -89,11 +90,23 @@ func TestReceiverInfoMaxVideoSize(t *testing.T) {
 	if w, h := info.MaxVideoSize(); w != 1920 || h != 1080 {
 		t.Fatalf("MaxVideoSize() = %dx%d, want decoder limit 1920x1080", w, h)
 	}
+	if fps := info.RecommendedVideoFPS(); fps != 60 {
+		t.Fatalf("RecommendedVideoFPS() = %d, want 60", fps)
+	}
 
 	info.Displays[0].WidthPixelsMax = 0
 	info.Displays[0].HeightPixelsMax = 0
 	if w, h := info.MaxVideoSize(); w != 1280 || h != 720 {
 		t.Fatalf("MaxVideoSize() fallback = %dx%d, want display size 1280x720", w, h)
+	}
+}
+
+func TestReceiverInfoRecommendedVideoFPSFallbackAndCap(t *testing.T) {
+	if got := (&ReceiverInfo{}).RecommendedVideoFPS(); got != 30 {
+		t.Fatalf("missing maxFPS = %d, want 30", got)
+	}
+	if got := (&ReceiverInfo{Displays: []DisplayInfo{{MaxFPS: 120}}}).RecommendedVideoFPS(); got != 60 {
+		t.Fatalf("maxFPS 120 = %d, want cap 60", got)
 	}
 }
 

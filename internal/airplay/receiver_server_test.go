@@ -441,6 +441,38 @@ func TestSetupMirrorAutomaticallySelectsNominalH264FromSessionDisplayInfo(t *tes
 	}
 }
 
+func TestSetupMirrorProfileUsesNativeSourceAndSessionFrameRate(t *testing.T) {
+	SetTargetLatency(0)
+	t.Cleanup(func() { SetTargetLatency(0) })
+	_, client, ctx := newReceiverServerTestPair(t, ReceiverConfig{Profile: ReceiverProfileModern})
+	if err := client.Pair(ctx, ""); err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+	if err := client.FairPlaySetup(ctx); err != nil {
+		t.Fatalf("FairPlay setup: %v", err)
+	}
+
+	var got VideoProfile
+	session, err := client.SetupMirrorWithVideoProfilePreparation(ctx, StreamConfig{
+		FPS:          0,
+		VideoCodec:   VideoCodecAuto,
+		SourceWidth:  1440,
+		SourceHeight: 900,
+		NoAudio:      true,
+	}, func(profile VideoProfile) (VideoPreparationResult, error) {
+		got = profile
+		return VideoPreparationResult{}, nil
+	})
+	if err != nil {
+		t.Fatalf("setup mirror: %v", err)
+	}
+	defer session.Close()
+	want := VideoProfile{Width: 1440, Height: 900, FPS: 60, Codec: VideoCodecH264}
+	if got != want {
+		t.Fatalf("video profile = %#v, want %#v", got, want)
+	}
+}
+
 func TestAutomaticVideoPreparationStartsNominalH264(t *testing.T) {
 	SetTargetLatency(0)
 	t.Cleanup(func() { SetTargetLatency(0) })

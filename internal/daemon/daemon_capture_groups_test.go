@@ -44,6 +44,20 @@ func TestNormalizedVideoCaptureKeySeparatesResolvedCodecs(t *testing.T) {
 	}
 }
 
+func TestNormalizedVideoCaptureProfileKeySeparatesFrameRates(t *testing.T) {
+	profile := airplay.VideoProfile{Width: 1921, Height: 1081, FPS: 60, Codec: airplay.VideoCodecH264}
+	sixty := normalizedVideoCaptureProfileKey(profile)
+	profile.FPS = 30
+	thirty := normalizedVideoCaptureProfileKey(profile)
+
+	if sixty == thirty {
+		t.Fatalf("30 fps and 60 fps capture keys unexpectedly match: %+v", sixty)
+	}
+	if sixty.maxWidth != 1920 || sixty.maxHeight != 1080 || sixty.fps != 60 || sixty.codec != airplay.VideoCodecH264 {
+		t.Fatalf("normalized 60 fps profile key = %+v", sixty)
+	}
+}
+
 func TestRemovingStreamStopsOnlyItsResolutionGroup(t *testing.T) {
 	for _, first := range []videoCaptureKey{
 		{maxWidth: 1920, maxHeight: 1080},

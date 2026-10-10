@@ -195,6 +195,7 @@ type DisplayInfo struct {
 	HeightPixels      plistNumber      `plist:"heightPixels"`
 	WidthPixelsMax    plistNumber      `plist:"widthPixelsMax"`
 	HeightPixelsMax   plistNumber      `plist:"heightPixelsMax"`
+	MaxFPS            plistNumber      `plist:"maxFPS"`
 	HDRInfo           DisplayHDRInfo   `plist:"HDRInfo"`
 	HDRSupportedModes []DisplayHDRInfo `plist:"HDRSupportedModes"`
 }
@@ -262,6 +263,20 @@ func (i *ReceiverInfo) MaxVideoSize() (int, int) {
 		}
 	}
 	return i.MirrorSize()
+}
+
+// RecommendedVideoFPS returns the highest normal mirroring frame rate, capped
+// at 60 fps, advertised for the receiver's primary display. Receivers which do
+// not publish display timing metadata retain the conservative 30 fps path.
+func (i *ReceiverInfo) RecommendedVideoFPS() int {
+	if i == nil || len(i.Displays) == 0 || i.Displays[0].MaxFPS <= 0 {
+		return 30
+	}
+	fps := int(i.Displays[0].MaxFPS)
+	if fps > 60 {
+		return 60
+	}
+	return fps
 }
 
 // HTTPStatusError is returned when a receiver responds with a non-2xx RTSP/HTTP status.
@@ -791,8 +806,8 @@ func (c *AirPlayClient) SetupMirrorWithVideoPreparation(ctx context.Context, cfg
 	if prepare == nil {
 		return c.setupMirrorSession(ctx, cfg, nil, false)
 	}
-	return c.setupMirrorSession(ctx, cfg, func(width, height int, _ VideoCodec) (VideoPreparationResult, error) {
-		return VideoPreparationResult{}, prepare(width, height)
+	return c.setupMirrorSession(ctx, cfg, func(profile VideoProfile) (VideoPreparationResult, error) {
+		return VideoPreparationResult{}, prepare(profile.Width, profile.Height)
 	}, false)
 }
 
@@ -802,6 +817,17 @@ func (c *AirPlayClient) SetupMirrorWithVideoPreparation(ctx context.Context, cfg
 // measurement or an explicit user-selected target.
 type VideoPreparationResult struct {
 	MinimumVideoLead time.Duration
+}
+
+// VideoProfile is the concrete capture profile chosen from the source display,
+// final session-time receiver capabilities, and StreamConfig overrides.
+// Preparation hooks should launch capture with these exact values so encoder
+// output and AirPlay framing stay in sync.
+type VideoProfile struct {
+	Width  int
+	Height int
+	FPS    int
+	Codec  VideoCodec
 }
 
 // ErrAutomaticVideoCodecUnavailable tells automatic negotiation that the
@@ -817,8 +843,8 @@ func (c *AirPlayClient) SetupMirrorWithVideoCodecPreparation(ctx context.Context
 	if prepare == nil {
 		return c.setupMirrorSession(ctx, cfg, nil, false)
 	}
-	return c.setupMirrorSession(ctx, cfg, func(width, height int, codec VideoCodec) (VideoPreparationResult, error) {
-		return VideoPreparationResult{}, prepare(width, height, codec)
+	return c.setupMirrorSession(ctx, cfg, func(profile VideoProfile) (VideoPreparationResult, error) {
+		return VideoPreparationResult{}, prepare(profile.Width, profile.Height, profile.Codec)
 	}, false)
 }
 
@@ -827,6 +853,18 @@ func (c *AirPlayClient) SetupMirrorWithVideoCodecPreparation(ctx context.Context
 // SETUP commit their latency descriptors, allowing a timestamped production
 // capture to report its measured minimum video lead without a clock mismatch.
 func (c *AirPlayClient) SetupMirrorWithCalibratedVideoPreparation(ctx context.Context, cfg StreamConfig, prepare func(width, height int, codec VideoCodec) (VideoPreparationResult, error)) (*MirrorSession, error) {
+	if prepare == nil {
+		return c.setupMirrorSession(ctx, cfg, nil, false)
+	}
+	return c.setupMirrorSession(ctx, cfg, func(profile VideoProfile) (VideoPreparationResult, error) {
+		return prepare(profile.Width, profile.Height, profile.Codec)
+	}, true)
+}
+
+// SetupMirrorWithVideoProfilePreparation is the profile-aware preparation API.
+// Unlike the compatibility hooks above, it carries the receiver-resolved frame
+// rate as well as canvas and codec into capture startup.
+func (c *AirPlayClient) SetupMirrorWithVideoProfilePreparation(ctx context.Context, cfg StreamConfig, prepare func(profile VideoProfile) (VideoPreparationResult, error)) (*MirrorSession, error) {
 	return c.setupMirrorSession(ctx, cfg, prepare, prepare != nil)
 }
 
@@ -1315,9 +1353,11 @@ func (c *AirPlayClient) readDecryptedBytes(n int) ([]byte, error) {
 
 // StreamConfig holds the configuration for a mirroring session.
 type StreamConfig struct {
-	FPS                    int
+	FPS                    int           // zero selects receiver-advertised FPS up to 60; positive values are strict overrides
 	Bitrate                int           // Video bitrate in kbps
 	VideoCodec             VideoCodec    // empty/h264, auto (H.264), or explicitly requested hevc
+	SourceWidth            int           // selected source display width; zero preserves the receiver's nominal canvas
+	SourceHeight           int           // selected source display height; zero preserves the receiver's nominal canvas
 	AutomaticHEVCAvailable bool          // retained for programmatic compatibility
 	MeasuredVideoLatency   time.Duration // measured minimum lead for the local HEVC capture path
 	NoEncrypt              bool          // Disable encryption for debugging

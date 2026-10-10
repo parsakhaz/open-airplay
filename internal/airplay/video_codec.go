@@ -19,6 +19,11 @@ const (
 
 const featureScreenMultiCodec uint = 42
 
+const (
+	maximumH264MirrorWidth  = 1920
+	maximumH264MirrorHeight = 1080
+)
+
 func normalizeVideoCodec(codec VideoCodec) VideoCodec {
 	if codec == "" {
 		return VideoCodecH264
@@ -58,6 +63,15 @@ type videoSelection struct {
 // snapshot. The interoperable screen sender path uses AVC at the receiver's
 // nominal canvas. HEVC remains an explicit diagnostic override.
 func (i *ReceiverInfo) selectVideo(requested VideoCodec, automaticHEVCAvailable bool) (videoSelection, error) {
+	return i.selectVideoForSource(requested, automaticHEVCAvailable, 0, 0)
+}
+
+// selectVideoForSource applies the normal codec policy, then prefers the
+// selected source display's native pixel size when the receiver advertises an
+// explicit decoder maximum. H.264 stays at or below 1080p to preserve the
+// verified low-latency software-encoder path; larger explicit HEVC profiles
+// retain their existing 4K ceiling.
+func (i *ReceiverInfo) selectVideoForSource(requested VideoCodec, automaticHEVCAvailable bool, sourceWidth, sourceHeight int) (videoSelection, error) {
 	_ = automaticHEVCAvailable // Retained for programmatic compatibility.
 	if requested == "" {
 		requested = VideoCodecH264
@@ -69,19 +83,78 @@ func (i *ReceiverInfo) selectVideo(requested VideoCodec, automaticHEVCAvailable 
 	switch requested {
 	case VideoCodecH264:
 		width, height := i.MirrorSize()
-		return videoSelection{codec: VideoCodecH264, width: width, height: height, reason: "explicit H.264"}, nil
+		selection := videoSelection{codec: VideoCodecH264, width: width, height: height, reason: "explicit H.264"}
+		return i.preferSourceVideoCanvas(selection, sourceWidth, sourceHeight), nil
 	case VideoCodecHEVC:
 		width, height, err := i.videoCanvas(VideoCodecHEVC)
 		if err != nil {
 			return videoSelection{}, err
 		}
-		return videoSelection{codec: VideoCodecHEVC, width: width, height: height, reason: "explicit HEVC"}, nil
+		selection := videoSelection{codec: VideoCodecHEVC, width: width, height: height, reason: "explicit HEVC"}
+		return i.preferSourceVideoCanvas(selection, sourceWidth, sourceHeight), nil
 	case VideoCodecAuto:
 		width, height := i.MirrorSize()
-		return videoSelection{codec: VideoCodecH264, width: width, height: height, reason: "automatic compatibility path"}, nil
+		selection := videoSelection{codec: VideoCodecH264, width: width, height: height, reason: "automatic compatibility path"}
+		return i.preferSourceVideoCanvas(selection, sourceWidth, sourceHeight), nil
 	default:
 		panic("validated video codec has no selection policy")
 	}
+}
+
+func (i *ReceiverInfo) preferSourceVideoCanvas(selection videoSelection, sourceWidth, sourceHeight int) videoSelection {
+	if sourceWidth <= 0 || sourceHeight <= 0 || i == nil || len(i.Displays) == 0 {
+		return selection
+	}
+	display := i.Displays[0]
+	maximumW, maximumH := selection.width, selection.height
+	if display.WidthPixelsMax > 0 && display.HeightPixelsMax > 0 {
+		maximumW, maximumH = i.maximumVideoCanvas()
+	} else if sourceWidth > maximumW || sourceHeight > maximumH {
+		// Without an explicit decoder maximum, native source sizing may avoid an
+		// unnecessary upscale but must not exceed the receiver's nominal canvas.
+		return selection
+	}
+	if selection.codec == VideoCodecH264 {
+		maximumW = min(maximumW, maximumH264MirrorWidth)
+		maximumH = min(maximumH, maximumH264MirrorHeight)
+	}
+	if maximumW <= 0 || maximumH <= 0 {
+		return selection
+	}
+
+	width, height := fitVideoSize(sourceWidth, sourceHeight, maximumW, maximumH)
+	// H.264 and HEVC 4:2:0 encoders require even luma dimensions. Round down so
+	// the source-aware choice never exceeds the receiver's advertised maximum.
+	width &^= 1
+	height &^= 1
+	if width <= 0 || height <= 0 {
+		return selection
+	}
+	selection.width = width
+	selection.height = height
+	if width == sourceWidth && height == sourceHeight {
+		selection.reason += "; selected source display native size"
+	} else {
+		selection.reason += "; selected source display fitted to receiver/codec limit"
+	}
+	return selection
+}
+
+func (i *ReceiverInfo) selectVideoFrameRate(requested int) (int, error) {
+	if requested < 0 {
+		return 0, fmt.Errorf("video frame rate cannot be negative")
+	}
+	advertised := 0
+	if i != nil && len(i.Displays) > 0 && i.Displays[0].MaxFPS > 0 {
+		advertised = int(i.Displays[0].MaxFPS)
+	}
+	if requested > 0 {
+		if advertised > 0 && requested > advertised {
+			return 0, fmt.Errorf("requested %d fps exceeds receiver maximum %d fps", requested, advertised)
+		}
+		return requested, nil
+	}
+	return i.RecommendedVideoFPS(), nil
 }
 
 // highResolutionVideoCanvas implements the high-resolution display-size gate.

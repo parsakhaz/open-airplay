@@ -373,6 +373,12 @@ func TestCaptureBitrateUsesReceiverSize(t *testing.T) {
 	if got := captureBitrateKbps(CaptureConfig{FPS: 30, MaxWidth: 1280, MaxHeight: 720}); got != 1843 {
 		t.Fatalf("720p receiver auto bitrate = %d, want 1843", got)
 	}
+	if got := captureBitrateKbps(CaptureConfig{FPS: 60, MaxWidth: 1440, MaxHeight: 900}); got != 5184 {
+		t.Fatalf("1440x900 native auto bitrate = %d, want 5184", got)
+	}
+	if got := captureBitrateKbps(CaptureConfig{FPS: 60, MaxWidth: 1920, MaxHeight: 1080}); got != 8294 {
+		t.Fatalf("1080p60 auto bitrate = %d, want 8294", got)
+	}
 	if got := captureBitrateKbps(CaptureConfig{FPS: 30, MaxWidth: 1280}); got != 4147 {
 		t.Fatalf("partial receiver size auto bitrate = %d, want 1080p fallback 4147", got)
 	}

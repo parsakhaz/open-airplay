@@ -336,7 +336,7 @@ func PrepareTestCapture(ctx context.Context, cfg CaptureConfig) (*CapturePrepara
 // Start launches the prepared encoder using the supplied nominal receiver
 // canvas. Zero dimensions leave the captured source at its native size.
 func (p *CapturePreparation) Start(width, height int) (*ScreenCapture, error) {
-	return p.startWithContextAndCodec(nil, width, height, "")
+	return p.startWithContextAndCodec(nil, width, height, 0, "")
 }
 
 // StartWithContext is Start with an optional lifetime context for the launched
@@ -344,23 +344,36 @@ func (p *CapturePreparation) Start(width, height int) (*ScreenCapture, error) {
 // daemon capture groups use an independent context so the encoder can outlive
 // the receiver which happened to create that shared group.
 func (p *CapturePreparation) StartWithContext(lifetime context.Context, width, height int) (*ScreenCapture, error) {
-	return p.startWithContextAndCodec(lifetime, width, height, "")
+	return p.startWithContextAndCodec(lifetime, width, height, 0, "")
 }
 
 // StartWithCodec launches an automatic preparation after receiver negotiation
 // has selected one concrete codec. Explicit preparations accept only their
 // configured codec, preventing the capture and AirPlay framing from diverging.
 func (p *CapturePreparation) StartWithCodec(width, height int, codec VideoCodec) (*ScreenCapture, error) {
-	return p.startWithContextAndCodec(nil, width, height, codec)
+	return p.startWithContextAndCodec(nil, width, height, 0, codec)
 }
 
 // StartWithContextAndCodec combines StartWithContext and StartWithCodec for
 // daemon capture groups whose encoder may outlive the receiver that created it.
 func (p *CapturePreparation) StartWithContextAndCodec(lifetime context.Context, width, height int, codec VideoCodec) (*ScreenCapture, error) {
-	return p.startWithContextAndCodec(lifetime, width, height, codec)
+	return p.startWithContextAndCodec(lifetime, width, height, 0, codec)
 }
 
-func (p *CapturePreparation) startWithContextAndCodec(lifetime context.Context, width, height int, selected VideoCodec) (*ScreenCapture, error) {
+// StartWithProfile launches the prepared encoder with one receiver-negotiated
+// canvas, frame rate, and codec. A positive profile FPS replaces the preflight
+// value immediately before this single-use preparation starts.
+func (p *CapturePreparation) StartWithProfile(profile VideoProfile) (*ScreenCapture, error) {
+	return p.startWithContextAndCodec(nil, profile.Width, profile.Height, profile.FPS, profile.Codec)
+}
+
+// StartWithContextAndProfile is StartWithProfile with an optional lifetime
+// context for a shared capture whose encoder may outlive its first receiver.
+func (p *CapturePreparation) StartWithContextAndProfile(lifetime context.Context, profile VideoProfile) (*ScreenCapture, error) {
+	return p.startWithContextAndCodec(lifetime, profile.Width, profile.Height, profile.FPS, profile.Codec)
+}
+
+func (p *CapturePreparation) startWithContextAndCodec(lifetime context.Context, width, height, fps int, selected VideoCodec) (*ScreenCapture, error) {
 	if p == nil {
 		return nil, fmt.Errorf("capture preparation is nil")
 	}
@@ -401,6 +414,9 @@ func (p *CapturePreparation) startWithContextAndCodec(lifetime context.Context, 
 	p.used = true
 	cfg.MaxWidth = width
 	cfg.MaxHeight = height
+	if fps > 0 {
+		cfg.FPS = fps
+	}
 	kind := p.kind
 	captureCtx := lifetime
 	if captureCtx == nil {

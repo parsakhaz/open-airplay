@@ -98,6 +98,23 @@ func TestValidateWindowsCaptureFlags(t *testing.T) {
 	}
 }
 
+func TestValidateVideoRateFlags(t *testing.T) {
+	for _, test := range []struct {
+		fps, bitrate int
+		wantErr      bool
+	}{
+		{fps: 0, bitrate: 0},
+		{fps: 60, bitrate: 5184},
+		{fps: -1, bitrate: 0, wantErr: true},
+		{fps: 60, bitrate: -1, wantErr: true},
+	} {
+		err := validateVideoRateFlags(test.fps, test.bitrate)
+		if (err != nil) != test.wantErr {
+			t.Errorf("validateVideoRateFlags(%d, %d) error = %v, wantErr=%t", test.fps, test.bitrate, err, test.wantErr)
+		}
+	}
+}
+
 func TestParsePortRange(t *testing.T) {
 	for _, test := range []struct {
 		name       string

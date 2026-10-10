@@ -459,7 +459,7 @@ func (c *AirPlayClient) closeUnsafeMirrorControlConnection() {
 }
 
 // setupMirrorSession negotiates the mirroring stream with the Apple TV.
-func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig, prepareVideoCapture func(width, height int, codec VideoCodec) (VideoPreparationResult, error), captureMayReportMinimumLead bool) (*MirrorSession, error) {
+func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig, prepareVideoCapture func(profile VideoProfile) (VideoPreparationResult, error), captureMayReportMinimumLead bool) (*MirrorSession, error) {
 	if err := ValidateVideoCodec(string(cfg.VideoCodec)); err != nil {
 		return nil, err
 	}
@@ -763,9 +763,13 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 		if videoPrepared {
 			return nil
 		}
-		selection, selectionErr := info.selectVideo(cfg.VideoCodec, cfg.AutomaticHEVCAvailable)
+		selection, selectionErr := info.selectVideoForSource(cfg.VideoCodec, cfg.AutomaticHEVCAvailable, cfg.SourceWidth, cfg.SourceHeight)
 		if selectionErr != nil {
 			return selectionErr
+		}
+		fps, fpsErr := info.selectVideoFrameRate(cfg.FPS)
+		if fpsErr != nil {
+			return fpsErr
 		}
 		if selection.codec == VideoCodecHEVC && cfg.VideoCodec == VideoCodecAuto && audioSetupCommitted &&
 			!targetLatencyIsExplicit() && (cfg.MeasuredVideoLatency > latencies.video || captureMayReportMinimumLead) {
@@ -773,7 +777,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 			// latencyMax has been accepted. Keep the descriptor and TimeAnnounce
 			// coherent by retaining the nominal H.264 path for this session rather
 			// than selecting a calibrated HEVC clock too late.
-			selection, selectionErr = info.selectVideo(VideoCodecH264, false)
+			selection, selectionErr = info.selectVideoForSource(VideoCodecH264, false, cfg.SourceWidth, cfg.SourceHeight)
 			if selectionErr != nil {
 				return selectionErr
 			}
@@ -782,7 +786,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 		prepareSelection := func(selected videoSelection) (time.Duration, error) {
 			canvasW, canvasH := selected.width, selected.height
 			maxW, maxH := info.MaxVideoSize()
-			dbg("[SETUP] receiver video canvas: %dx%d (maximum %dx%d, codec=%s, requested=%s: %s)", canvasW, canvasH, maxW, maxH, selected.codec, normalizeVideoCodec(cfg.VideoCodec), selected.reason)
+			dbg("[SETUP] receiver video profile: %dx%d@%dfps (maximum %dx%d, codec=%s, requested=%s: %s)", canvasW, canvasH, fps, maxW, maxH, selected.codec, normalizeVideoCodec(cfg.VideoCodec), selected.reason)
 			minimumVideoLead := time.Duration(0)
 			if selected.codec == VideoCodecHEVC {
 				minimumVideoLead = cfg.MeasuredVideoLatency
@@ -790,9 +794,10 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 			if prepareVideoCapture == nil {
 				return minimumVideoLead, nil
 			}
-			result, err := prepareVideoCapture(canvasW, canvasH, selected.codec)
+			profile := VideoProfile{Width: canvasW, Height: canvasH, FPS: fps, Codec: selected.codec}
+			result, err := prepareVideoCapture(profile)
 			if err != nil {
-				return 0, fmt.Errorf("prepare %dx%d video capture: %w", canvasW, canvasH, err)
+				return 0, fmt.Errorf("prepare %dx%d@%dfps video capture: %w", canvasW, canvasH, fps, err)
 			}
 			if result.MinimumVideoLead > minimumVideoLead {
 				minimumVideoLead = result.MinimumVideoLead
@@ -804,7 +809,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 		if prepareErr != nil && cfg.VideoCodec == VideoCodecAuto && selection.codec == VideoCodecHEVC &&
 			errors.Is(prepareErr, ErrAutomaticVideoCodecUnavailable) {
 			dbg("[SETUP] automatic high-resolution capture failed; retrying the nominal H.264 canvas: %v", prepareErr)
-			selection, selectionErr = info.selectVideo(VideoCodecH264, false)
+			selection, selectionErr = info.selectVideoForSource(VideoCodecH264, false, cfg.SourceWidth, cfg.SourceHeight)
 			if selectionErr != nil {
 				return selectionErr
 			}
