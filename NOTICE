@@ -125,7 +125,26 @@ Runtime bundled by the Windows installer (engine/stage-runtime.sh)
   commit in engine/UXPLAY_PIN). The MSYS2 packages' sources are at https://github.com/msys2/MINGW-packages
   and https://repo.msys2.org/mingw/sources/ for the versions listed above.
 
-Sender sidecar
+FairPlay desktop mirror sender (Go; cmd/open-airplay, internal/airplay, internal/daemon)
+- The AirPlay sender protocol core, capture abstraction, daemon, command-line tools and their tests
+  were imported from doubletake:
+    Project:  omarroth/doubletake, https://github.com/omarroth/doubletake
+    Revision: 5e2f1cbe3e1070bcefec8e549c7baf884727bc00 (2026-10-04)
+    License:  GNU Lesser General Public License v3.0 or later
+  LGPL-3.0 lets that code be conveyed under the GNU GPL v3; in open-airplay it is distributed under
+  GPL-3.0 (see LICENSE) with this notice recording its origin and original license. Local changes
+  (the Windows capture backend, display selection, naming, documentation and tests) are in this
+  repository's Git history.
+- FairPlay provenance: doubletake credits prior AirPlay reverse-engineering work, including UxPlay and
+  related receiver projects. Its FairPlay SAP implementation contains reverse-engineered white-box
+  cryptographic material (see doubletake issue #59). FairPlay SAP authenticates an AirPlay sender; it is
+  not FairPlay Streaming DRM and does not decrypt protected commercial media. Review this provenance
+  before any binary release.
+- Go dependencies: versions and checksums are in go.mod and go.sum.
+- The Windows capture backend invokes an installed FFmpeg build (not vendored, not bundled); FFmpeg and
+  its codecs are licensed separately by their authors.
+
+Media cast sidecar
 - pyatv 0.18, https://github.com/postlund/pyatv (MIT), and its dependencies installed from PyPI.
   The installer does not yet bundle the sender.
 
