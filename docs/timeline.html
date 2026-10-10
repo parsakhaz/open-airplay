@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apple Interop Timeline</title>
+<meta name="description" content="How open AirPlay and AirDrop came to be: fifteen years of public reverse-engineering work, from shairport (2011) to open-airplay and open-airdrop-windows (2026).">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --hairline: #d2d2d7;
+    --link: #0066cc;
+    --receiver: #0071e3;
+    --sender: #8944ab;
+    --awdl: #248a3d;
+    --project: #c93400;
+    --chip-receiver: #e8f1fc;
+    --chip-sender: #f3ebf7;
+    --chip-awdl: #e8f4eb;
+    --chip-project: #fcede6;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #000000;
+      --surface: #1c1c1e;
+      --text: #f5f5f7;
+      --muted: #a1a1a6;
+      --hairline: #38383a;
+      --link: #2997ff;
+      --receiver: #409cff;
+      --sender: #c787e6;
+      --awdl: #4fc068;
+      --project: #ff8a4c;
+      --chip-receiver: #10243d;
+      --chip-sender: #2a1a33;
+      --chip-awdl: #12291a;
+      --chip-project: #3a1d0f;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #000000;
+    --surface: #1c1c1e;
+    --text: #f5f5f7;
+    --muted: #a1a1a6;
+    --hairline: #38383a;
+    --link: #2997ff;
+    --receiver: #409cff;
+    --sender: #c787e6;
+    --awdl: #4fc068;
+    --project: #ff8a4c;
+    --chip-receiver: #10243d;
+    --chip-sender: #2a1a33;
+    --chip-awdl: #12291a;
+    --chip-project: #3a1d0f;
+    --shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 4px; }
+
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 16px; }
+
+  header.wrap { padding-top: 72px; padding-bottom: 32px; }
+  .eyebrow { margin: 0 0 8px; color: var(--muted); font-size: 15px; font-weight: 600; letter-spacing: .01em; }
+  h1 {
+    margin: 0;
+    font-size: clamp(34px, 6vw, 56px);
+    line-height: 1.05;
+    letter-spacing: -0.025em;
+    font-weight: 700;
+    text-wrap: balance;
+  }
+  .lede { margin: 16px 0 0; max-width: 40em; color: var(--muted); font-size: 19px; line-height: 1.45; text-wrap: pretty; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 28px 0 0; padding: 0; list-style: none; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 13px; font-weight: 600; line-height: 1.5; white-space: nowrap;
+  }
+  .chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .t-receiver { color: var(--receiver); background: var(--chip-receiver); }
+  .t-sender   { color: var(--sender);   background: var(--chip-sender); }
+  .t-awdl     { color: var(--awdl);     background: var(--chip-awdl); }
+  .t-project  { color: var(--project);  background: var(--chip-project); }
+
+  .card {
+    background: var(--surface);
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--hairline);
+  }
+  @media (prefers-color-scheme: light) { .card { border-color: transparent; } }
+  :root[data-theme="light"] .card { border-color: transparent; }
+
+  .overview { margin: 8px 0 56px; padding: 20px 20px 12px; }
+  .overview h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; color: var(--muted); }
+  .overview .scroller { overflow-x: auto; margin: 0 -8px; padding: 0 8px; -webkit-overflow-scrolling: touch; }
+  .overview svg { display: block; width: 100%; min-width: 640px; height: auto; overflow: visible; }
+  .overview .axis { stroke: var(--hairline); stroke-width: 1; }
+  .overview .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .overview .lane-label { fill: var(--muted); font-size: 11px; font-weight: 600; }
+  .overview .dot { stroke: var(--surface); stroke-width: 2; transition: r .15s ease; }
+  .overview a:hover .dot, .overview a:focus .dot { r: 8; }
+  .overview a:focus { outline: none; }
+  .overview a:focus-visible .dot { stroke: var(--text); }
+  .overview .note { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+
+  .year { margin: 0 0 40px; }
+  .year > h2 {
+    position: sticky; top: 0; z-index: 1;
+    margin: 0 0 12px; padding: 10px 0;
+    font-size: 28px; font-weight: 700; letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    backdrop-filter: saturate(180%) blur(20px);
+  }
+  ol.events { list-style: none; margin: 0; padding: 0 0 0 22px; border-left: 2px solid var(--hairline); }
+  .event { position: relative; margin: 0 0 14px; padding: 18px 20px; scroll-margin-top: 64px; }
+  .event::before {
+    content: ""; position: absolute; left: -30px; top: 24px;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--dot); box-shadow: 0 0 0 4px var(--bg);
+  }
+  .event:target { outline: 2px solid var(--dot); outline-offset: 2px; }
+  .event[data-track="receiver"] { --dot: var(--receiver); }
+  .event[data-track="sender"]   { --dot: var(--sender); }
+  .event[data-track="awdl"]     { --dot: var(--awdl); }
+  .event[data-track="project"]  { --dot: var(--project); }
+  .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 6px; }
+  .meta time { color: var(--muted); font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .event h3 { margin: 0; font-size: 20px; line-height: 1.3; font-weight: 650; letter-spacing: -0.01em; }
+  .who { margin: 2px 0 0; color: var(--muted); font-size: 15px; }
+  .event p.what { margin: 8px 0 0; text-wrap: pretty; }
+  .src { margin: 8px 0 0; font-size: 14px; color: var(--muted); }
+  .src a { word-break: break-word; }
+  .event.us { background: linear-gradient(var(--chip-project), var(--chip-project)) padding-box; }
+
+  footer.wrap { padding-top: 24px; padding-bottom: 72px; }
+  footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--hairline); }
+  footer p { margin: 0 0 10px; max-width: 46em; }
+
+  @media (max-width: 560px) {
+    header.wrap { padding-top: 48px; }
+    .lede { font-size: 17px; }
+    .event { padding: 16px; }
+    .event h3 { font-size: 18px; }
+    .overview { padding: 16px 12px 8px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  @media print {
+    .year > h2 { position: static; backdrop-filter: none; }
+    .card { box-shadow: none; border-color: #ccc; }
+  }
+</style>
+</head>
+<body>
+<header class="wrap">
+  <p class="eyebrow">open-airplay · open-airdrop-windows</p>
+  <h1>Fifteen years of opening up AirPlay and AirDrop</h1>
+  <p class="lede">These projects stand on public, open-source reverse-engineering work by many people. This page traces that work, from the first open AirTunes receiver in 2011 to the Windows app built on it in 2026.</p>
+  <ul class="legend" aria-label="Tracks">
+    <li class="chip t-receiver">AirPlay receivers</li>
+    <li class="chip t-sender">AirPlay senders &amp; clients</li>
+    <li class="chip t-awdl">AWDL &amp; AirDrop</li>
+    <li class="chip t-project">This project</li>
+  </ul>
+</header>
+
+<main class="wrap">
+  <section class="card overview" aria-labelledby="ov-title">
+    <h2 id="ov-title">At a glance</h2>
+    <div class="scroller" tabindex="0" aria-label="Timeline overview, scrolls sideways on small screens">
+      <svg id="overview" role="img" aria-label="Milestones plotted by year from 2011 to 2026 in four lanes. The full list follows below."></svg>
+    </div>
+    <p class="note">Each dot links to its entry below.</p>
+  </section>
+
+  <section class="year" aria-labelledby="y2011">
+    <h2 id="y2011">2011</h2>
+    <ol class="events">
+      <li class="card event" id="shairport" data-track="receiver" data-date="2011-04">
+        <div class="meta"><time datetime="2011-04">April 2011</time><span class="chip t-receiver">Receiver</span></div>
+        <h3><a href="https://github.com/abrasive/shairport">shairport</a></h3>
+        <p class="who">James Laird</p>
+        <p class="what">An open AirTunes (RAOP) receiver that emulates an AirPort Express, built on keys recovered from the device's firmware. It let iTunes and iOS stream audio to ordinary computers with no Apple hardware in the middle.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="year" aria-labelledby="y2012">
+    <h2 id="y2012">2012</h2>
+    <ol class="events">
+      <li class="card event" id="shairplay" data-track="receiver" data-date="2012-03">
+        <div class="meta"><time datetime="2012-03">March 2012</time><span class="chip t-receiver">Receiver</span></div>
+        <h3><a href="https://github.com/juhovh/shairplay">ShairPlay</a></h3>
+        <p class="who">Juho Vähä-Herttua and contributors</p>
+        <p class="what">A reusable AirPlay and RAOP server library. Much of the later open mirroring code, including RPiPlay's, grew from it.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="year" aria-labelledby="y2014">
+    <h2 id="y2014">2014</h2>
+    <ol class="events">
+      <li class="card event" id="shairport-sync" data-track="receiver" data-date="2014-04">
+        <div class="meta"><time datetime="2014-04">April 2014</time><span class="chip t-receiver">Receiver</span></div>
+        <h3><a href="https://github.com/mikebrady/shairport-sync">shairport-sync</a></h3>
+        <p class="who">Mike Brady</p>
+        <p class="what">A fork of shairport that keeps audio in sync across multiple rooms, and became the long-lived successor once shairport stopped being maintained.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="year" aria-labelledby="y2015">
+    <h2 id="y2015">2015</h2>
+    <ol class="events">
+      <li class="card event" id="playfair" data-track="receiver" data-date="2015-04">
+        <div class="meta"><time datetime="2015-04">April 2015</time><span class="chip t-receiver">Receiver</span></div>
+        <h3><a href="https://github.com/EstebanKubata/playfair">playfair</a></h3>
+        <p class="who">EstebanKubata</p>
+        <p class="what">A small GPL library that handles the FairPlay setup step a mirroring receiver must answer. RPiPlay and UxPlay both ship it.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="year" aria-labelledby="y2017">
+    <h2 id="y2017">2017</h2>
+    <ol class="events">
+      <li class="card event" id="pyatv" data-track="sender" data-date="2017-02">
+        <div class="meta"><time datetime="2017-02">February 2017</time><span class="chip t-sender">Client</span></div>
+        <h3><a href="https://github.com/postlund/pyatv">pyatv</a></h3>
+        <p class="who">Pierre Ståhl · <a href="https://pyatv.dev">pyatv.dev</a></p>
+        <p class="what">A Python client library for Apple TV and AirPlay devices: discovery, pairing, remote control and streaming, with thorough protocol documentation.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="year" aria-labelledby="y2018">
+    <h2 id="y2018">2018</h2>
+    <ol class="events">
+      <li class="card event" id="awdl-paper" data-track="awdl" data-date="2018-08">
+        <div class="meta"><time datetime="2018-08">August 2018</time><span class="chip t-awdl">AWDL</span></div>
+        <h3><a href="https://arxiv.org/abs/1808.03156">“One Billion Apples’ Secret Sauce”</a></h3>
+        <p class="who">Milan Stute, David Kreitschmann, Matthias Hollick · SEEMOO Lab, TU Darmstadt</p>
+        <p class="what">A detailed public account of Apple Wireless Direct Link (AWDL), the previously undocumented Wi-Fi protocol under AirDrop and AirPlay, worked out from binary and runtime analysis. Presented at ACM MobiCom ’18 that autumn.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="year" aria-labelledby="y2019">
+    <h2 id="y2019">2019</h2>
+    <ol class="events">
+      <li class="card event" id="dsafa22" data-track="receiver" data-date="2019-02">
+        <div class="meta"><time datetime="2019-02">By early 2019</time><span class="chip t-receiver">Receiver</span></div>
+        <h3>AirplayServer</h3>
+        <p class="who">dsafa22</p>
+        <p class="what">An AirPlay mirroring server for Android, built on ShairPlay. RPiPlay is a port of it. The original repository is no longer online; RPiPlay's README documents its role.</p>
+      </li>
+      <li class="card event" id="rpiplay" data-track="receiver" data-date="2019-05">
+        <div class="meta"><time datetime="2019-05">May 2019</time><span class="chip t-receiver">Receiver</span></div>
+        <h3><a href="https://github.com/FD-/RPiPlay">RPiPlay</a></h3>
+        <p class="who">FD-</p>
+        <p class="what">An open AirPlay screen-mirroring receiver for the Raspberry Pi, with a careful write-up of how the protocol changed over the years.</p>
+      </li>
+      <li class="card event" id="owl" data-track="awdl" data-date="2019-05">
+        <div class="meta"><time datetime="2019-05">May 2019</time><span class="chip t-awdl">AWDL</span></div>
+        <h3><a href="https://github.com/seemoo-lab/owl">OWL</a> and <a href="https://github.com/seemoo-lab/opendrop">OpenDrop</a></h3>
+        <p class="who">SEEMOO Lab, TU Darmstadt · Milan Stute, Alexander Heinrich and colleagues</p>
+        <p class="what">Open Wireless Link, an open AWDL implementation in C, and OpenDrop, an open AirDrop implementation in Python. Together they brought AirDrop to Linux.</p>
+      </li>
+      <li class="card event" id="usenix19" data-track="awdl" data-date="2019-08">
+        <div class="meta"><time datetime="2019-08">August 2019</time><span class="chip t-awdl">AWDL</span></div>
+        <h3><a href="https://www.usenix.org/conference/usenixsecurity19/presentation/stute">“A Billion Open Interfaces for Eve and Mallory”</a></h3>
+        <p class="who">Stute, Narain, Mariotto, Heinrich, Kreitschmann, Noubir, Hollick · USENIX Security ’19</p>
+        <p class="what">A security analysis of AWDL and AirDrop, including the Bluetooth LE trigger that wakes AirDrop, which open implementations rely on.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="year" aria-labelledby="y2020">
+    <h2 id="y2020">2020</h2>
+    <ol class="events">
+      <li class="card event" id="uxplay" data-track="receiver" data-date="2020-04">
+        <div class="meta"><time datetime="2020-04">April 2020</time><span class="chip t-receiver">Receiver</span></div>
+        <h3><a href="https://github.com/antimof/UxPlay">UxPlay</a></h3>
+        <p class="who">antimof</p>
+        <p class="what">An AirPlay mirroring receiver for Unix desktops, built from the OpenMAX-based RPiPlay's code, rendering through GStreamer instead.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="year" aria-labelledby="y2021">
+    <h2 id="y2021">2021</h2>
+    <ol class="events">
+      <li class="card event" id="uxplay-fdh2" data-track="receiver" data-date="2021-07">
+        <div class="meta"><time datetime="2021-07">July 2021</time><span class="chip t-receiver">Receiver</span></div>
+        <h3><a href="https://github.com/FDH2/UxPlay">UxPlay moves to FDH2</a></h3>
+        <p class="who">FDH2</p>
+        <p class="what">Active development continues in a new home, adding AirPlay audio-only streaming and HLS video, and running on Linux, macOS, BSD and Windows. It is the receiver engine open-airplay builds on.</p>
+      </li>
+      <li class="card event" id="privatedrop" data-track="awdl" data-date="2021-08">
+        <div class="meta"><time datetime="2021-08">August 2021</time><span class="chip t-awdl">AirDrop</span></div>
+        <h3><a href="https://www.usenix.org/conference/usenixsecurity21/presentation/heinrich">PrivateDrop</a></h3>
+        <p class="who">Heinrich, Hollick, Schneider, Stute, Weinert · USENIX Security ’21</p>
+        <p class="what">Found design flaws that let attackers learn the phone numbers and email addresses of AirDrop senders and receivers, and proposed a privacy-preserving fix with an open implementation.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="year" aria-labelledby="y2022">
+    <h2 id="y2022">2022</h2>
+    <ol class="events">
+      <li class="card event" id="ssync-ap2" data-track="receiver" data-date="2022-10">
+        <div class="meta"><time datetime="2022-10">October 2022</time><span class="chip t-receiver">Receiver</span></div>
+        <h3><a href="https://github.com/mikebrady/shairport-sync/releases/tag/4.1">shairport-sync 4.1 adds AirPlay 2</a></h3>
+        <p class="who">Mike Brady and contributors</p>
+        <p class="what">Open-source AirPlay 2 audio playback, released as “Really Big Update — AirPlay 2!”.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="year" aria-labelledby="y2026">
+    <h2 id="y2026">2026</h2>
+    <ol class="events">
+      <li class="card event" id="doubletake" data-track="sender" data-date="2026-04">
+        <div class="meta"><time datetime="2026-04">April 2026</time><span class="chip t-sender">Sender</span></div>
+        <h3><a href="https://github.com/omarroth/doubletake">doubletake</a></h3>
+        <p class="who">Omar Roth · <a href="https://omar.yt">omar.yt</a></p>
+        <p class="what">An open AirPlay screen-mirroring <em>sender</em> for Linux, with FairPlay SAP authentication, PIN pairing and an encrypted video stream that current Apple TVs accept. open-airplay's Windows → Apple TV mirroring is ported from it.</p>
+      </li>
+      <li class="card event" id="doubletake-fp" data-track="sender" data-date="2026-07">
+        <div class="meta"><time datetime="2026-07">July 2026</time><span class="chip t-sender">Sender</span></div>
+        <h3><a href="https://github.com/omarroth/doubletake/pull/14">doubletake reimplements FairPlay SAP</a></h3>
+        <p class="who">Omar Roth</p>
+        <p class="what">A reverse-engineered implementation replaces an earlier one that ran a carved-out piece of Apple's code under an ARM64 emulator. Releases from v0.4.0 (July 2026) are licensed LGPL-3.0-or-later; v0.3.2 and earlier were GPL-3.0-or-later. On provenance, see <a href="https://github.com/omarroth/doubletake/issues/59">issue #59</a> and the note below.</p>
+      </li>
+      <li class="card event" id="jed-owl" data-track="awdl" data-date="2026-07">
+        <div class="meta"><time datetime="2026-07">July 2026</time><span class="chip t-awdl">AWDL</span></div>
+        <h3><a href="https://github.com/jedbillyb/owl">OWL for MediaTek</a></h3>
+        <p class="who">Jed Blenkhorn</p>
+        <p class="what">A fork of OWL with monitor-mode workarounds so the built-in MediaTek MT7921 can do AirDrop without a separate USB adapter.</p>
+      </li>
+      <li class="card event" id="omdrop" data-track="awdl" data-date="2026-09">
+        <div class="meta"><time datetime="2026-09">September 2026</time><span class="chip t-awdl">AirDrop</span></div>
+        <h3><a href="https://github.com/brentkearney/omdrop-plugin">omdrop</a> and <a href="https://github.com/brentkearney/omdrop-awdl">omdrop-awdl</a></h3>
+        <p class="who">Brent (brentkearney)</p>
+        <p class="what">AirDrop send and receive on Apple Silicon Macs running Omarchy (Linux), with AWDL support for their Broadcom BCM4387 Wi-Fi.</p>
+      </li>
+      <li class="card event" id="omdrop-owl" data-track="awdl" data-date="2026-10">
+        <div class="meta"><time datetime="2026-10">October 2026</time><span class="chip t-awdl">AirDrop</span></div>
+        <h3><a href="https://github.com/t4t5/omdrop-owl">omdrop-owl</a></h3>
+        <p class="who">Tristan (t4t5) · <a href="https://t4t5.com">t4t5.com</a></p>
+        <p class="what">AirDrop in both directions on a MediaTek MT7925, as in the Framework 13, running OWL on the access point's own channel so Wi-Fi stays connected. The direct inspiration for open-airdrop-windows.</p>
+      </li>
+      <li class="card event us" id="this-project" data-track="project" data-date="2026-10">
+        <div class="meta"><time datetime="2026-10">October 2026</time><span class="chip t-project">This project</span></div>
+        <h3><a href="https://github.com/parsakhaz/open-airplay">open-airplay</a> and <a href="https://github.com/parsakhaz/open-airdrop-windows">open-airdrop-windows</a></h3>
+        <p class="who">parsakhaz and contributors</p>
+        <p class="what">One Windows app for Apple interop: receive AirPlay on a PC, mirror the Windows desktop to an Apple TV with real FairPlay mirroring, and (in progress) AirDrop on the built-in Wi-Fi card. GPL-3.0.</p>
+      </li>
+    </ol>
+  </section>
+</main>
+
+<footer class="wrap">
+  <p><strong>How these dates were chosen.</strong> Each date is a public release, a paper's publication, or, where nothing earlier is documented, the creation date of the project's public repository. Work often began earlier than it was published. Every link points to the project's own repository, its authors' site, or the paper itself, checked in October 2026.</p>
+  <p><strong>On FairPlay provenance.</strong> In doubletake <a href="https://github.com/omarroth/doubletake/issues/59">issue #59</a>, a user asked how its FairPlay SAP tables and constants were derived. The author answered that the current implementation is reverse-engineered and contains no Apple code other than the constants needed to interoperate with Apple's receivers. We have not audited this independently. FairPlay SAP authenticates a sender; it is not FairPlay Streaming DRM.</p>
+  <p><strong>Not here?</strong> If we missed or misdescribed your work, please <a href="https://github.com/parsakhaz/open-airplay/issues">open an issue</a>. SEEMOO's former project site, owlink.org, is no longer associated with OWL, so it isn't linked.</p>
+</footer>
+
+<script>
+(function () {
+  var svg = document.getElementById('overview');
+  if (!svg) return;
+  var NS = 'http://www.w3.org/2000/svg';
+  var lanes = [
+    { key: 'receiver', label: 'Receivers' },
+    { key: 'sender',   label: 'Senders' },
+    { key: 'awdl',     label: 'AWDL & AirDrop' },
+    { key: 'project',  label: 'This project' }
+  ];
+  var start = 2011, end = 2027;
+  var W = 860, left = 112, right = 18, top = 14, laneH = 30, minGap = 13;
+  var H = top + lanes.length * laneH + 26;
+  var span = W - left - right;
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+
+  function el(name, attrs, parent) {
+    var n = document.createElementNS(NS, name);
+    for (var k in attrs) n.setAttribute(k, attrs[k]);
+    (parent || svg).appendChild(n);
+    return n;
+  }
+  function x(t) { return left + (t - start) / (end - start) * span; }
+
+  var axisY = top + lanes.length * laneH;
+  for (var y = start; y <= 2026; y++) {
+    el('line', { class: 'axis', x1: x(y), x2: x(y), y1: top - 4, y2: axisY, 'stroke-dasharray': '2 4', opacity: .6 });
+    if (y % 2 === 1 || y === 2026) {
+      var t = el('text', { class: 'tick', x: x(y), y: axisY + 18, 'text-anchor': 'middle' });
+      t.textContent = y;
+    }
+  }
+  el('line', { class: 'axis', x1: left, x2: W - right, y1: axisY, y2: axisY });
+
+  var last = {};
+  lanes.forEach(function (lane, i) {
+    var cy = top + i * laneH + laneH / 2;
+    var lbl = el('text', { class: 'lane-label', x: 0, y: cy + 4 });
+    lbl.textContent = lane.label;
+    last[lane.key] = { cy: cy, x: -Infinity };
+  });
+
+  document.querySelectorAll('.event[data-date]').forEach(function (ev) {
+    var lane = last[ev.dataset.track];
+    if (!lane) return;
+    var parts = ev.dataset.date.split('-');
+    var cx = Math.max(x(+parts[0] + (+parts[1] - 0.5) / 12), lane.x + minGap);
+    lane.x = cx;
+    var a = el('a', { href: '#' + ev.id });
+    var title = el('title', {}, a);
+    title.textContent = ev.querySelector('time').textContent + ' — ' + ev.querySelector('h3').textContent;
+    el('circle', { class: 'dot', cx: cx.toFixed(1), cy: lane.cy, r: 6, fill: 'var(--' + ev.dataset.track + ')' }, a);
+  });
+})();
+</script>
+</body>
+</html>
