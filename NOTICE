@@ -1,0 +1,22 @@
+open-airplay is licensed under the GNU General Public License v3.0 (see LICENSE).
+
+Third-party components used by open-airplay:
+
+Receiver engine (built by engine/build-engine.sh, not vendored in this repository)
+- UxPlay 1.74 (pinned commit in engine/UXPLAY_PIN), https://github.com/FDH2/UxPlay — GPL-3.0
+  Includes playfair (GPL-3.0), llhttp (MIT) and a minimal mDNS responder (lib/mdnsd); see UxPlay's own notices.
+  open-airplay applies the patches in engine/patches/.
+- GStreamer 1.28 core, gst-plugins-base, gst-plugins-good, gst-plugins-bad, gst-libav (MSYS2 UCRT64 packages) — LGPL-2.1+
+  gst-libav links FFmpeg (LGPL-2.1+ as packaged by MSYS2).
+- libplist 2.7 — LGPL-2.1+
+- OpenSSL 3 — Apache-2.0 (compatible with GPL-3.0)
+- GLib 2 — LGPL-2.1+
+
+Sender sidecar
+- pyatv 0.18, https://github.com/postlund/pyatv — MIT (and its dependencies, installed from PyPI)
+
+Desktop shell
+- Tauri 2 and its Rust crates — MIT / Apache-2.0
+- serde, serde_json — MIT / Apache-2.0
+
+The installer that bundles these (package P7) must re-check this list against what it actually ships.
