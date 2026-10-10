@@ -95,6 +95,7 @@ func validateWindowsCaptureFlags(hwaccel, videoCodec string) error {
 
 func main() {
 	target := flag.String("target", "", "AirPlay receiver IP address or hostname (skip discovery)")
+	receiver := flag.String("receiver", "", "Exact receiver name or 1-based index from -list-receivers (discovery mode only)")
 	port := flag.Int("port", 7000, "AirPlay port")
 	code := flag.String("code", "", "Pairing PIN shown on the receiver, or the password set on it when \"Require Password\" is enabled; prefer $OPEN_AIRPLAY_CODE so it stays out of shell history and process listings")
 	credFile := flag.String("creds", airplay.DefaultCredentialsPath(), "Path to saved pairing credentials")
@@ -117,10 +118,14 @@ func main() {
 	x11WindowName := flag.String("x11-window-name", "", "X11 window name to capture; prefer -x11-window-id (non-Windows only)")
 	displayIndex := flag.Int("display", -1, "Windows display index to capture (omit for picker)")
 	listDisplays := flag.Bool("list-displays", false, "List active Windows displays and exit")
-	listReceivers := flag.Bool("list-receivers", false, "Discover screen-mirroring AirPlay receivers for five seconds and exit")
+	listReceivers := flag.Bool("list-receivers", false, "Discover all AirPlay receivers for five seconds, show mirroring capability, and exit")
 	captureSmoke := flag.Bool("capture-smoke", false, "Validate display capture through SPS/PPS/IDR and exit without connecting")
 	noCursor := flag.Bool("no-cursor", false, "Don't show the mouse cursor in the captured video")
 	flag.Parse()
+	consoleReader := bufio.NewReader(os.Stdin)
+	if *target != "" && *receiver != "" {
+		log.Fatal("-target and -receiver are mutually exclusive")
+	}
 	if runtime.GOOS == "windows" && *daemonize {
 		log.Fatal("-daemonize is not supported on Windows; run the sender in the foreground")
 	}
@@ -149,17 +154,12 @@ func main() {
 		if err != nil {
 			log.Fatalf("discover receivers: %v", err)
 		}
-		devices = mirrorCapableDevices(devices)
-		sort.Slice(devices, func(i, j int) bool {
-			return compareIPs(devices[i].IP, devices[j].IP) < 0
-		})
+		sortAirPlayDevices(devices)
 		if len(devices) == 0 {
-			fmt.Println("no screen-mirroring AirPlay receivers found")
+			fmt.Println("no AirPlay receivers found")
 			return
 		}
-		for index, device := range devices {
-			fmt.Printf("[%d] %s (%s) — %s:%d\n", index, device.Name, device.Model, device.IP, device.Port)
-		}
+		printReceivers(os.Stdout, devices)
 		return
 	}
 
@@ -180,7 +180,7 @@ func main() {
 		selectedDisplay, err = selectDisplay(
 			displays,
 			selectedDisplay,
-			bufio.NewReader(os.Stdin),
+			consoleReader,
 			os.Stdout,
 		)
 		if err != nil {
@@ -277,15 +277,19 @@ func main() {
 	var advertisement *airplay.AirPlayDevice
 	if *target != "" {
 		addr = *target
+		fmt.Printf("direct target: endpoint=%s (receiver identity will be verified after connection)\n",
+			net.JoinHostPort(addr, strconv.Itoa(*port)))
 	} else {
-		device, err := selectDevice(ctx)
+		device, err := selectDevice(ctx, *receiver, consoleReader, os.Stdout)
 		if err != nil {
 			log.Fatalf("discovery failed: %v", err)
 		}
 		addr = device.IP
 		*port = device.Port
 		advertisement = device
-		fmt.Printf("selected: %s (%s:%d)\n", device.Name, device.IP, device.Port)
+		fmt.Printf("selected receiver: name=%s model=%s endpoint=%s\n",
+			strconv.Quote(device.Name), strconv.Quote(device.Model),
+			net.JoinHostPort(device.IP, strconv.Itoa(device.Port)))
 	}
 
 	newClient := func() *airplay.AirPlayClient {
@@ -308,9 +312,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("get info failed: %v", err)
 	}
-	log.Printf("connected to: %s (model: %s, initialVolume: %.1f)", info.Name, info.Model, info.InitialVolume)
+	log.Printf("connected to: %q (model: %q, initialVolume: %.1f)", info.Name, info.Model, info.InitialVolume)
 	if credential == "" && info.RequiresPassword() {
-		credential = readCredential(bufio.NewReader(os.Stdin), "Enter the receiver's configured password: ")
+		credential = readCredential(consoleReader, fmt.Sprintf(
+			"\nPASSWORD REQUIRED for %s.\nEnter its configured password: ",
+			receiverPromptLabel(info.Name),
+		))
 		if credential == "" {
 			log.Fatal("password cannot be empty")
 		}
@@ -368,7 +375,7 @@ func main() {
 	}
 	pairWithCredential := func(value string, expectPIN bool) {
 		if value == "" {
-			value = credentialOrPrompt(credential, client, expectPIN)
+			value = credentialOrPrompt(credential, client, expectPIN, info.Name, consoleReader)
 		}
 		// AirPlay uses the same user-entered value for pair-setup and, on
 		// password-protected receivers, the later HTTP Digest challenge.
@@ -573,7 +580,10 @@ func main() {
 		// /info. They reveal it only by challenging the first media SETUP. Keep
 		// the completed pairing/FairPlay state and running capture, configure the
 		// cached Digest challenge, and retry this setup exactly once.
-		credential = readCredential(bufio.NewReader(os.Stdin), "Enter the code shown on the receiver, or its configured password: ")
+		credential = readCredential(consoleReader, fmt.Sprintf(
+			"\nPAIRING CREDENTIAL REQUIRED for %s.\nEnter the code shown there, or its configured password: ",
+			receiverPromptLabel(info.Name),
+		))
 		if credential == "" {
 			log.Fatal("receiver code/password cannot be empty")
 		}
@@ -639,28 +649,42 @@ func main() {
 // an on-screen PIN (or the user explicitly requested fresh pairing). A successful
 // /pair-pin-start response alone cannot distinguish a PIN from a fixed password,
 // so an unadvertised fallback keeps its prompt deliberately generic.
-func credentialOrPrompt(value string, client *airplay.AirPlayClient, expectPIN bool) string {
+func credentialOrPrompt(
+	value string,
+	client *airplay.AirPlayClient,
+	expectPIN bool,
+	receiverName string,
+	reader *bufio.Reader,
+) string {
 	if value != "" {
 		return value
 	}
 
-	reader := bufio.NewReader(os.Stdin)
 	displayErr := client.StartPINDisplay()
 	if displayErr != nil {
 		log.Printf("warning: failed to trigger PIN display: %v", displayErr)
 	}
-	credential := readCredential(reader, pairingCredentialPrompt(expectPIN, displayErr))
+	credential := readCredential(reader, pairingCredentialPrompt(receiverName, expectPIN, displayErr))
 	if credential == "" {
 		log.Fatal("pairing credential cannot be empty")
 	}
 	return credential
 }
 
-func pairingCredentialPrompt(expectPIN bool, displayErr error) string {
-	if expectPIN && displayErr == nil {
-		return "Enter the PIN shown on the receiver: "
+func receiverPromptLabel(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "the selected receiver"
 	}
-	return "Enter the receiver's configured password or pairing PIN: "
+	return strconv.Quote(name)
+}
+
+func pairingCredentialPrompt(receiverName string, expectPIN bool, displayErr error) string {
+	label := receiverPromptLabel(receiverName)
+	if expectPIN && displayErr == nil {
+		return fmt.Sprintf("\nPAIRING REQUIRED: a PIN should now be visible on %s.\nEnter that PIN here: ", label)
+	}
+	return fmt.Sprintf("\nPAIRING CREDENTIAL REQUIRED for %s.\nEnter its configured password or displayed pairing PIN: ", label)
 }
 
 func passwordRequiresPairing(info *airplay.ReceiverInfo) bool {
@@ -692,8 +716,13 @@ func readCredential(reader *bufio.Reader, prompt string) string {
 	return line
 }
 
-func selectDevice(ctx context.Context) (*airplay.AirPlayDevice, error) {
-	fmt.Println("searching for Apple TVs...")
+func selectDevice(
+	ctx context.Context,
+	selector string,
+	reader *bufio.Reader,
+	writer io.Writer,
+) (*airplay.AirPlayDevice, error) {
+	fmt.Fprintln(writer, "searching for AirPlay receivers...")
 	discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -701,43 +730,91 @@ func selectDevice(ctx context.Context) (*airplay.AirPlayDevice, error) {
 	if err != nil {
 		return nil, err
 	}
-	devices = mirrorCapableDevices(devices)
 	if len(devices) == 0 {
-		return nil, fmt.Errorf("no screen-mirroring AirPlay receivers found")
+		return nil, fmt.Errorf("no AirPlay receivers found")
 	}
+	sortAirPlayDevices(devices)
 
-	sort.Slice(devices, func(i, j int) bool {
-		return compareIPs(devices[i].IP, devices[j].IP) < 0
-	})
-
-	fmt.Println("\navailable devices:")
-	for i, d := range devices {
-		fmt.Printf("  [%d] %s (%s) - %s\n", i+1, d.Name, d.Model, d.IP)
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		fmt.Fprintln(writer, "\navailable receivers:")
+		printReceivers(writer, devices)
+		fmt.Fprint(writer, "\nSelect YOUR receiver by exact name or index (no default): ")
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return nil, fmt.Errorf("read receiver selection: %w", readErr)
+		}
+		selector = strings.TrimSpace(line)
 	}
-
-	fmt.Print("\nselect device [1]: ")
-	var input string
-	fmt.Scanln(&input)
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return &devices[0], nil
-	}
-
-	idx, err := strconv.Atoi(input)
-	if err != nil || idx < 1 || idx > len(devices) {
-		return nil, fmt.Errorf("invalid selection")
-	}
-	return &devices[idx-1], nil
+	return selectReceiver(devices, selector)
 }
 
-func mirrorCapableDevices(devices []airplay.AirPlayDevice) []airplay.AirPlayDevice {
-	result := make([]airplay.AirPlayDevice, 0, len(devices))
-	for _, device := range devices {
+func sortAirPlayDevices(devices []airplay.AirPlayDevice) {
+	sort.SliceStable(devices, func(i, j int) bool {
+		if comparison := compareIPs(devices[i].IP, devices[j].IP); comparison != 0 {
+			return comparison < 0
+		}
+		if devices[i].Port != devices[j].Port {
+			return devices[i].Port < devices[j].Port
+		}
+		return strings.ToLower(devices[i].Name) < strings.ToLower(devices[j].Name)
+	})
+}
+
+func printReceivers(writer io.Writer, devices []airplay.AirPlayDevice) {
+	for index, device := range devices {
+		mirroring := "no"
 		if device.SupportsScreen() {
-			result = append(result, device)
+			mirroring = "yes"
+		}
+		endpoint := net.JoinHostPort(device.IP, strconv.Itoa(device.Port))
+		fmt.Fprintf(writer, "[%d] name=%s model=%s mirroring=%s endpoint=%s\n",
+			index+1, strconv.Quote(device.Name), strconv.Quote(device.Model), mirroring, endpoint)
+	}
+}
+
+func selectReceiver(devices []airplay.AirPlayDevice, selector string) (*airplay.AirPlayDevice, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return nil, fmt.Errorf("receiver selection cannot be blank; choose your device by exact name or index")
+	}
+
+	// All-numeric selectors are always one-based list indices. This keeps a
+	// copied discovery index deterministic even if a receiver is literally
+	// named with digits.
+	if index, err := strconv.Atoi(selector); err == nil {
+		if index < 1 || index > len(devices) {
+			return nil, fmt.Errorf("receiver index %d is outside the discovered range 1-%d", index, len(devices))
+		}
+		return requireMirroringReceiver(devices, index-1)
+	}
+
+	matches := make([]int, 0, 1)
+	for index := range devices {
+		if devices[index].Name == selector {
+			matches = append(matches, index)
 		}
 	}
-	return result
+	if len(matches) > 1 {
+		indices := make([]string, 0, len(matches))
+		for _, index := range matches {
+			indices = append(indices, strconv.Itoa(index+1))
+		}
+		return nil, fmt.Errorf("receiver name %q is ambiguous at indices %s; choose an index from the latest discovery list",
+			selector, strings.Join(indices, ", "))
+	}
+	if len(matches) == 1 {
+		return requireMirroringReceiver(devices, matches[0])
+	}
+	return nil, fmt.Errorf("receiver %q was not found; use an exact name or index from -list-receivers", selector)
+}
+
+func requireMirroringReceiver(devices []airplay.AirPlayDevice, index int) (*airplay.AirPlayDevice, error) {
+	device := devices[index]
+	if !device.SupportsScreen() {
+		return nil, fmt.Errorf("receiver [%d] %q does not advertise screen-mirroring support", index+1, device.Name)
+	}
+	return &device, nil
 }
 
 func printDisplays(writer io.Writer, displays []airplay.Display) {

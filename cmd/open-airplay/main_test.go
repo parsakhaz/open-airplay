@@ -22,15 +22,62 @@ func TestDefaultCredentialBackend(t *testing.T) {
 	}
 }
 
-func TestMirrorCapableDevicesFiltersAudioOnlyReceivers(t *testing.T) {
+func TestPrintReceiversIncludesMirroringCapability(t *testing.T) {
 	devices := []airplay.AirPlayDevice{
-		{Name: "screen", Features: airplay.FeatureScreen},
-		{Name: "speaker", Features: airplay.FeatureAudio},
-		{Name: "second-screen", Features: airplay.FeatureScreen | airplay.FeatureAudio},
+		{Name: "Living Room", Model: "AppleTV14,1", IP: "192.0.2.10", Port: 7000, Features: airplay.FeatureScreen},
+		{Name: "Speaker", Model: "AudioAccessory6,1", IP: "192.0.2.11", Port: 7000, Features: airplay.FeatureAudio},
 	}
-	got := mirrorCapableDevices(devices)
-	if len(got) != 2 || got[0].Name != "screen" || got[1].Name != "second-screen" {
-		t.Fatalf("mirrorCapableDevices() = %#v", got)
+	var output strings.Builder
+	printReceivers(&output, devices)
+	for _, want := range []string{
+		`[1] name="Living Room" model="AppleTV14,1" mirroring=yes endpoint=192.0.2.10:7000`,
+		`[2] name="Speaker" model="AudioAccessory6,1" mirroring=no endpoint=192.0.2.11:7000`,
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("receiver list %q does not contain %q", output.String(), want)
+		}
+	}
+}
+
+func TestSelectReceiverRequiresExplicitMirroringTarget(t *testing.T) {
+	devices := []airplay.AirPlayDevice{
+		{Name: "Living Room", Features: airplay.FeatureScreen},
+		{Name: "Speaker", Features: airplay.FeatureAudio},
+		{Name: "Duplicate", Features: airplay.FeatureScreen},
+		{Name: "Duplicate", Features: airplay.FeatureScreen},
+		{Name: "1", Features: airplay.FeatureScreen},
+	}
+
+	for _, test := range []struct {
+		name       string
+		selector   string
+		wantName   string
+		wantErrSub string
+	}{
+		{name: "exact name", selector: "Living Room", wantName: "Living Room"},
+		{name: "name requires exact case", selector: "living room", wantErrSub: "was not found"},
+		{name: "numeric selector is always index", selector: "1", wantName: "Living Room"},
+		{name: "blank has no default", wantErrSub: "cannot be blank"},
+		{name: "audio only rejected", selector: "2", wantErrSub: "does not advertise screen-mirroring"},
+		{name: "ambiguous name rejected", selector: "Duplicate", wantErrSub: "ambiguous"},
+		{name: "missing name", selector: "Bedroom", wantErrSub: "was not found"},
+		{name: "index out of range", selector: "9", wantErrSub: "outside the discovered range"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := selectReceiver(devices, test.selector)
+			if test.wantErrSub != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErrSub) {
+					t.Fatalf("selectReceiver(%q) error = %v, want substring %q", test.selector, err, test.wantErrSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Name != test.wantName {
+				t.Fatalf("selectReceiver(%q) = %q, want %q", test.selector, got.Name, test.wantName)
+			}
+		})
 	}
 }
 
@@ -173,13 +220,13 @@ func TestPairingCredentialPrompt(t *testing.T) {
 		displayErr error
 		want       string
 	}{
-		{name: "advertised PIN displayed", expectPIN: true, want: "Enter the PIN shown on the receiver: "},
-		{name: "advertised PIN display failed", expectPIN: true, displayErr: errors.New("display failed"), want: "Enter the receiver's configured password or pairing PIN: "},
-		{name: "unknown mode accepted display request", want: "Enter the receiver's configured password or pairing PIN: "},
-		{name: "unknown mode rejected display request", displayErr: errors.New("not supported"), want: "Enter the receiver's configured password or pairing PIN: "},
+		{name: "advertised PIN displayed", expectPIN: true, want: "\nPAIRING REQUIRED: a PIN should now be visible on \"Living Room\".\nEnter that PIN here: "},
+		{name: "advertised PIN display failed", expectPIN: true, displayErr: errors.New("display failed"), want: "\nPAIRING CREDENTIAL REQUIRED for \"Living Room\".\nEnter its configured password or displayed pairing PIN: "},
+		{name: "unknown mode accepted display request", want: "\nPAIRING CREDENTIAL REQUIRED for \"Living Room\".\nEnter its configured password or displayed pairing PIN: "},
+		{name: "unknown mode rejected display request", displayErr: errors.New("not supported"), want: "\nPAIRING CREDENTIAL REQUIRED for \"Living Room\".\nEnter its configured password or displayed pairing PIN: "},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := pairingCredentialPrompt(test.expectPIN, test.displayErr); got != test.want {
+			if got := pairingCredentialPrompt("Living Room", test.expectPIN, test.displayErr); got != test.want {
 				t.Fatalf("prompt = %q, want %q", got, test.want)
 			}
 		})
