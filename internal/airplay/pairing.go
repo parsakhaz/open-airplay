@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -780,9 +779,8 @@ func (c *AirPlayClient) hapPairVerify(ctx context.Context) error {
 	c.PairKeys.WriteKey = c.encWriteKey
 	c.PairKeys.ReadKey = c.encReadKey
 
-	dbg("[PAIR-VERIFY] shared secret: %s...", hex.EncodeToString(shared[:16]))
-	dbg("[PAIR-VERIFY] writeKey: %s...", hex.EncodeToString(c.encWriteKey[:8]))
-	dbg("[PAIR-VERIFY] readKey:  %s...", hex.EncodeToString(c.encReadKey[:8]))
+	dbg("[PAIR-VERIFY] key material established: shared secret=%d bytes, writeKey=%d bytes, readKey=%d bytes",
+		len(shared), len(c.encWriteKey), len(c.encReadKey))
 
 	writeCipher, err := chacha20poly1305.New(c.encWriteKey)
 	if err != nil {

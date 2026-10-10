@@ -1027,7 +1027,7 @@ func (as *AudioStream) buildAudioPacketWithClearPrefixLocked(payload []byte, cle
 				dbg("[AUDIO] *** plaintext first 16: %02x", protectedPayload[:min(16, len(protectedPayload))])
 				dbg("[AUDIO] *** encrypted first 16: %02x", encryptedPayload[:min(16, len(encryptedPayload))])
 				dbg("[AUDIO] *** decrypted first 16: %02x", decrypted[:min(16, len(decrypted))])
-				dbg("[AUDIO] *** IV: %02x", as.aesIV)
+				dbg("[AUDIO] *** IV: %d bytes", len(as.aesIV))
 			}
 		}
 	}

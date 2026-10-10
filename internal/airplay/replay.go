@@ -68,8 +68,7 @@ func newCaptureDecrypter(aesKeyHex string, scid uint64) (*mirrorCipher, error) {
 	}
 
 	cipherKey, cipherIV := deriveVideoKeys(aesKey, int64(scid))
-	dbg("[REPLAY] original capture cipher key: %02x", cipherKey)
-	dbg("[REPLAY] original capture cipher IV:  %02x", cipherIV)
+	dbg("[REPLAY] original capture cipher: key=%d bytes, IV=%d bytes", len(cipherKey), len(cipherIV))
 
 	block, err := aes.NewCipher(cipherKey)
 	if err != nil {

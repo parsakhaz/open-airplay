@@ -271,7 +271,7 @@ type HTTPStatusError struct {
 }
 
 func (e *HTTPStatusError) Error() string {
-	return fmt.Sprintf("HTTP %d (body: %s)", e.StatusCode, string(e.Body))
+	return fmt.Sprintf("HTTP %d (body: %d bytes)", e.StatusCode, len(e.Body))
 }
 
 // incompleteResponseError marks a request which did not consume one complete
@@ -544,7 +544,7 @@ func (c *AirPlayClient) getInfoWithTimeout(timeout time.Duration) (*ReceiverInfo
 		}())
 		for _, key := range []string{"audioFormats", "audioLatencies", "displays", "features", "featuresEx", "statusFlags", "initialVolume", "volumeControlType", "keepAliveSendStatsAsBody", "supportedAudioFormatsExtended", "supportedFormats", "PTPInfo"} {
 			if v, ok := fullInfo[key]; ok {
-				dbg("[INFO] %s: %+v", key, v)
+				dbg("[INFO] %s: %+v", key, debugPlistValue(key, v))
 			}
 		}
 	}
@@ -1018,7 +1018,7 @@ func (c *AirPlayClient) readHTTPResponseWithTimeout(timeout time.Duration) ([]by
 	defer c.conn.SetReadDeadline(time.Time{})
 
 	if c.encrypted {
-		dbg("[READ] reading encrypted response (readKey=%s, readNonce=%d)", hex.EncodeToString(c.encReadKey[:8]), c.encReadNonce)
+		dbg("[READ] reading encrypted response (readKey=%d bytes, readNonce=%d)", len(c.encReadKey), c.encReadNonce)
 		body, headers, err := c.readEncryptedHTTPResponse()
 		return body, headers, markIncompleteResponse(err)
 	}
@@ -1033,7 +1033,7 @@ func (c *AirPlayClient) readPlaintextHTTPResponse() ([]byte, map[string]string, 
 	oneByte := make([]byte, 1)
 	for {
 		if _, err := io.ReadFull(c.conn, oneByte); err != nil {
-			return nil, nil, fmt.Errorf("read response header (got %d bytes so far: %q): %w", headerBuf.Len(), headerBuf.String(), err)
+			return nil, nil, fmt.Errorf("read response header (got %d bytes so far): %w", headerBuf.Len(), err)
 		}
 		headerBuf.Write(oneByte)
 
@@ -1047,7 +1047,7 @@ func (c *AirPlayClient) readPlaintextHTTPResponse() ([]byte, map[string]string, 
 	}
 
 	header := headerBuf.String()
-	dbg("[READ] plaintext response header:\n%s", header)
+	dbg("[READ] plaintext response header: %d bytes", len(header))
 	statusCode, contentLength, headers, err := parseHTTPHeader(header)
 	if err != nil {
 		return nil, headers, err
@@ -1069,7 +1069,7 @@ func (c *AirPlayClient) readPlaintextHTTPResponse() ([]byte, map[string]string, 
 				return nil, headers, fmt.Errorf("read error response body (%d bytes): %w", contentLength, err)
 			}
 		}
-		dbg("[READ] error response body (%d bytes): %s", len(errBody), hex.EncodeToString(errBody))
+		dbg("[READ] error response body: %d bytes", len(errBody))
 		return nil, headers, &HTTPStatusError{StatusCode: statusCode, Body: errBody}
 	}
 
@@ -1098,9 +1098,6 @@ func (c *AirPlayClient) readEncryptedHTTPResponse() ([]byte, map[string]string, 
 		frame, err := c.readEncryptedFrame()
 		if err != nil {
 			dbg("[ENC-READ] frame %d read error (decrypted so far=%d bytes): %v", frameCount, len(decrypted), err)
-			if len(decrypted) > 0 {
-				dbg("[ENC-READ] partial decrypted data hex: %s", hex.EncodeToString(decrypted))
-			}
 			return nil, nil, fmt.Errorf("read encrypted response frame %d: %w", frameCount, err)
 		}
 		frameCount++
@@ -1121,7 +1118,7 @@ func (c *AirPlayClient) readEncryptedHTTPResponse() ([]byte, map[string]string, 
 	header := string(decrypted[:headerEnd+4])
 	remaining := decrypted[headerEnd+4:]
 
-	dbg("[ENC-READ] decrypted response header:\n%s", header)
+	dbg("[ENC-READ] decrypted response header: %d bytes", len(header))
 	statusCode, contentLength, headers, err := parseHTTPHeader(header)
 	if err != nil {
 		return nil, headers, err
@@ -1145,7 +1142,7 @@ func (c *AirPlayClient) readEncryptedHTTPResponse() ([]byte, map[string]string, 
 		if len(remaining) > contentLength && contentLength > 0 {
 			remaining = remaining[:contentLength]
 		}
-		dbg("[ENC-READ] error response body (%d bytes): %s", len(remaining), hex.EncodeToString(remaining))
+		dbg("[ENC-READ] error response body: %d bytes", len(remaining))
 		return nil, headers, &HTTPStatusError{StatusCode: statusCode, Body: remaining}
 	}
 
@@ -1270,7 +1267,7 @@ func (c *AirPlayClient) readEncryptedFrame() ([]byte, error) {
 		// Peek at a few more bytes for debugging
 		peek := make([]byte, 32)
 		n, _ := c.conn.Read(peek)
-		dbg("[ENC-FRAME] next %d bytes on wire: %s", n, hex.EncodeToString(peek[:n]))
+		dbg("[ENC-FRAME] discarded %d bytes after suspicious frame length", n)
 		return nil, fmt.Errorf("suspicious frame length %d (expected 1-1024)", plaintextLen)
 	}
 
@@ -1288,8 +1285,8 @@ func (c *AirPlayClient) readEncryptedFrame() ([]byte, error) {
 
 	nonce := make([]byte, 12)
 	binary.LittleEndian.PutUint64(nonce[4:], c.encReadNonce)
-	dbg("[ENC-FRAME] decrypting with nonce=%d key=%s... aad=%s",
-		c.encReadNonce, hex.EncodeToString(c.encReadKey[:8]), hex.EncodeToString(lengthBuf))
+	dbg("[ENC-FRAME] decrypting with nonce=%d key=%d bytes aad=%s",
+		c.encReadNonce, len(c.encReadKey), hex.EncodeToString(lengthBuf))
 	c.encReadNonce++
 
 	plaintext, err := readCipher.Open(nil, nonce, ciphertext, lengthBuf)

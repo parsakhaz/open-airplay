@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -370,7 +369,7 @@ func (c *AirPlayClient) requestSetup(uri, phase string, request map[string]inter
 		// usable. The caller must still release the session it just created.
 		return nil, headers, receivedAt, true, true, fmt.Errorf("unmarshal %s SETUP response: %w", phase, err)
 	}
-	dbg("[SETUP] %s response: %+v", phase, response)
+	dbg("[SETUP] %s response: %+v", phase, debugPlistValue("", response))
 	return response, headers, receivedAt, true, true, nil
 }
 
@@ -1187,8 +1186,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 		session.chachaCipher = aead
 		dbg("[SETUP] using ChaCha20-Poly1305 (HKDF-SHA512)")
 		dbg("[SETUP] streamConnectionID: %d", videoStreamConnectionID)
-		dbg("[SETUP] IKM (%d bytes):   %02x", len(ikm), ikm)
-		dbg("[SETUP] chacha key:       %02x", chachaKey)
+		dbg("[SETUP] key material: IKM=%d bytes, chacha key=%d bytes", len(ikm), len(chachaKey))
 	} else if encKey != nil {
 		// AES-CTR path: SHA-512-derived key from shk + streamConnectionID.
 		var cipherKey, cipherIV []byte
@@ -1201,10 +1199,8 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 			dbg("[SETUP] using SHA-512 derived keys (AES-CTR)")
 		}
 		dbg("[SETUP] streamConnectionID: %d", videoStreamConnectionID)
-		dbg("[SETUP] shk (raw key):    %02x", encKey)
-		dbg("[SETUP] shiv (raw IV):    %02x", encIV)
-		dbg("[SETUP] cipher key:       %02x", cipherKey)
-		dbg("[SETUP] cipher IV:        %02x", cipherIV)
+		dbg("[SETUP] key material: raw key=%d bytes, raw IV=%d bytes, cipher key=%d bytes, cipher IV=%d bytes",
+			len(encKey), len(encIV), len(cipherKey), len(cipherIV))
 		mc, err := newMirrorCipher(cipherKey, cipherIV)
 		if err != nil {
 			return nil, fmt.Errorf("stream cipher: %w", err)
@@ -2271,9 +2267,9 @@ func (s *MirrorSession) feedbackLoop(ctx context.Context) {
 		}
 		var fbResp map[string]interface{}
 		if _, err := plist.Unmarshal(body, &fbResp); err == nil {
-			dbg("[FEEDBACK] response: %+v", fbResp)
+			dbg("[FEEDBACK] response: %+v", debugPlistValue("", fbResp))
 		} else {
-			dbg("[FEEDBACK] response (%d bytes): %02x", len(body), body)
+			dbg("[FEEDBACK] response: %d unparsed bytes", len(body))
 		}
 	}
 
@@ -2779,8 +2775,8 @@ func generateUUID() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// debugDumpPlist logs a plist map in a stable key order, summarising byte
-// slices by length and hex prefix. Lets the whole SETUP descriptor be diffed
+// debugDumpPlist logs a plist map in a stable key order, summarizing binary
+// data by length and redacting secret fields. Lets the SETUP descriptor be diffed
 // between receiver configurations that accept it and ones that reject it.
 func debugDumpPlist(label string, m map[string]interface{}) {
 	if !DebugMode() {
@@ -2794,20 +2790,6 @@ func debugDumpPlist(label string, m map[string]interface{}) {
 
 	dbg("[SETUP] %s (%d keys):", label, len(keys))
 	for _, k := range keys {
-		switch v := m[k].(type) {
-		case []byte:
-			dbg("[SETUP]   %s = <%d bytes> %s", k, len(v), hex.EncodeToString(v[:min(len(v), 16)]))
-		case map[string]interface{}:
-			inner := make([]string, 0, len(v))
-			for ik := range v {
-				inner = append(inner, ik)
-			}
-			sort.Strings(inner)
-			dbg("[SETUP]   %s = map%v", k, inner)
-		case []interface{}:
-			dbg("[SETUP]   %s = list of %d", k, len(v))
-		default:
-			dbg("[SETUP]   %s = %v", k, v)
-		}
+		dbg("[SETUP]   %s = %v", k, debugPlistValue(k, m[k]))
 	}
 }
