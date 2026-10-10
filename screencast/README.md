@@ -1,5 +1,9 @@
 # screencast: a Windows display on an Apple TV, as live HLS
 
+> **Deprecated, dropped 2026-10-10.** The project removed the streaming/HLS approach in favor of the FairPlay
+> true-mirror path, which works and is near-instant. This was the best HLS could do: 3.5-5 s behind by default,
+> about 1.5-3 s in low mode. Nothing builds on this module; it is kept only to record what was tried and why.
+
 This puts a Windows display on an Apple TV without AirPlay screen mirroring. Mirroring needs FairPlay; this doesn't.
 It captures the display, encodes it with ffmpeg and serves it from this PC as a live HLS stream. Then it tells the Apple TV to play that stream through AirPlay's video path.
 It works, but it is a live stream, not a mirror: it runs **seconds behind the screen**.
