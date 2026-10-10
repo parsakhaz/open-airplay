@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -40,6 +39,7 @@ type CaptureConfig struct {
 
 	X11WindowID   uint64
 	X11WindowName string
+	DisplayIndex  int // Windows DXGI output index used by FFmpeg ddagrab
 
 	ShowCursor bool // show the mouse cursor in the captured video (Wayland and X11)
 
@@ -97,6 +97,7 @@ type capturePreparationKind uint8
 const (
 	capturePreparationX11 capturePreparationKind = iota
 	capturePreparationWayland
+	capturePreparationWindows
 	capturePreparationTest
 )
 
@@ -222,6 +223,9 @@ func PrepareCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation
 	}
 	if err := ValidateHWAccel(cfg.HWAccel); err != nil {
 		return nil, err
+	}
+	if runtime.GOOS == "windows" {
+		return prepareWindowsCapture(ctx, cfg)
 	}
 	kind := capturePreparationX11
 	if (cfg.X11WindowID != 0 || cfg.X11WindowName != "") && os.Getenv("DISPLAY") != "" {
@@ -435,15 +439,19 @@ func (p *CapturePreparation) startWithContextAndCodec(lifetime context.Context, 
 		}
 		return nil, fmt.Errorf("HEVC capture requires GStreamer h265parse")
 	}
-	encoder, err := detectGstEncoder(cfg)
-	if err != nil {
-		if pwFd != nil {
-			_ = pwFd.Close()
+	var encoder encoderResult
+	if kind != capturePreparationWindows {
+		var err error
+		encoder, err = detectGstEncoder(cfg)
+		if err != nil {
+			if pwFd != nil {
+				_ = pwFd.Close()
+			}
+			if portal != nil {
+				_ = portal.Close()
+			}
+			return nil, err
 		}
-		if portal != nil {
-			_ = portal.Close()
-		}
-		return nil, err
 	}
 
 	switch kind {
@@ -451,6 +459,8 @@ func (p *CapturePreparation) startWithContextAndCodec(lifetime context.Context, 
 		return startPreparedWaylandCapture(startupCtx, captureCtx, cfg, encoder, nodeID, pwFd, portal, streamSize, timestampedOutput)
 	case capturePreparationX11:
 		return startPreparedX11Capture(startupCtx, captureCtx, cfg, encoder, timestampedOutput)
+	case capturePreparationWindows:
+		return startPreparedWindowsCapture(startupCtx, captureCtx, cfg)
 	case capturePreparationTest:
 		return startPreparedTestCapture(captureCtx, cfg, encoder, timestampedOutput)
 	default:
@@ -775,20 +785,7 @@ func startGStreamerCommand(cmd *exec.Cmd) (<-chan error, error) {
 	started := make(chan error, 1)
 	waitResult := make(chan error, 1)
 
-	go func() {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-
-		cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
-		err := cmd.Start()
-		started <- err
-		if err != nil {
-			close(waitResult)
-			return
-		}
-		waitResult <- cmd.Wait()
-		close(waitResult)
-	}()
+	go superviseCaptureCommand(cmd, started, waitResult)
 
 	if err := <-started; err != nil {
 		return nil, err

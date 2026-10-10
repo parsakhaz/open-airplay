@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -51,6 +52,9 @@ func TestRunRejectsSecondDaemonWithoutRemovingLiveSocket(t *testing.T) {
 }
 
 func TestRunRejectsLiveDaemonThatPredatesInstanceLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the daemon control plane currently uses Unix domain sockets")
+	}
 	socketPath := filepath.Join(t.TempDir(), "doubletake.sock")
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {

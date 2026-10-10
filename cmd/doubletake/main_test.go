@@ -48,6 +48,74 @@ func TestParsePortRange(t *testing.T) {
 	}
 }
 
+func TestSelectDisplay(t *testing.T) {
+	displays := []airplay.Display{
+		{Index: 0, Name: `\\.\DISPLAY1`, Width: 1920, Height: 1080},
+		{Index: 1, Name: `\\.\DISPLAY2`, X: 1920, Width: 2560, Height: 1440, Primary: true},
+	}
+
+	for _, test := range []struct {
+		name       string
+		requested  int
+		input      string
+		want       int
+		wantErrSub string
+		wantOutput string
+	}{
+		{name: "explicit", requested: 0, want: 0},
+		{name: "default primary", requested: -1, input: "\n", want: 1, wantOutput: "available displays:"},
+		{name: "EOF defaults primary", requested: -1, want: 1},
+		{name: "interactive choice", requested: -1, input: "0\n", want: 0},
+		{name: "invalid integer", requested: -1, input: "first\n", wantErrSub: "invalid display selection"},
+		{name: "inactive explicit", requested: 3, wantErrSub: "not active"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output strings.Builder
+			got, err := selectDisplay(
+				displays,
+				test.requested,
+				bufio.NewReader(strings.NewReader(test.input)),
+				&output,
+			)
+			if test.wantErrSub != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErrSub) {
+					t.Fatalf("selectDisplay() error = %v, want substring %q", err, test.wantErrSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("selectDisplay() = %d, want %d", got, test.want)
+			}
+			if test.wantOutput != "" && !strings.Contains(output.String(), test.wantOutput) {
+				t.Fatalf("output %q does not contain %q", output.String(), test.wantOutput)
+			}
+		})
+	}
+}
+
+func TestSelectDisplayUsesOnlyDisplayWithoutPrompt(t *testing.T) {
+	display := airplay.Display{Index: 4, Name: `\\.\DISPLAY5`, Width: 1280, Height: 720, Primary: true}
+	var output strings.Builder
+	got, err := selectDisplay(
+		[]airplay.Display{display},
+		-1,
+		bufio.NewReader(strings.NewReader("")),
+		&output,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 4 {
+		t.Fatalf("selectDisplay() = %d, want 4", got)
+	}
+	if !strings.Contains(output.String(), "using display [4]") {
+		t.Fatalf("single-display output = %q", output.String())
+	}
+}
+
 func TestReadCredentialPreservesPasswordAndEmptyInput(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("password with spaces\n\n"))
 	if got := readCredential(reader, ""); got != "password with spaces" {

@@ -86,22 +86,23 @@ type DeviceInfo struct {
 
 // Config holds daemon configuration.
 type Config struct {
-	SocketPath  string
-	CredFile    string
-	CredBackend string
-	FPS         int
-	Bitrate     int
-	PortMin     int // inclusive local UDP port bound; zero with PortMax means ephemeral
-	PortMax     int // inclusive local UDP port bound; zero with PortMin means ephemeral
-	HWAccel     string
-	VideoCodec  airplay.VideoCodec
-	Debug       bool
-	TestMode    bool
-	NoEncrypt   bool
-	DirectKey   bool
-	NoAudio     bool
-	ShowCursor  bool
-	Code        string // default pairing/Digest credential; request Pin overrides it
+	SocketPath   string
+	CredFile     string
+	CredBackend  string
+	FPS          int
+	Bitrate      int
+	PortMin      int // inclusive local UDP port bound; zero with PortMax means ephemeral
+	PortMax      int // inclusive local UDP port bound; zero with PortMin means ephemeral
+	HWAccel      string
+	VideoCodec   airplay.VideoCodec
+	Debug        bool
+	TestMode     bool
+	NoEncrypt    bool
+	DirectKey    bool
+	NoAudio      bool
+	ShowCursor   bool
+	DisplayIndex int
+	Code         string // default pairing/Digest credential; request Pin overrides it
 }
 
 func (d *Daemon) mirrorStreamConfig() airplay.StreamConfig {
@@ -152,9 +153,9 @@ func acquireInstanceLock(socketPath string) (*os.File, error) {
 		lockFile.Close()
 		return nil, fmt.Errorf("chmod daemon lock %s: %w", lockPath, err)
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockInstanceFile(lockFile); err != nil {
 		lockFile.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		if isInstanceLockContended(err) {
 			return nil, fmt.Errorf("another doubletake daemon is already running for %s", socketPath)
 		}
 		return nil, fmt.Errorf("lock daemon instance %s: %w", lockPath, err)
@@ -166,7 +167,7 @@ func releaseInstanceLock(lockFile *os.File) {
 	if lockFile == nil {
 		return
 	}
-	_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	_ = unlockInstanceFile(lockFile)
 	_ = lockFile.Close()
 }
 
@@ -1329,6 +1330,7 @@ func (d *Daemon) prepareVideoCapture(ctx context.Context, restoreToken, deviceID
 		HWAccel:      d.cfg.HWAccel,
 		VideoCodec:   codec,
 		ShowCursor:   d.cfg.ShowCursor,
+		DisplayIndex: d.cfg.DisplayIndex,
 		RestoreToken: restoreToken,
 	}
 	if deviceID != "" {
@@ -1492,6 +1494,7 @@ func (d *Daemon) getOrStartCaptureGroup(entry *activeStream, restoreToken, devic
 		MaxWidth:     key.maxWidth,
 		MaxHeight:    key.maxHeight,
 		ShowCursor:   d.cfg.ShowCursor,
+		DisplayIndex: d.cfg.DisplayIndex,
 		RestoreToken: restoreToken,
 	}
 	if deviceID != "" {

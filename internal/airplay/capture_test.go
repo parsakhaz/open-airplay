@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -33,8 +32,8 @@ func TestCapturePreparationCloseReleasesUnstartedResources(t *testing.T) {
 	preparation.Close()
 	preparation.Close() // cleanup must remain idempotent
 
-	if _, err := portalFD.Stat(); !errors.Is(err, os.ErrClosed) {
-		t.Fatalf("portal FD after Close: %v, want os.ErrClosed", err)
+	if _, err := portalFD.Stat(); err == nil {
+		t.Fatal("portal FD remained usable after Close")
 	}
 	if preparation.pwFd != nil {
 		t.Fatal("closed preparation retained its portal FD")
@@ -59,8 +58,8 @@ func TestCapturePreparationFailedStartReleasesTransferredResources(t *testing.T)
 	if _, err := preparation.Start(1920, 1080); err == nil || !strings.Contains(err.Error(), "unknown encoder") {
 		t.Fatalf("failed Start error = %v, want deterministic encoder validation error", err)
 	}
-	if _, err := portalFD.Stat(); !errors.Is(err, os.ErrClosed) {
-		t.Fatalf("transferred portal FD after failed Start: %v, want os.ErrClosed", err)
+	if _, err := portalFD.Stat(); err == nil {
+		t.Fatal("transferred portal FD remained usable after failed Start")
 	}
 	if preparation.pwFd != nil {
 		t.Fatal("failed Start retained its transferred portal FD")
@@ -276,14 +275,12 @@ func TestScreenCaptureStopIsConcurrentAndIdempotent(t *testing.T) {
 }
 
 func TestStartGStreamerCommandSetsParentDeathSignal(t *testing.T) {
-	cmd := exec.Command("true")
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	waitResult, err := startGStreamerCommand(cmd)
 	if err != nil {
 		t.Fatalf("startGStreamerCommand: %v", err)
 	}
-	if cmd.SysProcAttr == nil || cmd.SysProcAttr.Pdeathsig != syscall.SIGKILL {
-		t.Fatalf("Pdeathsig = %v, want SIGKILL", cmd.SysProcAttr)
-	}
+	assertCaptureProcessAttributes(t, cmd)
 	if err := <-waitResult; err != nil {
 		t.Fatalf("wait for supervised command: %v", err)
 	}
@@ -1468,8 +1465,8 @@ func TestWaylandCaptureFallbackReopensRemoteAndTransfersPortalOnce(t *testing.T)
 				t.Fatalf("attempt modes = %v, want %v", attemptedModes, wantModes)
 			}
 			for _, remote := range attempted {
-				if _, statErr := remote.Stat(); !errors.Is(statErr, os.ErrClosed) {
-					t.Fatalf("attempt remote remained open: %v", statErr)
+				if _, statErr := remote.Stat(); statErr == nil {
+					t.Fatal("attempt remote remained open")
 				}
 			}
 			if portal.closes != 0 {

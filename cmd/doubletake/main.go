@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -79,6 +80,9 @@ func main() {
 	socketPath := flag.String("socket", daemon.DefaultSocketPath(), "Unix socket path for daemon control interface")
 	x11WindowID := flag.String("x11-window-id", "", "X11 window id to capture, decimal or 0xhex")
 	x11WindowName := flag.String("x11-window-name", "", "X11 window name to capture; prefer -x11-window-id")
+	displayIndex := flag.Int("display", -1, "Windows display index to capture (omit for picker)")
+	listDisplays := flag.Bool("list-displays", false, "List active Windows displays and exit")
+	captureSmoke := flag.Bool("capture-smoke", false, "Validate display capture through SPS/PPS/IDR and exit without connecting")
 	noCursor := flag.Bool("no-cursor", false, "Don't show the mouse cursor in the captured video")
 	flag.Parse()
 	if err := airplay.ValidateHWAccel(*hwaccel); err != nil {
@@ -90,6 +94,54 @@ func main() {
 	portMin, portMax, err := parsePortRange(*portRange)
 	if err != nil {
 		log.Fatalf("invalid -port-range: %v", err)
+	}
+
+	selectedDisplay := *displayIndex
+	if *listDisplays {
+		displays, err := airplay.ListDisplays()
+		if err != nil {
+			log.Fatalf("list displays: %v", err)
+		}
+		printDisplays(os.Stdout, displays)
+		return
+	}
+	if runtime.GOOS == "windows" && !*testMode {
+		displays, err := airplay.ListDisplays()
+		if err != nil {
+			log.Fatalf("enumerate displays: %v", err)
+		}
+		selectedDisplay, err = selectDisplay(
+			displays,
+			selectedDisplay,
+			bufio.NewReader(os.Stdin),
+			os.Stdout,
+		)
+		if err != nil {
+			log.Fatalf("select display: %v", err)
+		}
+	} else if selectedDisplay < 0 {
+		selectedDisplay = 0
+	}
+	if *captureSmoke {
+		smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancelSmoke()
+		cfg := airplay.CaptureConfig{
+			FPS:          *fps,
+			Bitrate:      *bitrate,
+			HWAccel:      *hwaccel,
+			VideoCodec:   airplay.VideoCodecH264,
+			MaxWidth:     1280,
+			MaxHeight:    720,
+			DisplayIndex: selectedDisplay,
+			ShowCursor:   !*noCursor,
+		}
+		capture, err := airplay.StartCapture(smokeCtx, cfg)
+		if err != nil {
+			log.Fatalf("capture smoke test failed: %v", err)
+		}
+		capture.Stop()
+		fmt.Printf("capture smoke test passed for display %d: Desktop Duplication produced H.264 SPS/PPS/IDR\n", selectedDisplay)
+		return
 	}
 	// The environment wins over the flag: it keeps the code out of shell history
 	// and out of `ps`, where a command line is readable by other users.
@@ -104,22 +156,23 @@ func main() {
 
 	if *daemonize {
 		runDaemon(daemon.Config{
-			SocketPath:  *socketPath,
-			CredFile:    *credFile,
-			CredBackend: *credBackend,
-			FPS:         *fps,
-			Bitrate:     *bitrate,
-			PortMin:     portMin,
-			PortMax:     portMax,
-			HWAccel:     *hwaccel,
-			VideoCodec:  airplay.VideoCodec(*videoCodec),
-			Debug:       *debug,
-			TestMode:    *testMode,
-			NoEncrypt:   *noEncrypt,
-			DirectKey:   *directKey,
-			NoAudio:     *noAudio,
-			ShowCursor:  !*noCursor,
-			Code:        credential,
+			SocketPath:   *socketPath,
+			CredFile:     *credFile,
+			CredBackend:  *credBackend,
+			FPS:          *fps,
+			Bitrate:      *bitrate,
+			PortMin:      portMin,
+			PortMax:      portMax,
+			HWAccel:      *hwaccel,
+			VideoCodec:   airplay.VideoCodec(*videoCodec),
+			Debug:        *debug,
+			TestMode:     *testMode,
+			NoEncrypt:    *noEncrypt,
+			DirectKey:    *directKey,
+			NoAudio:      *noAudio,
+			ShowCursor:   !*noCursor,
+			DisplayIndex: selectedDisplay,
+			Code:         credential,
 		})
 		return
 	}
@@ -345,6 +398,7 @@ func main() {
 		VideoCodec:    airplay.VideoCodec(*videoCodec),
 		X11WindowID:   xid,
 		X11WindowName: *x11WindowName,
+		DisplayIndex:  selectedDisplay,
 		ShowCursor:    !*noCursor,
 	}
 	if *testMode {
@@ -603,6 +657,64 @@ func selectDevice(ctx context.Context) (*airplay.AirPlayDevice, error) {
 		return nil, fmt.Errorf("invalid selection")
 	}
 	return &devices[idx-1], nil
+}
+
+func printDisplays(writer io.Writer, displays []airplay.Display) {
+	for _, display := range displays {
+		fmt.Fprintln(writer, display.String())
+	}
+}
+
+func selectDisplay(displays []airplay.Display, requested int, reader *bufio.Reader, writer io.Writer) (int, error) {
+	if len(displays) == 0 {
+		return 0, fmt.Errorf("no active displays found")
+	}
+	find := func(index int) (int, bool) {
+		for _, display := range displays {
+			if display.Index == index {
+				return display.Index, true
+			}
+		}
+		return 0, false
+	}
+	if requested >= 0 {
+		if index, ok := find(requested); ok {
+			return index, nil
+		}
+		return 0, fmt.Errorf("display %d is not active", requested)
+	}
+
+	defaultIndex := displays[0].Index
+	for _, display := range displays {
+		if display.Primary {
+			defaultIndex = display.Index
+			break
+		}
+	}
+	if len(displays) == 1 {
+		fmt.Fprintf(writer, "using display %s\n", displays[0].String())
+		return displays[0].Index, nil
+	}
+
+	fmt.Fprintln(writer, "available displays:")
+	printDisplays(writer, displays)
+	fmt.Fprintf(writer, "select display [%d]: ", defaultIndex)
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return 0, fmt.Errorf("read display selection: %w", err)
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return defaultIndex, nil
+	}
+	index, err := strconv.Atoi(line)
+	if err != nil {
+		return 0, fmt.Errorf("invalid display selection %q", line)
+	}
+	if index, ok := find(index); ok {
+		return index, nil
+	}
+	return 0, fmt.Errorf("display %d is not active", index)
 }
 
 // compareIPs compares two IP address strings numerically.
