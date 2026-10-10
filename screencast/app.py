@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -18,7 +19,7 @@ from pathlib import Path
 from aiohttp import web
 
 from . import caps, firewall, receiver
-from .negotiate import apply_overrides, negotiate
+from .negotiate import LATENCY, apply_overrides, negotiate
 from .pipeline import MASTER, ffmpeg_command
 
 UI = Path(__file__).with_name("ui")
@@ -56,6 +57,26 @@ def load_machine(reprobe=False) -> caps.MachineCaps:
                             cpu_count=os.cpu_count() or 1, notes=notes)
 
 
+_SEGMENT = re.compile(rb"^seg_(\d+)\.(m4s|ts)$", re.M)
+
+
+def advertise_ahead(playlist: bytes, count: int, segment: float) -> bytes:
+    """List the next `count` segments before they exist. AVPlayer starts ~3 target durations behind the
+    newest listed segment; when some of those are still being encoded, it starts that much closer to live.
+    The server holds requests for them until ffmpeg finishes each one (see App.hls)."""
+    # HLS requires an integer target duration >= every segment (so >= 1 s); ffmpeg rounds 0.5 s down to 0,
+    # which makes Apple TV reject the whole playlist.
+    playlist = re.sub(rb"#EXT-X-TARGETDURATION:0\b", b"#EXT-X-TARGETDURATION:1", playlist)
+    found = _SEGMENT.findall(playlist)
+    if not count or not found:
+        return playlist
+    num, ext = found[-1]
+    width = len(num)
+    extra = b"".join(b"#EXTINF:%.6f,\nseg_%s.%s\n" % (segment, str(int(num) + i).zfill(width).encode(), ext)
+                     for i in range(1, count + 1))
+    return playlist + extra
+
+
 def region_for(rect, display: caps.Display):
     """A window's desktop rect -> region inside `display` (clipped), in that display's pixels."""
     l, t, r, b = rect
@@ -89,6 +110,9 @@ class Session:
         self.proc = await asyncio.create_subprocess_exec(
             *cmd, cwd=self.dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        from . import win
+
+        win.kill_with_this_process(self.proc.pid)  # no orphaned screen capture if we die
         asyncio.create_task(self._read_progress())
         asyncio.create_task(self._read_stderr())
         # The playlist must already hold a couple of segments, or the receiver may give up on an empty live stream.
@@ -128,10 +152,10 @@ class Session:
         pulling = self.last_pull is not None and time.time() - self.last_pull < 6
         tv_state = receiver.tvos26.state["playback"]
         real = tv_state == "playing" and self.segment_pulls > 0
-        verdict = ("streaming real desktop capture" if real else
+        verdict = ("REAL DESKTOP ON TV" if real else
                    "NOT confirmed: receiver has not played our desktop segments yet")
         if verdict != self.verdict_logged:
-            print(f"[screencast] {verdict} (receiver={self.rx['name']} state={tv_state} "
+            print(f"[screencast] {verdict}: {self.url} (receiver={self.rx['name']} state={tv_state} "
                   f"segments_fetched={self.segment_pulls} url={self.url})", flush=True)
             self.verdict_logged = verdict
         hint = None
@@ -180,6 +204,7 @@ class App:
 
     def _rx(self, identifier):
         rx = next((r for r in self.receivers if r["identifier"] == identifier), None)
+        rx = rx or next((r for r in self.receivers if r["name"].lower() == str(identifier).lower()), None)
         if not rx:
             raise web.HTTPBadRequest(text="unknown receiver; scan again")
         return rx
@@ -244,8 +269,8 @@ class App:
             return web.json_response({"error": str(e)}, status=400)
         return web.json_response(p.to_json())
 
-    async def start(self, request):
-        body = await request.json()
+    async def begin(self, body: dict) -> tuple[int, dict]:
+        """Start casting; returns (http status, payload). Shared by the UI and the `cast` CLI."""
         async with self.lock:
             if self.session:
                 await self.session.stop()
@@ -256,20 +281,24 @@ class App:
                 p = negotiate(self.machine, rx["caps"], shape, body.get("encoder"))
                 settings = apply_overrides(p, self.machine, rx["caps"], shape, body.get("overrides") or {})
             except ValueError as e:
-                return web.json_response({"error": str(e)}, status=400)
+                return 400, {"error": str(e)}
             self.session = Session(settings, display, region, rx, self.port)
             try:
                 await self.session.start()
             except receiver.PairingRequired as e:
                 await self.session.stop()
                 self.session = None
-                return web.json_response({"error": str(e), "pairing_required": True}, status=409)
+                return 409, {"error": str(e), "pairing_required": True}
             except Exception as e:
                 status = self.session.status()
                 await self.session.stop()
                 self.session = None
-                return web.json_response({"error": str(e) or type(e).__name__, "session": status}, status=500)
-        return web.json_response(self.session.status())
+                return 500, {"error": str(e) or type(e).__name__, "session": status}
+        return 200, self.session.status()
+
+    async def start(self, request):
+        code, payload = await self.begin(await request.json())
+        return web.json_response(payload, status=code)
 
     async def pair_begin(self, request):
         body = await request.json()
@@ -308,6 +337,16 @@ class App:
         if not s or "/" in name or "\\" in name or ".." in name:
             raise web.HTTPNotFound()
         path = s.dir / name
+        lat = LATENCY[s.settings.latency]
+        if not path.is_file() and _SEGMENT.match(name.encode()) and lat["ahead"]:
+            # An advertised segment still being encoded: hold the request until ffmpeg renames it into place
+            # (hls temp_file flag), so the receiver gets it the moment it exists.
+            deadline = time.monotonic() + (lat["ahead"] + 2) * lat["segment"] + 2
+            while not path.is_file() and time.monotonic() < deadline and self.session is s:
+                await asyncio.sleep(0.02)
+        if os.environ.get("OAP_DEBUG") and request.remote == s.rx["address"]:
+            print(f"[receiver] {request.method} {name} -> {'200' if path.is_file() else '404'} "
+                  f"range={request.headers.get('Range')}", flush=True)
         if not path.is_file():
             raise web.HTTPNotFound()
         if request.remote == s.rx["address"]:  # only the receiver's own requests count as proof
@@ -318,7 +357,10 @@ class App:
         ext = path.suffix
         headers = {"Content-Type": MIME.get(ext, "application/octet-stream"), "Access-Control-Allow-Origin": "*",
                    "Cache-Control": "no-cache" if ext == ".m3u8" else "max-age=60"}
-        return web.Response(body=path.read_bytes(), headers=headers)
+        body = path.read_bytes()
+        if name == "stream.m3u8":
+            body = advertise_ahead(body, lat["ahead"], lat["segment"])  # also repairs TARGETDURATION
+        return web.Response(body=body, headers=headers)
 
     @web.middleware
     async def loopback_only(self, request, handler):

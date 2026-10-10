@@ -131,6 +131,7 @@ class Cast:
         # Prefer a stored PIN pairing; fall back to transient pairing, which some receivers accept.
         conf.set_credentials(Protocol.AirPlay, load_credentials().get(self.identifier) or str(TRANSIENT_CREDENTIALS))
         self._atv = await pyatv.connect(conf, asyncio.get_running_loop())
+        tvos26.state.update(proto=None, playback=None)
         self.task = asyncio.create_task(self._play())
         # play_url only returns when playback ends, so watch it briefly for an immediate refusal.
         done, _ = await asyncio.wait({self.task}, timeout=settle)

@@ -9,9 +9,9 @@ from dataclasses import asdict, dataclass, replace
 from .caps import Display, Encoder, MachineCaps, ReceiverCaps
 
 LATENCY = {  # HLS segment seconds per mode; AVPlayer holds roughly 3 segments behind live
-    "low": {"label": "Low latency (0.5 s segments, ~2 s behind)", "segment": 0.5},
-    "balanced": {"label": "Balanced (1 s segments, ~3-4 s behind)", "segment": 1.0},
-    "quality": {"label": "Quality (2 s segments, ~6-7 s behind, B-frames)", "segment": 2.0},
+    "low": {"label": "Low latency (~1.5-2.5 s measured, can drift to ~3 s)", "segment": 0.5, "window": 6, "ahead": 2},
+    "balanced": {"label": "Balanced (~3.5-5 s measured, steady)", "segment": 1.0, "window": 6, "ahead": 0},
+    "quality": {"label": "Quality (2 s segments, B-frames; ~6-7 s estimated, not measured)", "segment": 2.0, "window": 6, "ahead": 0},
 }
 _BPP = {"hevc": 0.07, "h264": 0.11}  # bits per pixel per frame that keeps desktop text crisp
 _BITRATE_TIERS = (("max", "Maximum", 1.6), ("high", "High (recommended)", 1.0),
