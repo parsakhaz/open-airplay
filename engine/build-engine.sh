@@ -62,3 +62,6 @@ ldd "$OUT/uxplay.exe" | awk '/\/ucrt64\// {print $3}' | sort -u | xargs -r -I{} 
 echo "$UXPLAY_PIN" > "$OUT/UXPLAY_PIN"
 echo "engine built: $OUT/uxplay.exe (UxPlay $UXPLAY_PIN)"
 "$OUT/uxplay.exe" -v 2>&1 | head -3 || true
+
+# Self-contained runtime for the installer (engine/runtime, bundled by tauri.windows.conf.json).
+"$HERE/stage-runtime.sh"

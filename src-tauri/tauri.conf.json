@@ -38,6 +38,9 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
-    "license": "GPL-3.0-only"
+    "license": "GPL-3.0-only",
+    "resources": {
+      "icons/icon.ico": "icons/icon.ico"
+    }
   }
 }

@@ -67,6 +67,19 @@ To use it in another app, such as open-airdrop-windows:
 
 The app window has two modes built from these pieces. The **compact** mode is the primary surface: a frosted popover above the tray with status, a receiving switch, Send to devices and quick settings. The **full** mode opens on demand with Expand, or automatically when mirroring starts if you turn that on in Settings. It has a device sidebar and a large stage. F11 toggles full screen, and Esc returns to compact.
 
+## Build the installer (Windows)
+
+```powershell
+C:\msys64\usr\bin\bash.exe -lc "/c/path/to/open-airplay/engine/build-engine.sh"   # builds the engine and stages engine/runtime
+npm run build                                                                       # -> src-tauri/target/release/bundle/nsis/*-setup.exe
+```
+
+- `engine/stage-runtime.sh` (run by `build-engine.sh`) copies `uxplay.exe`, the 17 GStreamer plugins UxPlay's pipelines use, and every DLL they load into `engine/runtime/` (gitignored): `bin/` holds the exe and DLLs, `lib/gstreamer-1.0/` holds the plugins. GStreamer finds the plugins relative to its own DLL, so the installed app needs no MSYS2, no PATH changes and no `GST_PLUGIN_*` variables.
+- `src-tauri/tauri.windows.conf.json` (merged on Windows only, so macOS and Linux builds keep their own targets) bundles that folder as `engine/` next to the app and builds a per-machine NSIS installer. The installer asks for administrator rights, because it adds a firewall rule.
+- `src-tauri/windows/hooks.nsh`: on install, the installer adds one inbound firewall rule, "open-airplay receiver", scoped to `<install dir>\engine\bin\uxplay.exe`. On uninstall, it stops the app and removes the rule.
+- Size: the runtime is about 174 MB on disk and the installer is about 49 MB. Most of that is MSYS2's FFmpeg, which links every codec library (x265, aom, svt-av1, …) even though UxPlay only decodes H.264/H.265, AAC and ALAC. A minimal FFmpeg build would shrink it a lot; that is a follow-up.
+- The installer is unsigned for now (code signing is an ask-first decision), so Windows SmartScreen warns on first run.
+
 ## Tests
 
 ```powershell
