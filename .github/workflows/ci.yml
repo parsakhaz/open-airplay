@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cancel superseded runs on the same branch / PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Rust crate (tests + clippy) and the Python sender sidecar, on the primary platform.
+  windows:
+    name: Windows / Rust + sender
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Some Rust tests spawn `python` as a fake engine/sender, so it must be on PATH.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Tauri embeds ui/ at compile time; tokens.css and components.css are copied from design/.
+      - name: Sync design tokens into ui/
+        run: |
+          npm ci
+          npm run sync-tokens
+
+      - name: cargo test
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Sender tests
+        shell: bash
+        run: |
+          python -m venv sender/.venv
+          sender/.venv/Scripts/python -m pip install -r sender/requirements.txt
+          sender/.venv/Scripts/python -m unittest discover -s sender/tests -v
+
+  # Receiver engine: pinned UxPlay fork built with MSYS2 UCRT64, plus its C tests.
+  engine:
+    name: Windows / engine (UxPlay)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # build-engine.sh installs its own toolchain/GStreamer packages via pacman.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: git
+
+      - name: Build engine and run C tests
+        shell: msys2 {0}
+        run: bash engine/build-engine.sh
+
+  # Proves the core crate still compiles and tests on Linux (not a shipping target yet).
+  linux:
+    name: Linux / Rust check + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Tauri's Linux system dependencies (WebKitGTK 4.1 etc.).
+      - name: Install Tauri Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Sync design tokens into ui/
+        run: |
+          npm ci
+          npm run sync-tokens
+
+      - name: cargo check
+        run: cargo check --locked --all-targets --manifest-path src-tauri/Cargo.toml
+
+      # Tests spawn `python3` (preinstalled on ubuntu-latest).
+      - name: cargo test
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
