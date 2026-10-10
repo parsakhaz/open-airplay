@@ -95,6 +95,20 @@ def parse_receiver(info: dict) -> ReceiverCaps:
     m = re.match(r"(?:4k|1080p?)(\d+)", hdr_cap)
     if m:  # tvOS advertises e.g. "4k60"; trust it over the model table for fps
         fps = int(m.group(1))
+    # Feature bit 0 is not set by every video receiver (Fire TV's AirPlay receiver plays HLS without it).
+    video = video or "playbackCapabilities" in info or bool(info.get("displays"))
+    # Best source: receivers that describe their display advertise its current mode and exact codec strings.
+    disp = (info.get("displays") or [None])[0]
+    if isinstance(disp, dict):
+        codecs = [c for mode in disp.get("HDRSupportedModes", []) for c in mode.get("codecStrings", [])]
+        if codecs:
+            hevc = any(c.startswith(("hvc1", "hev1")) for c in codecs)
+        # Cap at the TV's current mode: streaming 4K to a TV set to 1080p only costs bandwidth.
+        w = int(disp.get("widthPixels") or disp.get("widthPixelsMax") or w)
+        h = int(disp.get("heightPixels") or disp.get("heightPixelsMax") or h)
+        fps = int(disp.get("maxFPS") or fps)
+        hdr_cap = hdr_cap or str(disp.get("HDRInfo", {}).get("receiverHDRCapability", "")).lower()
+        source = f"{model} (advertised by receiver)"
     return ReceiverCaps(
         name=str(info.get("name", "")), model=model, video=video, hevc=hevc,
         max_width=w, max_height=h, max_fps=fps,

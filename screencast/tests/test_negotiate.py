@@ -39,6 +39,20 @@ class ReceiverParsing(unittest.TestCase):
     def test_speaker_is_not_a_video_receiver(self):
         self.assertFalse(parse_receiver(SONOS_INFO).video)
 
+    def test_receiver_advertised_codecs_and_display_mode_win_over_model_table(self):
+        # Fire TV with the AirPlay receiver (trimmed /info): feature bit 0 is clear, yet it plays video,
+        # advertises HEVC in its codec strings, and its TV is currently in 1080p mode.
+        rx = parse_receiver({
+            "model": "AFTOLCBC82", "name": "My Fire TV 3175", "features": 255525703439583952,
+            "playbackCapabilities": {"supportsInterstitials": True},
+            "displays": [{"widthPixels": 1920, "heightPixels": 1080, "widthPixelsMax": 3840, "heightPixelsMax": 2160,
+                          "maxFPS": 60, "HDRSupportedModes": [{"HDRMode": "SDR",
+                          "codecStrings": ["avc1.640034", "hvc1.1.4.H153.B0"]}]}],
+        })
+        self.assertTrue(rx.video)
+        self.assertTrue(rx.hevc)
+        self.assertEqual((rx.max_width, rx.max_height, rx.max_fps), (1920, 1080, 60))
+
     def test_unknown_model_falls_back_to_h264_1080p(self):
         rx = parse_receiver({"model": "SomeTV1,1", "features": 1})
         self.assertTrue(rx.video)
