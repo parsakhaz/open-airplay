@@ -55,7 +55,7 @@ def build_args(s: Settings, video_input: list, audio_input: list | None = None) 
              "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"]
     if s.codec == "hevc":
         args += ["-tag:v", "hvc1"]
-    args += ["-f", "hls", "-hls_time", str(seg), "-hls_list_size", "6", "-hls_delete_threshold", "4",
+    args += ["-f", "hls", "-hls_time", str(seg), "-hls_list_size", str(LATENCY[s.latency]["window"]), "-hls_delete_threshold", "4",
              "-hls_flags", "delete_segments+independent_segments+omit_endlist+temp_file",
              "-hls_segment_type", "fmp4" if fmp4 else "mpegts",
              "-hls_segment_filename", "seg_%05d.m4s" if fmp4 else "seg_%05d.ts",
