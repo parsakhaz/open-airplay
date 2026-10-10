@@ -30,14 +30,14 @@ const (
 	PairingProtocolRaw     PairingProtocol = "raw"
 )
 
-// DefaultCredentialsPath returns ~/.config/doubletake/credentials.json.
+// DefaultCredentialsPath returns ~/.config/open-airplay/credentials.json.
 func DefaultCredentialsPath() string {
 	dir := os.Getenv("XDG_CONFIG_HOME")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "doubletake", "credentials.json")
+	return filepath.Join(dir, "open-airplay", "credentials.json")
 }
 
 // Ed25519Keys reconstructs the key pair from saved credentials.

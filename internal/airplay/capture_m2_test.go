@@ -44,7 +44,7 @@ func TestCaptureM2(t *testing.T) {
 
 	savedCreds := credStore.Lookup(info.DeviceID)
 	if savedCreds == nil {
-		t.Fatal("no saved credentials for this device. Run doubletake with --pair first")
+		t.Fatal("no saved credentials for this device. Run open-airplay with -pair first")
 	}
 
 	if err := client.RestorePairingCredentials(savedCreds); err != nil {

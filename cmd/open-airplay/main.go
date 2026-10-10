@@ -18,8 +18,8 @@ import (
 	"syscall"
 	"time"
 
-	"doubletake/internal/airplay"
-	"doubletake/internal/daemon"
+	"github.com/parsakhaz/open-airplay/internal/airplay"
+	"github.com/parsakhaz/open-airplay/internal/daemon"
 )
 
 func parseXID(s string) (uint64, error) {
@@ -58,42 +58,109 @@ func parsePortRange(s string) (int, int, error) {
 	return lo, hi, nil
 }
 
+func defaultCredentialBackend() string {
+	if runtime.GOOS == "windows" {
+		return "keyring"
+	}
+	return "file"
+}
+
+func hwAccelFlagHelp() string {
+	if runtime.GOOS == "windows" {
+		return "Encoder: auto, nvenc, or none (libx264); Windows capture currently supports H.264 only"
+	}
+	return "Encoder: auto, nvenc, vaapi, openh264, or none (x264/x265)"
+}
+
+func videoCodecFlagHelp() string {
+	if runtime.GOOS == "windows" {
+		return "Screen codec: auto or h264 (Windows Desktop Duplication currently supports H.264 only)"
+	}
+	return "Screen codec: auto, h264, or hevc (auto uses H.264 for receiver compatibility)"
+}
+
+func validateWindowsCaptureFlags(hwaccel, videoCodec string) error {
+	switch hwaccel {
+	case "", "auto", "none", "nvenc":
+	default:
+		return fmt.Errorf("encoder %q is not supported by Windows capture (want auto, nvenc, or none)", hwaccel)
+	}
+	switch videoCodec {
+	case "", "auto", "h264":
+	default:
+		return fmt.Errorf("video codec %q is not supported by Windows capture (want auto or h264)", videoCodec)
+	}
+	return nil
+}
+
 func main() {
-	target := flag.String("target", "", "Apple TV IP address or hostname (skip discovery)")
+	target := flag.String("target", "", "AirPlay receiver IP address or hostname (skip discovery)")
 	port := flag.Int("port", 7000, "AirPlay port")
-	code := flag.String("code", "", "Pairing PIN shown on the receiver, or the password set on it when \"Require Password\" is enabled; prefer $DOUBLETAKE_CODE so it stays out of shell history and ps output")
+	code := flag.String("code", "", "Pairing PIN shown on the receiver, or the password set on it when \"Require Password\" is enabled; prefer $OPEN_AIRPLAY_CODE so it stays out of shell history and process listings")
 	credFile := flag.String("creds", airplay.DefaultCredentialsPath(), "Path to saved pairing credentials")
-	credBackend := flag.String("cred-backend", "file", "Credential storage backend: file or keyring (system keyring via Secret Service)")
+	credBackend := flag.String("cred-backend", defaultCredentialBackend(), "Credential storage backend: file or keyring (Windows Credential Manager or the platform keyring)")
 	forcePair := flag.Bool("pair", false, "Force new pairing even if credentials exist")
 	fps := flag.Int("fps", 30, "Frames per second")
 	bitrate := flag.Int("bitrate", 0, "Video bitrate in kbps (0 = auto, default tunes for resolution/FPS)")
 	targetLatencyMs := flag.Int("target-latency-ms", 0, "Joint audio/video playout latency override in milliseconds (0 = automatic connection profile)")
-	hwaccel := flag.String("hwaccel", "auto", "Encoder: auto, nvenc, vaapi, openh264, none (x264/x265)")
-	videoCodec := flag.String("video-codec", "auto", "Screen codec: auto, h264, or hevc (auto uses H.264 for receiver compatibility)")
+	hwaccel := flag.String("hwaccel", "auto", hwAccelFlagHelp())
+	videoCodec := flag.String("video-codec", "auto", videoCodecFlagHelp())
 	testMode := flag.Bool("test", false, "Use synthetic video (videotestsrc) instead of screen capture for debugging")
 	noEncrypt := flag.Bool("no-encrypt", false, "Disable RTSP header encryption (debugging only; video frames are always encrypted)")
 	directKey := flag.Bool("direct-key", false, "Use shk/shiv directly without SHA-512 derivation")
-	noAudio := flag.Bool("no-audio", false, "Disable audio streaming")
+	noAudio := flag.Bool("no-audio", runtime.GOOS == "windows", "Disable audio streaming (default true on Windows until WASAPI capture is implemented)")
 	portRange := flag.String("port-range", "", "Local UDP port range for receiver timing/audio (e.g. \"60000-60010\"); empty = OS ephemeral. Needs at least 3 ports.")
 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
-	daemonize := flag.Bool("daemonize", false, "Run as background daemon with Unix socket control interface")
-	socketPath := flag.String("socket", daemon.DefaultSocketPath(), "Unix socket path for daemon control interface")
-	x11WindowID := flag.String("x11-window-id", "", "X11 window id to capture, decimal or 0xhex")
-	x11WindowName := flag.String("x11-window-name", "", "X11 window name to capture; prefer -x11-window-id")
+	daemonize := flag.Bool("daemonize", false, "Run as background daemon with Unix socket control interface (unsupported on Windows)")
+	socketPath := flag.String("socket", daemon.DefaultSocketPath(), "Unix socket path for daemon control interface (non-Windows only)")
+	x11WindowID := flag.String("x11-window-id", "", "X11 window id to capture, decimal or 0xhex (non-Windows only)")
+	x11WindowName := flag.String("x11-window-name", "", "X11 window name to capture; prefer -x11-window-id (non-Windows only)")
 	displayIndex := flag.Int("display", -1, "Windows display index to capture (omit for picker)")
 	listDisplays := flag.Bool("list-displays", false, "List active Windows displays and exit")
+	listReceivers := flag.Bool("list-receivers", false, "Discover screen-mirroring AirPlay receivers for five seconds and exit")
 	captureSmoke := flag.Bool("capture-smoke", false, "Validate display capture through SPS/PPS/IDR and exit without connecting")
 	noCursor := flag.Bool("no-cursor", false, "Don't show the mouse cursor in the captured video")
 	flag.Parse()
+	if runtime.GOOS == "windows" && *daemonize {
+		log.Fatal("-daemonize is not supported on Windows; run the sender in the foreground")
+	}
+	if runtime.GOOS == "windows" && !*noAudio && !*listDisplays && !*listReceivers && !*captureSmoke {
+		log.Fatal("Windows audio capture is not implemented; keep -no-audio enabled")
+	}
 	if err := airplay.ValidateHWAccel(*hwaccel); err != nil {
 		log.Fatalf("invalid -hwaccel: %v", err)
 	}
 	if err := airplay.ValidateVideoCodec(*videoCodec); err != nil {
 		log.Fatalf("invalid -video-codec: %v", err)
 	}
+	if runtime.GOOS == "windows" {
+		if err := validateWindowsCaptureFlags(*hwaccel, *videoCodec); err != nil {
+			log.Fatalf("invalid Windows capture options: %v", err)
+		}
+	}
 	portMin, portMax, err := parsePortRange(*portRange)
 	if err != nil {
 		log.Fatalf("invalid -port-range: %v", err)
+	}
+	if *listReceivers {
+		discoverCtx, cancelDiscover := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelDiscover()
+		devices, err := airplay.DiscoverAirPlayDevices(discoverCtx)
+		if err != nil {
+			log.Fatalf("discover receivers: %v", err)
+		}
+		devices = mirrorCapableDevices(devices)
+		sort.Slice(devices, func(i, j int) bool {
+			return compareIPs(devices[i].IP, devices[j].IP) < 0
+		})
+		if len(devices) == 0 {
+			fmt.Println("no screen-mirroring AirPlay receivers found")
+			return
+		}
+		for index, device := range devices {
+			fmt.Printf("[%d] %s (%s) — %s:%d\n", index, device.Name, device.Model, device.IP, device.Port)
+		}
+		return
 	}
 
 	selectedDisplay := *displayIndex
@@ -146,7 +213,10 @@ func main() {
 	// The environment wins over the flag: it keeps the code out of shell history
 	// and out of `ps`, where a command line is readable by other users.
 	credential := *code
-	if env := os.Getenv("DOUBLETAKE_CODE"); env != "" {
+	if env := os.Getenv("OPEN_AIRPLAY_CODE"); env != "" {
+		credential = env
+	} else if env := os.Getenv("DOUBLETAKE_CODE"); env != "" {
+		// Compatibility with credentials supplied to the imported upstream CLI.
 		credential = env
 	}
 
@@ -631,8 +701,9 @@ func selectDevice(ctx context.Context) (*airplay.AirPlayDevice, error) {
 	if err != nil {
 		return nil, err
 	}
+	devices = mirrorCapableDevices(devices)
 	if len(devices) == 0 {
-		return nil, fmt.Errorf("no Apple TVs found")
+		return nil, fmt.Errorf("no screen-mirroring AirPlay receivers found")
 	}
 
 	sort.Slice(devices, func(i, j int) bool {
@@ -657,6 +728,16 @@ func selectDevice(ctx context.Context) (*airplay.AirPlayDevice, error) {
 		return nil, fmt.Errorf("invalid selection")
 	}
 	return &devices[idx-1], nil
+}
+
+func mirrorCapableDevices(devices []airplay.AirPlayDevice) []airplay.AirPlayDevice {
+	result := make([]airplay.AirPlayDevice, 0, len(devices))
+	for _, device := range devices {
+		if device.SupportsScreen() {
+			result = append(result, device)
+		}
+	}
+	return result
 }
 
 func printDisplays(writer io.Writer, displays []airplay.Display) {

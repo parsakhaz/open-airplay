@@ -9,6 +9,15 @@ import (
 	"testing"
 )
 
+func TestDefaultCredentialsPathUsesOpenAirPlayDirectory(t *testing.T) {
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	want := filepath.Join(configRoot, "open-airplay", "credentials.json")
+	if got := DefaultCredentialsPath(); got != want {
+		t.Fatalf("DefaultCredentialsPath() = %q, want %q", got, want)
+	}
+}
+
 func TestCredentialStoreSaveRestoreTokenPreservesPairingCredentials(t *testing.T) {
 	store, err := NewCredentialStore(filepath.Join(t.TempDir(), "credentials.json"))
 	if err != nil {

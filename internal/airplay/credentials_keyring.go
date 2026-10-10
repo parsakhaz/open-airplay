@@ -7,10 +7,11 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-const keyringService = "doubletake"
+const keyringService = "open-airplay"
 
 // keyringBackend stores credentials in the system keyring via the
-// freedesktop.org Secret Service API (GNOME Keyring, KDE Wallet, KeePassXC, etc.).
+// platform credential manager (Windows Credential Manager, macOS Keychain, or
+// freedesktop.org Secret Service on Linux).
 type keyringBackend struct{}
 
 // NewKeyringBackend creates a CredentialBackend that uses the system keyring.

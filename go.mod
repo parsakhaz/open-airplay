@@ -1,4 +1,4 @@
-module doubletake
+module github.com/parsakhaz/open-airplay
 
 go 1.25.0
 

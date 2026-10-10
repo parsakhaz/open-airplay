@@ -6,10 +6,10 @@ import (
 	"net"
 	"time"
 
-	"doubletake/internal/daemon"
+	"github.com/parsakhaz/open-airplay/internal/daemon"
 )
 
-// Client communicates with a running doubletake daemon over its Unix socket.
+// Client communicates with a running open-airplay daemon over its Unix socket.
 type Client struct {
 	SocketPath string
 }

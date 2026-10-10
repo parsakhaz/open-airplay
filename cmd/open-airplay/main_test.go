@@ -5,11 +5,51 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 
-	"doubletake/internal/airplay"
+	"github.com/parsakhaz/open-airplay/internal/airplay"
 )
+
+func TestDefaultCredentialBackend(t *testing.T) {
+	want := "file"
+	if runtime.GOOS == "windows" {
+		want = "keyring"
+	}
+	if got := defaultCredentialBackend(); got != want {
+		t.Fatalf("defaultCredentialBackend() = %q, want %q", got, want)
+	}
+}
+
+func TestMirrorCapableDevicesFiltersAudioOnlyReceivers(t *testing.T) {
+	devices := []airplay.AirPlayDevice{
+		{Name: "screen", Features: airplay.FeatureScreen},
+		{Name: "speaker", Features: airplay.FeatureAudio},
+		{Name: "second-screen", Features: airplay.FeatureScreen | airplay.FeatureAudio},
+	}
+	got := mirrorCapableDevices(devices)
+	if len(got) != 2 || got[0].Name != "screen" || got[1].Name != "second-screen" {
+		t.Fatalf("mirrorCapableDevices() = %#v", got)
+	}
+}
+
+func TestValidateWindowsCaptureFlags(t *testing.T) {
+	for _, valid := range []struct{ hwaccel, codec string }{
+		{"", ""}, {"auto", "auto"}, {"none", "h264"}, {"nvenc", "h264"},
+	} {
+		if err := validateWindowsCaptureFlags(valid.hwaccel, valid.codec); err != nil {
+			t.Errorf("validateWindowsCaptureFlags(%q, %q): %v", valid.hwaccel, valid.codec, err)
+		}
+	}
+	for _, invalid := range []struct{ hwaccel, codec string }{
+		{"vaapi", "h264"}, {"openh264", "h264"}, {"auto", "hevc"},
+	} {
+		if err := validateWindowsCaptureFlags(invalid.hwaccel, invalid.codec); err == nil {
+			t.Errorf("validateWindowsCaptureFlags(%q, %q) accepted unsupported options", invalid.hwaccel, invalid.codec)
+		}
+	}
+}
 
 func TestParsePortRange(t *testing.T) {
 	for _, test := range []struct {

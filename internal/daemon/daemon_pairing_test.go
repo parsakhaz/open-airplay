@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"doubletake/internal/airplay"
+	"github.com/parsakhaz/open-airplay/internal/airplay"
 )
 
 func TestRequiredPairingCredentialKind(t *testing.T) {

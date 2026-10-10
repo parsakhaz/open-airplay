@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"doubletake/internal/airplay"
+	"github.com/parsakhaz/open-airplay/internal/airplay"
 )
 
 func TestRetryMirrorSetupAfterLateDigestChallenge(t *testing.T) {

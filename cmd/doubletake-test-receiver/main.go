@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"doubletake/internal/airplay"
+	"github.com/parsakhaz/open-airplay/internal/airplay"
 )
 
 const receiverCodeEnvironment = "DOUBLETAKE_RECEIVER_CODE"

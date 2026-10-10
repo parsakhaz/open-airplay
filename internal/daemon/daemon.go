@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"doubletake/internal/airplay"
+	"github.com/parsakhaz/open-airplay/internal/airplay"
 )
 
 // State represents the daemon's current lifecycle state.
@@ -137,7 +137,7 @@ func DefaultSocketPath() string {
 	if dir == "" {
 		dir = "/tmp"
 	}
-	return filepath.Join(dir, "doubletake.sock")
+	return filepath.Join(dir, "open-airplay.sock")
 }
 
 // acquireInstanceLock prevents two daemons from owning different listeners at
@@ -156,7 +156,7 @@ func acquireInstanceLock(socketPath string) (*os.File, error) {
 	if err := lockInstanceFile(lockFile); err != nil {
 		lockFile.Close()
 		if isInstanceLockContended(err) {
-			return nil, fmt.Errorf("another doubletake daemon is already running for %s", socketPath)
+			return nil, fmt.Errorf("another open-airplay daemon is already running for %s", socketPath)
 		}
 		return nil, fmt.Errorf("lock daemon instance %s: %w", lockPath, err)
 	}
@@ -173,7 +173,7 @@ func releaseInstanceLock(lockFile *os.File) {
 
 // removeStaleSocket only unlinks a socket after confirming that no daemon is
 // listening. The probe keeps a newly upgraded daemon from replacing the live
-// socket of an older doubletake version that predates the instance lock.
+// socket of an older open-airplay version that predates the instance lock.
 func removeStaleSocket(socketPath string) error {
 	info, err := os.Lstat(socketPath)
 	if os.IsNotExist(err) {
@@ -189,7 +189,7 @@ func removeStaleSocket(socketPath string) error {
 	conn, dialErr := net.DialTimeout("unix", socketPath, 250*time.Millisecond)
 	if dialErr == nil {
 		conn.Close()
-		return fmt.Errorf("another doubletake daemon is already running for %s", socketPath)
+		return fmt.Errorf("another open-airplay daemon is already running for %s", socketPath)
 	}
 	if !errors.Is(dialErr, syscall.ECONNREFUSED) && !os.IsNotExist(dialErr) {
 		return fmt.Errorf("probe existing control socket: %w", dialErr)
@@ -301,7 +301,7 @@ func (cleanup *daemonCleanup) run() {
 	}
 }
 
-// Daemon manages a long-running doubletake service.
+// Daemon manages a long-running open-airplay service.
 type Daemon struct {
 	cfg            Config
 	mu             sync.Mutex

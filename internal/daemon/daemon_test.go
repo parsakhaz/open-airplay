@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"doubletake/internal/airplay"
+	"github.com/parsakhaz/open-airplay/internal/airplay"
 )
 
 func TestRunRejectsSecondDaemonWithoutRemovingLiveSocket(t *testing.T) {

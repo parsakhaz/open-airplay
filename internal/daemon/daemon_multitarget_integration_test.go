@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"doubletake/internal/airplay"
+	"github.com/parsakhaz/open-airplay/internal/airplay"
 )
 
 func TestDaemonStreamsToTwoPasswordReceivers(t *testing.T) {

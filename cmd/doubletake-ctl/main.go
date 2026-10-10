@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"doubletake/internal/daemon"
-	"doubletake/internal/daemon/daemonclient"
+	"github.com/parsakhaz/open-airplay/internal/daemon"
+	"github.com/parsakhaz/open-airplay/internal/daemon/daemonclient"
 )
 
 func main() {
