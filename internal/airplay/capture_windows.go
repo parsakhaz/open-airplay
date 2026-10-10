@@ -56,8 +56,8 @@ func prepareWindowsCapture(ctx context.Context, cfg CaptureConfig) (*CapturePrep
 	if err != nil {
 		return nil, err
 	}
-	if cfg.DisplayIndex >= len(displays) {
-		return nil, fmt.Errorf("display index %d is out of range (found %d active display(s))", cfg.DisplayIndex, len(displays))
+	if err := validateWindowsDisplayIndex(displays, cfg.DisplayIndex); err != nil {
+		return nil, err
 	}
 
 	return &CapturePreparation{
@@ -66,6 +66,15 @@ func prepareWindowsCapture(ctx context.Context, cfg CaptureConfig) (*CapturePrep
 		kind:              capturePreparationWindows,
 		timestampedOutput: false,
 	}, nil
+}
+
+func validateWindowsDisplayIndex(displays []Display, index int) error {
+	for _, display := range displays {
+		if display.Index == index {
+			return nil
+		}
+	}
+	return fmt.Errorf("display index %d is not an attached output on the default D3D11 adapter (use -list-displays to see available indices)", index)
 }
 
 func buildWindowsFFmpegArgs(cfg CaptureConfig) ([]string, error) {

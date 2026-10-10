@@ -62,3 +62,17 @@ func TestBuildWindowsFFmpegArgsRejectsInvalidDisplay(t *testing.T) {
 		t.Fatalf("error = %v, want invalid display index", err)
 	}
 }
+
+func TestValidateWindowsDisplayIndexUsesNativeOutputIndex(t *testing.T) {
+	displays := []Display{{Index: 0}, {Index: 2}, {Index: 4}}
+	for _, index := range []int{0, 2, 4} {
+		if err := validateWindowsDisplayIndex(displays, index); err != nil {
+			t.Errorf("native output index %d: %v", index, err)
+		}
+	}
+	for _, index := range []int{-1, 1, 3, 5} {
+		if err := validateWindowsDisplayIndex(displays, index); err == nil {
+			t.Errorf("missing output index %d was accepted", index)
+		}
+	}
+}
