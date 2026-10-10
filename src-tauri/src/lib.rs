@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, RunEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, RunEvent, WebviewWindow};
 
 use engine::{EngineEvent, ReceiverSettings};
 use sender::SenderSidecar;
@@ -361,6 +361,29 @@ async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Tray left-click: toggle the compact popover just above (or below) the tray icon.
+fn toggle_popover(window: &WebviewWindow, icon_rect: tauri::Rect) {
+    if window.is_visible().unwrap_or(false) {
+        let _ = window.hide();
+        return;
+    }
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let icon_pos: PhysicalPosition<f64> = icon_rect.position.to_physical(scale);
+    let icon_size: tauri::PhysicalSize<f64> = icon_rect.size.to_physical(scale);
+    if let (Ok(size), Ok(Some(monitor))) = (window.outer_size(), window.current_monitor().or_else(|_| window.primary_monitor())) {
+        let (mw, mh) = (monitor.size().width as f64, monitor.size().height as f64);
+        let (mx, my) = (monitor.position().x as f64, monitor.position().y as f64);
+        let (w, h) = (size.width as f64, size.height as f64);
+        let gap = 8.0 * scale;
+        let x = (icon_pos.x + icon_size.width / 2.0 - w / 2.0).clamp(mx + gap, mx + mw - w - gap);
+        // Taskbar at the bottom (usual): open above the icon; otherwise below it.
+        let y = if icon_pos.y > my + mh / 2.0 { icon_pos.y - h - gap } else { icon_pos.y + icon_size.height + gap };
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(AppState::default())
@@ -372,6 +395,14 @@ pub fn run() {
                 .icon(app.default_window_icon().cloned().expect("bundle icon"))
                 .tooltip("open-airplay")
                 .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
+                        if let Some(w) = tray.app_handle().get_webview_window("main") {
+                            toggle_popover(&w, rect);
+                        }
+                    }
+                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {

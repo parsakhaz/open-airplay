@@ -13,9 +13,16 @@
       {
         "label": "main",
         "title": "open-airplay",
-        "width": 460,
-        "height": 640,
-        "resizable": true
+        "width": 340,
+        "height": 540,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true,
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "visible": true,
+        "center": true
       }
     ],
     "security": {
