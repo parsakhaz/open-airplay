@@ -44,6 +44,23 @@ flowchart LR
 
 The headline feature is **sender-side FairPlay mirroring**: pushing your live desktop to an Apple TV in real time. This is the piece open source had never cracked on Windows. Only paid tools (AirParrot, AirMyPC) did it, because it needs Apple's FairPlay authentication handshake. open-airplay does it in the open.
 
+## Screenshots
+
+<div align="center">
+
+<img src="docs/screenshots/full-view.png" alt="open-airplay full view: Ready to receive" width="100%">
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/popover.png" alt="Tray popover: Ready to receive and Send to" width="100%"><br><sub><b>Tray popover</b>: status, device list, one click to expand.</sub></td>
+<td width="50%"><img src="docs/screenshots/settings.png" alt="Settings: name, PIN, codec, autostart" width="100%"><br><sub><b>Settings</b>: device name, PIN, codec, and launch options.</sub></td>
+</tr>
+</table>
+
+<sub>Light and dark aware. The app lives in the tray and expands to the full media view on demand.</sub>
+
+</div>
+
 ## How the mirror works
 
 ```mermaid
