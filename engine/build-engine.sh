@@ -43,9 +43,17 @@ done
 cmake -S "$SRC" -B "$SRC/build" -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja -C "$SRC/build"
 
+# Unit test for the mirror-window sizing maths (patch 0002).
+gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_window_fit.c" -o "$SRC/build/test_window_fit.exe"
+"$SRC/build/test_window_fit.exe"
+
+# Manual check for the mirror window without an iPhone: engine/dist/window_demo.exe
+gcc -Wall -O1 -I "$SRC/renderers" "$HERE/tests/window_demo.c" "$SRC/renderers/oap_window.c"   $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-video-1.0) -luser32 -lgdi32 -o "$SRC/build/window_demo.exe"
+
 # Stage the engine plus every MSYS2 DLL it links against.
 rm -rf "$OUT"; mkdir -p "$OUT"
 cp "$SRC/build/uxplay.exe" "$OUT/"
+cp "$SRC/build/window_demo.exe" "$OUT/"
 ldd "$OUT/uxplay.exe" | awk '/\/ucrt64\// {print $3}' | sort -u | xargs -r -I{} cp {} "$OUT/"
 echo "$UXPLAY_PIN" > "$OUT/UXPLAY_PIN"
 echo "engine built: $OUT/uxplay.exe (UxPlay $UXPLAY_PIN)"

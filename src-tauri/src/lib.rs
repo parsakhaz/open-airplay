@@ -53,6 +53,15 @@ fn find_engine(app: &AppHandle) -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
+/// The app icon, for the engine's mirror window: dev checkout first, then the bundled resource.
+fn find_window_icon(app: &AppHandle) -> Option<PathBuf> {
+    let mut candidates = vec![repo_root().join("src-tauri").join("icons").join("icon.ico")];
+    if let Ok(res) = app.path().resource_dir() {
+        candidates.push(res.join("icons").join("icon.ico"));
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
 fn default_name() -> String {
     std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "open-airplay".into())
 }
@@ -115,7 +124,8 @@ fn start_receiver_inner(app: &AppHandle, state: &AppState, settings: ReceiverSet
     if let Some(old) = state.supervisor.lock().unwrap().take() {
         old.stop();
     }
-    let (path_prepend, env) = engine_runtime();
+    let (path_prepend, mut env) = engine_runtime();
+    env.extend(settings.engine_env(find_window_icon(app).as_deref()));
     {
         let mut st = state.status.lock().unwrap();
         *st = ReceiverStatus { engine_path: Some(engine.display().to_string()), settings: Some(settings.clone()), ..Default::default() };

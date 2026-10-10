@@ -4,6 +4,8 @@
 //! - `ReceiverSettings::engine_args` turns the shell's settings into UxPlay CLI flags.
 //! - `parse_line` turns one line of UxPlay output into an `EngineEvent`.
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +40,15 @@ impl ReceiverSettings {
             args.push("-h265".into());
         }
         args
+    }
+
+    /// Environment for the engine's own mirror window (engine patch 0002).
+    pub fn engine_env(&self, icon: Option<&Path>) -> Vec<(String, String)> {
+        let mut env = vec![("OAP_WINDOW_TITLE".to_string(), "open-airplay".to_string())];
+        if let Some(icon) = icon {
+            env.push(("OAP_WINDOW_ICON".into(), icon.display().to_string()));
+        }
+        env
     }
 }
 
@@ -88,6 +99,19 @@ mod tests {
     fn args_add_pin_and_h265_when_enabled() {
         let s = ReceiverSettings { pin_mode: true, h265: true, ..settings() };
         assert_eq!(s.engine_args(), vec!["-n", "Parsa's ZBook", "-nh", "-d", "-pin", "-h265"]);
+    }
+
+    #[test]
+    fn env_names_the_mirror_window_after_the_app_and_passes_the_icon() {
+        let env = settings().engine_env(Some(std::path::Path::new("C:/oap/icons/icon.ico")));
+        assert_eq!(
+            env,
+            vec![
+                ("OAP_WINDOW_TITLE".to_string(), "open-airplay".to_string()),
+                ("OAP_WINDOW_ICON".to_string(), "C:/oap/icons/icon.ico".to_string()),
+            ]
+        );
+        assert_eq!(settings().engine_env(None), vec![("OAP_WINDOW_TITLE".to_string(), "open-airplay".to_string())]);
     }
 
     #[test]
