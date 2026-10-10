@@ -1,4 +1,6 @@
+pub mod doctor;
 pub mod engine;
+pub mod netwatch;
 pub mod prefs;
 pub mod process_guard;
 pub mod sender;
@@ -145,6 +147,11 @@ impl Sidecars {
         }
     }
 
+    /// The running engine's process id, if any.
+    pub fn engine_pid(&self) -> Option<u32> {
+        self.supervisor.lock().unwrap().as_ref().and_then(Supervisor::pid)
+    }
+
     pub fn shutdown(&self) {
         self.replace_supervisor(None);
         let sender = self.sender.lock().unwrap().take();
@@ -156,6 +163,8 @@ impl Sidecars {
 
 #[derive(Default)]
 struct AppState {
+    /// Latest network-doctor findings, shown as cards in the UI.
+    findings: Mutex<Vec<doctor::Finding>>,
     sidecars: Sidecars,
     status: Arc<Mutex<ReceiverStatus>>,
     prefs: Mutex<AppPrefs>,
@@ -327,6 +336,9 @@ fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings) -> Result<R
         };
         let _ = handle.emit("receiver-event", &event);
         publish(&handle, &snapshot);
+        if matches!(event, SupervisorEvent::Engine { event: EngineEvent::Advertised }) {
+            run_doctor(&handle);
+        }
     });
     state.sidecars.replace_supervisor(Some(sup));
     let snapshot = state.status.lock().unwrap().clone();
@@ -472,6 +484,102 @@ async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// The engine exe the doctor checks firewall rules for (without the `\\?\` prefix Windows APIs add).
+fn engine_path_for_doctor(status: &ReceiverStatus) -> Option<String> {
+    let path = status.engine_path.clone()?;
+    Some(path.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(path))
+}
+
+/// Runs the network doctor in the background and publishes its findings ("doctor-findings").
+fn run_doctor(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        let Some(engine) = engine_path_for_doctor(&state.status.lock().unwrap()) else { return };
+        let ip = netwatch::primary_ip().map(|i| i.to_string());
+        let own = state.sidecars.engine_pid();
+        let Some(snapshot) = doctor::probe(&engine, ip.as_deref(), own) else { return };
+        let findings = doctor::diagnose(&snapshot);
+        *state.findings.lock().unwrap() = findings.clone();
+        let _ = app.emit("doctor-findings", &findings);
+    });
+}
+
+#[tauri::command]
+fn doctor_findings(app: AppHandle) -> Vec<doctor::Finding> {
+    app.state::<AppState>().findings.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn doctor_check(app: AppHandle) {
+    run_doctor(&app);
+}
+
+/// One-click fixes. Each needs the user's click; the firewall one also shows Windows' admin prompt.
+#[tauri::command]
+async fn doctor_fix(app: AppHandle, kind: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        match kind.as_str() {
+            // Changing the network type is a Windows setting the user makes; open the right page.
+            "public_network" => {
+                std::process::Command::new("explorer.exe").arg("ms-settings:network-status").spawn().map_err(|e| e.to_string())?;
+            }
+            "firewall_blocks" => {
+                let state = app.state::<AppState>();
+                let engine = engine_path_for_doctor(&state.status.lock().unwrap()).ok_or("The receiver isn't set up yet.")?;
+                let inner = doctor::firewall_fix_script(&engine).replace('\'', "''");
+                let launcher = format!(
+                    "Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-NonInteractive','-Command','{inner}'"
+                );
+                let status = std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-NonInteractive", "-Command", &launcher])
+                    .status()
+                    .map_err(|e| e.to_string())?;
+                if !status.success() {
+                    return Err("Windows didn't allow the change (the admin prompt was declined).".into());
+                }
+            }
+            other => return Err(format!("No fix for {other}.")),
+        }
+        run_doctor(&app);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Restarts the receiver after sleep or a network change, so iPhones on the (new) network can find it.
+fn spawn_network_watcher(app: AppHandle) {
+    std::thread::spawn(move || {
+        const TICK: Duration = Duration::from_secs(3);
+        let mut ip = netwatch::primary_ip();
+        let mut last = SystemTime::now();
+        loop {
+            std::thread::sleep(TICK);
+            let now = SystemTime::now();
+            let sample = netwatch::Sample {
+                wall_gap: now.duration_since(last).unwrap_or(TICK),
+                primary_ip: netwatch::primary_ip(),
+            };
+            last = now;
+            let decision = netwatch::decide(ip, sample);
+            if sample.primary_ip.is_some() {
+                ip = sample.primary_ip;
+            }
+            let Some(reason) = decision else { continue };
+            let state = app.state::<AppState>();
+            let settings = {
+                let st = state.status.lock().unwrap();
+                (st.wanted).then(|| st.settings.clone()).flatten()
+            };
+            if let Some(settings) = settings {
+                eprintln!("open-airplay: restarting the receiver ({reason:?})");
+                let _ = start_receiver_inner(&app, settings);
+            }
+        }
+    });
+}
+
 /// Tray left-click: toggle the compact popover just above (or below) the tray icon.
 fn toggle_popover(window: &WebviewWindow, icon_rect: tauri::Rect) {
     if window.is_visible().unwrap_or(false) {
@@ -546,6 +654,8 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            spawn_network_watcher(app.handle().clone());
+
             // Start receiving right away so the PC shows up in Screen Mirroring without a click.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -564,7 +674,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, receiver_start, receiver_stop, sender_send])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
@@ -583,6 +693,14 @@ mod tests {
 
     fn running(advertised: bool) -> ReceiverStatus {
         ReceiverStatus { wanted: true, running: true, advertised, ..Default::default() }
+    }
+
+    #[test]
+    fn the_doctor_checks_the_plain_engine_path() {
+        let s = |p: &str| ReceiverStatus { engine_path: Some(p.into()), ..Default::default() };
+        assert_eq!(engine_path_for_doctor(&s(r"\\?\C:\Program Files\open-airplay\engine\bin\uxplay.exe")).unwrap(), r"C:\Program Files\open-airplay\engine\bin\uxplay.exe");
+        assert_eq!(engine_path_for_doctor(&s(r"C:\dev\uxplay.exe")).unwrap(), r"C:\dev\uxplay.exe");
+        assert_eq!(engine_path_for_doctor(&ReceiverStatus::default()), None);
     }
 
     #[test]

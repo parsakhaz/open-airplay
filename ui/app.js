@@ -333,11 +333,37 @@ function renderSend() {
     ${castControls(false)}</div>`);
 }
 
+// ---------- network doctor findings ----------
+ui.findings = [];
+function findingsHtml() {
+  if (!ui.findings.length) return "";
+  const card = (f) => {
+    switch (f.kind) {
+      case "public_network":
+        return [`Windows treats “${esc(f.network)}” as a public network, so iPhones may not find this PC.`, btn("fix:public_network", "Open network settings", "is-small")];
+      case "firewall_blocks":
+        return ["Windows Firewall is blocking the receiver, so iPhones can't connect.", btn("fix:firewall_blocks", "Allow (needs admin)", "is-small is-primary")];
+      case "guest_network":
+        return [`“${esc(f.network)}” looks like a guest Wi-Fi. Guest networks often stop devices from seeing each other; if your iPhone can't find this PC, put both on your main Wi-Fi.`, ""];
+      case "other_receiver":
+        return [`${esc(f.name)} is also running and may take the connection. Quit it if your iPhone connects to the wrong one.`, ""];
+      default:
+        return null;
+    }
+  };
+  const items = ui.findings.map(card).filter(Boolean)
+    .map(([text, action]) => `<div class="oai-banner doctor"><div class="oai-grow"><p style="margin:0">${text}</p>${action ? `<div class="oai-btn-row" style="margin-top:8px">${action}</div>` : ""}</div></div>`);
+  return `<div class="doctor-list">${items.join("")}<button class="oai-ghost recheck" data-action="doctor-check">Check again</button></div>`;
+}
+
 function renderFull() {
   renderSidebar();
   if (ui.view === "settings") renderSettings();
   else if (ui.view === "send") renderSend();
-  else renderReceive();
+  else {
+    renderReceive();
+    $("stage").insertAdjacentHTML("afterbegin", findingsHtml());
+  }
 }
 
 // ---------- compact rendering ----------
@@ -390,7 +416,7 @@ function renderCompact() {
       ${castControls(true)}</div>`;
   } else {
     ui.page = "home";
-    html = `<div class="pop-page">${compactStatus()}<div class="oai-sep"></div>${compactDevices()}</div>`;
+    html = `<div class="pop-page">${compactStatus()}${findingsHtml()}<div class="oai-sep"></div>${compactDevices()}</div>`;
   }
   const body = $("pop-body");
   body.innerHTML = html;
@@ -498,13 +524,20 @@ function selectDevice(i) {
 }
 
 // ---------- events ----------
-document.addEventListener("click", (e) => {
+document.addEventListener("click", async (e) => {
   const dev = e.target.closest("[data-device]");
   if (dev) return selectDevice(Number(dev.dataset.device));
   const item = e.target.closest("#full .oai-sidebar-item[data-view]");
   if (item) { ui.view = item.dataset.view; return render(); }
   if (e.target.closest("#scan")) return scan();
   const action = e.target.closest("[data-action]");
+  if (action && action.dataset.action.startsWith("fix:")) {
+    const kind = action.dataset.action.slice(4);
+    ui.busy = action.dataset.action; render();
+    try { await invoke("doctor_fix", { kind }); } catch (err) { ui.findingError = String(err); }
+    ui.busy = null; render();
+    return;
+  }
   if (!action || action.disabled) return;
   switch (action.dataset.action) {
     case "start": return startReceiver(currentSettings());
@@ -512,6 +545,7 @@ document.addEventListener("click", (e) => {
     case "show-video": return invoke("show_video_window").catch(() => {});
     case "scan": return scan();
     case "home": ui.page = "home"; return render();
+    case "doctor-check": return invoke("doctor_check").catch(() => {});
     case "settings": if (ui.mode === "full") ui.view = "settings"; else ui.page = "settings"; return render();
     case "play-url": return ui.castUrl.trim() && cast({ cmd: "play_url", url: ui.castUrl.trim() });
     case "stream-file": return ui.castFile.trim() && cast({ cmd: "stream_file", path: ui.castFile.trim() });
@@ -585,6 +619,8 @@ listen("sender-event", (e) => {
 });
 
 // The sender sidecar died: fail everything in flight; the next request starts a fresh one.
+listen("doctor-findings", (e) => { ui.findings = e.payload || []; render(); });
+
 listen("sender-exit", (e) => {
   const message = (e.payload && e.payload.message) || "The sender stopped unexpectedly.";
   for (const p of pending.values()) p.reject(message);
@@ -593,6 +629,7 @@ listen("sender-exit", (e) => {
 
 (async () => {
   await loadPrefs();
+  try { ui.findings = await invoke("doctor_findings"); } catch { /* none yet */ }
   try {
     const status = await invoke("receiver_status");
     if (!status.settings) status.settings = await invoke("default_settings");

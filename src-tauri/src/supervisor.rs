@@ -72,6 +72,11 @@ impl Supervisor {
         Supervisor { stop, child, handle: Some(handle) }
     }
 
+    /// Process id of the engine while it runs.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.lock().unwrap().as_ref().map(Child::id)
+    }
+
     pub fn stop(mut self) {
         self.shutdown();
     }

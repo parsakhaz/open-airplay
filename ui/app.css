@@ -111,3 +111,9 @@ html[data-mode="full"] .compact { display: none; }
 .pop-cast .msg { font-size: var(--oai-text-sm); color: var(--oai-ink-2); display: flex; align-items: center; gap: 8px; min-height: 1.5em; }
 .pop-cast .msg.is-bad { color: var(--oai-bad); }
 .pop-cast .msg.is-ok { color: var(--oai-ok); }
+
+/* network doctor */
+.doctor-list { display: grid; gap: 8px; margin: 4px 6px 8px; }
+.oai-stage .doctor-list { position: absolute; top: var(--oai-space-4); left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 32px)); z-index: 2; margin: 0; }
+.doctor p { font-size: var(--oai-text-sm); line-height: 1.45; }
+.recheck { justify-self: end; font-size: var(--oai-text-xs); color: var(--oai-ink-2); }
