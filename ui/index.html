@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>open-airplay</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>open-airplay</h1>
+      <nav role="tablist">
+        <button role="tab" aria-selected="true" data-tab="receive">Receive</button>
+        <button role="tab" aria-selected="false" data-tab="send">Send</button>
+      </nav>
+    </header>
+
+    <section id="receive" class="tab">
+      <div class="card status" id="status-card">
+        <span class="dot" id="status-dot"></span>
+        <div>
+          <div class="headline" id="status-headline">Starting…</div>
+          <div class="muted" id="status-detail"></div>
+        </div>
+      </div>
+
+      <div class="card pin" id="pin-card" hidden>
+        <div class="muted">Enter this code on your iPhone</div>
+        <div class="pin-code" id="pin-code"></div>
+      </div>
+
+      <div class="card problem" id="problem-card" hidden></div>
+
+      <form class="card" id="settings">
+        <label>Name on your iPhone
+          <input id="name" required maxlength="63">
+        </label>
+        <label class="row"><input type="checkbox" id="pin_mode"> Ask for a code on every connection (PIN mode)</label>
+        <label class="row"><input type="checkbox" id="h265"> Prefer H.265 (try this if iOS 27 won't connect)</label>
+        <div class="actions">
+          <button type="submit" class="primary">Apply and restart receiver</button>
+          <button type="button" id="stop">Stop</button>
+        </div>
+      </form>
+      <p class="muted small">On your iPhone: Control Center → Screen Mirroring → pick this name.</p>
+    </section>
+
+    <section id="send" class="tab" hidden>
+      <div class="card">
+        <div class="actions">
+          <button class="primary" id="scan">Find AirPlay devices</button>
+          <span class="muted" id="scan-state"></span>
+        </div>
+        <ul class="devices" id="devices"></ul>
+      </div>
+      <form class="card" id="cast" hidden>
+        <div class="headline" id="cast-target"></div>
+        <label>Video or audio URL (http/https)
+          <input id="cast-url" type="url" placeholder="https://example.com/video.mp4">
+        </label>
+        <div class="actions"><button type="submit" class="primary">Play on device</button></div>
+        <label>…or an audio file on this PC (full path)
+          <input id="cast-file" placeholder="C:\Users\me\Music\song.mp3">
+        </label>
+        <div class="actions"><button type="button" id="cast-file-btn">Stream file</button></div>
+        <div class="muted" id="cast-state"></div>
+      </form>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

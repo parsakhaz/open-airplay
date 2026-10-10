@@ -1,0 +1,70 @@
+/* Shared design tokens for open-airplay and open-airdrop-windows.
+   Canonical copy: design/tokens.css. Apps copy it in at build time (npm run sync-tokens). */
+:root {
+  --oai-bg: #fbfaf6;
+  --oai-panel: #ffffff;
+  --oai-ink: #1d2420;
+  --oai-muted: #5d6861;
+  --oai-line: #dcdfd6;
+  --oai-accent: #2f7d4f;
+  --oai-accent-soft: #e4f1e7;
+  --oai-on-accent: #ffffff;
+  --oai-warn: #9a5b00;
+  --oai-warn-soft: #fbefd9;
+  --oai-bad: #a23a2f;
+  --oai-bad-soft: #f9e4e1;
+  --oai-code: #f0f1eb;
+
+  --oai-font: system-ui, -apple-system, "Segoe UI Variable", "Segoe UI", sans-serif;
+  --oai-font-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --oai-text-sm: 0.85rem;
+  --oai-text-md: 1rem;
+  --oai-text-lg: 1.25rem;
+  --oai-text-xl: 2.5rem;
+
+  --oai-space-1: 4px;
+  --oai-space-2: 8px;
+  --oai-space-3: 12px;
+  --oai-space-4: 16px;
+  --oai-space-6: 24px;
+
+  --oai-radius-sm: 6px;
+  --oai-radius-md: 10px;
+  --oai-radius-pill: 999px;
+  --oai-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 4px 16px rgb(0 0 0 / 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --oai-bg: #141815;
+    --oai-panel: #1b211d;
+    --oai-ink: #e7ebe6;
+    --oai-muted: #9aa69e;
+    --oai-line: #2e3731;
+    --oai-accent: #6fc38d;
+    --oai-accent-soft: #1e3327;
+    --oai-on-accent: #0d1a12;
+    --oai-warn: #e5b566;
+    --oai-warn-soft: #352a15;
+    --oai-bad: #ef9388;
+    --oai-bad-soft: #3a1f1c;
+    --oai-code: #232a25;
+    --oai-shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --oai-bg: #141815;
+  --oai-panel: #1b211d;
+  --oai-ink: #e7ebe6;
+  --oai-muted: #9aa69e;
+  --oai-line: #2e3731;
+  --oai-accent: #6fc38d;
+  --oai-accent-soft: #1e3327;
+  --oai-on-accent: #0d1a12;
+  --oai-warn: #e5b566;
+  --oai-warn-soft: #352a15;
+  --oai-bad: #ef9388;
+  --oai-bad-soft: #3a1f1c;
+  --oai-code: #232a25;
+  --oai-shadow: none;
+}

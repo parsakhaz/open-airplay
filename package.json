@@ -1,0 +1,16 @@
+{
+  "name": "open-airplay",
+  "private": true,
+  "version": "0.1.0",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "sync-tokens": "node -e \"require('fs').copyFileSync('design/tokens.css','ui/tokens.css')\"",
+    "tauri": "tauri",
+    "dev": "npm run sync-tokens && tauri dev",
+    "build": "npm run sync-tokens && tauri build",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml && sender/.venv/Scripts/python -m unittest discover -s sender/tests"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.1"
+  }
+}
