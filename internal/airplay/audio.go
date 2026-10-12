@@ -119,6 +119,7 @@ type AudioCapture struct {
 	gstCmd          *exec.Cmd
 	pcmPipe         io.ReadCloser
 	pcmFrames       audioPCMFrameReader
+	framesOwnEnd    bool // pcmFrames drains queued frames, then reports the exit
 	cancel          context.CancelFunc
 	waitCh          chan struct{}
 	waitErr         error
@@ -240,15 +241,56 @@ func audioCapturePipelineArgs(srcArgs []string, codec AudioCodec, timestamped bo
 	return append(args, "!", "fdsink", "fd=1", "sync=false", "async=false")
 }
 
-// StartAudioCapture launches a pipeline that captures system audio (monitor source)
-// and feeds raw PCM into the encoder negotiated by SETUP. ALAC is built in;
-// AAC-ELD is available in builds made with -tags fdk_aac and libfdk-aac.
+// StartAudioCapture captures system audio with default options. See
+// StartAudioCaptureWithOptions.
 func StartAudioCapture(ctx context.Context, testTone bool, codec AudioCodec) (*AudioCapture, error) {
-	captureCtx, cancel := context.WithCancel(ctx)
+	return StartAudioCaptureWithOptions(ctx, codec, AudioCaptureOptions{TestTone: testTone})
+}
+
+// StartAudioCaptureWithOptions captures system audio and feeds raw PCM into the
+// encoder negotiated by SETUP. Windows captures the output device with WASAPI
+// loopback; other platforms capture a PulseAudio or PipeWire monitor through
+// GStreamer. ALAC is built in; AAC-ELD is available in builds made with
+// -tags fdk_aac and libfdk-aac.
+func StartAudioCaptureWithOptions(ctx context.Context, codec AudioCodec, opts AudioCaptureOptions) (*AudioCapture, error) {
+	return startPlatformAudioCapture(ctx, codec, opts)
+}
+
+// newAudioCaptureForCodec prepares an AudioCapture with its encoder. The
+// caller owns starting the PCM source and closing waitCh when it exits.
+func newAudioCaptureForCodec(ctx context.Context, codec AudioCodec) (*AudioCapture, context.Context, error) {
 	if codec != AudioCodecALAC && codec != AudioCodecAACELD {
-		cancel()
-		return nil, fmt.Errorf("unsupported audio codec %d", codec)
+		return nil, nil, fmt.Errorf("unsupported audio codec %d", codec)
 	}
+	captureCtx, cancel := context.WithCancel(ctx)
+	ac := &AudioCapture{
+		cancel: cancel,
+		waitCh: make(chan struct{}),
+		codec:  codec,
+	}
+	if codec == AudioCodecALAC {
+		ac.alac = &alacEncoder{}
+		dbg("[AUDIO] using compressed ALAC")
+	} else {
+		var err error
+		ac.eld, err = newELDEncoder()
+		if err != nil {
+			cancel()
+			return nil, nil, err
+		}
+	}
+	return ac, captureCtx, nil
+}
+
+// startGStreamerAudioCapture launches a pipeline that captures a monitor
+// source (or a test tone) and timestamps it for the encoder.
+func startGStreamerAudioCapture(ctx context.Context, codec AudioCodec, opts AudioCaptureOptions) (*AudioCapture, error) {
+	ac, captureCtx, err := newAudioCaptureForCodec(ctx, codec)
+	if err != nil {
+		return nil, err
+	}
+	cancel := ac.cancel
+	testTone := opts.TestTone
 	_, codecSPF, _, _, _, _ := codec.Info()
 
 	// Detect audio source
@@ -260,8 +302,8 @@ func StartAudioCapture(ctx context.Context, testTone bool, codec AudioCodec) (*A
 	} else {
 		hasPipeWireSource := exec.Command("gst-inspect-1.0", "pipewiresrc").Run() == nil
 		hasPulseSource := exec.Command("gst-inspect-1.0", "pulsesrc").Run() == nil
-		monitor := ""
-		if hasPulseSource {
+		monitor := opts.Device
+		if hasPulseSource && monitor == "" {
 			monitor = detectPulseMonitor()
 		}
 		var source string
@@ -274,25 +316,12 @@ func StartAudioCapture(ctx context.Context, testTone bool, codec AudioCodec) (*A
 		case "pipewire":
 			dbg("[AUDIO] using default pipewiresrc")
 		default:
+			if ac.eld != nil {
+				ac.eld.Close()
+				ac.eld = nil
+			}
 			cancel()
 			return nil, fmt.Errorf("no audio source available (need pulsesrc or pipewiresrc)")
-		}
-	}
-
-	ac := &AudioCapture{
-		cancel: cancel,
-		waitCh: make(chan struct{}),
-		codec:  codec,
-	}
-	if codec == AudioCodecALAC {
-		ac.alac = &alacEncoder{}
-		dbg("[AUDIO] using compressed ALAC")
-	} else if codec == AudioCodecAACELD {
-		var err error
-		ac.eld, err = newELDEncoder()
-		if err != nil {
-			cancel()
-			return nil, err
 		}
 	}
 
@@ -332,6 +361,9 @@ func StartAudioCapture(ctx context.Context, testTone bool, codec AudioCodec) (*A
 	ac.pcmPipe = gstStdout
 	if timestamped {
 		ac.pcmFrames = newRTPL16PCMFrameReader(gstStdout)
+		if opts.Offset != 0 {
+			ac.pcmFrames = offsetPCMFrameReader{ac.pcmFrames.(audioPCMFramePositionReader), opts.Offset}
+		}
 	}
 	go func() {
 		ac.waitErr = <-waitResult
@@ -356,13 +388,15 @@ func (ac *AudioCapture) ReadFrameAt(buf []byte) (int, time.Time, error) {
 }
 
 func (ac *AudioCapture) readFramePosition(buf []byte) (int, audioPCMFramePosition, error) {
-	select {
-	case <-ac.waitCh:
-		if ac.waitErr != nil {
-			return 0, audioPCMFramePosition{}, fmt.Errorf("audio capture exited: %w", ac.waitErr)
+	if !ac.framesOwnEnd {
+		select {
+		case <-ac.waitCh:
+			if ac.waitErr != nil {
+				return 0, audioPCMFramePosition{}, fmt.Errorf("audio capture exited: %w", ac.waitErr)
+			}
+			return 0, audioPCMFramePosition{}, io.EOF
+		default:
 		}
-		return 0, audioPCMFramePosition{}, io.EOF
-	default:
 	}
 
 	_, codecSPF, _, _, _, _ := ac.codec.Info()

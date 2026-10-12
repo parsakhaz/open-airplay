@@ -119,7 +119,10 @@ func main() {
 	testMode := flag.Bool("test", false, "Use synthetic video (videotestsrc) instead of screen capture for debugging")
 	noEncrypt := flag.Bool("no-encrypt", false, "Disable RTSP header encryption (debugging only; video frames are always encrypted)")
 	directKey := flag.Bool("direct-key", false, "Use shk/shiv directly without SHA-512 derivation")
-	noAudio := flag.Bool("no-audio", runtime.GOOS == "windows", "Disable audio streaming (default true on Windows until WASAPI capture is implemented)")
+	noAudio := flag.Bool("no-audio", false, "Disable audio streaming (mirror video only)")
+	audioDevice := flag.String("audio-device", "", "Output device whose sound is mirrored: a name or ID from -list-audio-devices on Windows, a PulseAudio monitor source on Linux (default: follow the default output device)")
+	audioOffsetMs := flag.Int("audio-offset-ms", 0, "Shift mirrored audio relative to video in milliseconds; positive delays audio, negative advances it")
+	listAudioDevices := flag.Bool("list-audio-devices", false, "List output devices whose sound can be mirrored (Windows) and exit")
 	portRange := flag.String("port-range", "", "Local UDP port range for receiver timing/audio (e.g. \"60000-60010\"); empty = OS ephemeral. Needs at least 3 ports.")
 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
 	daemonize := flag.Bool("daemonize", false, "Run as background daemon with Unix socket control interface (unsupported on Windows)")
@@ -139,8 +142,13 @@ func main() {
 	if runtime.GOOS == "windows" && *daemonize {
 		log.Fatal("-daemonize is not supported on Windows; run the sender in the foreground")
 	}
-	if runtime.GOOS == "windows" && !*noAudio && !*listDisplays && !*listReceivers && !*captureSmoke {
-		log.Fatal("Windows audio capture is not implemented; keep -no-audio enabled")
+	if err := validateAudioOffset(*audioOffsetMs); err != nil {
+		log.Fatalf("invalid -audio-offset-ms: %v", err)
+	}
+	audioOptions := airplay.AudioCaptureOptions{
+		TestTone: *testMode,
+		Device:   *audioDevice,
+		Offset:   time.Duration(*audioOffsetMs) * time.Millisecond,
 	}
 	if err := airplay.ValidateHWAccel(*hwaccel); err != nil {
 		log.Fatalf("invalid -hwaccel: %v", err)
@@ -159,6 +167,14 @@ func main() {
 	portMin, portMax, err := parsePortRange(*portRange)
 	if err != nil {
 		log.Fatalf("invalid -port-range: %v", err)
+	}
+	if *listAudioDevices {
+		devices, err := airplay.ListAudioDevices()
+		if err != nil {
+			log.Fatalf("list audio devices: %v", err)
+		}
+		printAudioDevices(os.Stdout, devices)
+		return
 	}
 	if *listReceivers {
 		discoverCtx, cancelDiscover := context.WithTimeout(context.Background(), 5*time.Second)
@@ -268,6 +284,7 @@ func main() {
 			NoEncrypt:    *noEncrypt,
 			DirectKey:    *directKey,
 			NoAudio:      *noAudio,
+			Audio:        audioOptions,
 			ShowCursor:   !*noCursor,
 			DisplayIndex: selectedDisplay,
 			Code:         credential,
@@ -644,7 +661,7 @@ func main() {
 
 	// Start audio capture and streaming unless disabled.
 	if !*noAudio && session.HasAudio() {
-		audioCapture, err := airplay.StartAudioCapture(ctx, *testMode, session.AudioCodec())
+		audioCapture, err := airplay.StartAudioCaptureWithOptions(ctx, session.AudioCodec(), audioOptions)
 		if err != nil {
 			log.Printf("warning: audio capture failed: %v (continuing without audio)", err)
 		} else {
@@ -971,4 +988,30 @@ func newCredentialStore(backend, filePath string) (*airplay.CredentialStore, err
 	default:
 		return nil, fmt.Errorf("unknown credential backend %q (use \"file\" or \"keyring\")", backend)
 	}
+}
+
+// maxAudioOffsetMs keeps an offset inside the receiver's playout window; a
+// larger shift would make every frame late or far too early.
+const maxAudioOffsetMs = 1000
+
+func validateAudioOffset(ms int) error {
+	if ms < -maxAudioOffsetMs || ms > maxAudioOffsetMs {
+		return fmt.Errorf("%d ms is outside -%d..%d", ms, maxAudioOffsetMs, maxAudioOffsetMs)
+	}
+	return nil
+}
+
+func printAudioDevices(w io.Writer, devices []airplay.AudioDevice) {
+	if len(devices) == 0 {
+		fmt.Fprintln(w, "no active output devices found")
+		return
+	}
+	for i, device := range devices {
+		marker := " "
+		if device.Default {
+			marker = "*"
+		}
+		fmt.Fprintf(w, "%s %d. %s\n     id: %s\n", marker, i+1, device.Name, device.ID)
+	}
+	fmt.Fprintln(w, "* = default output device (followed when -audio-device is not set)")
 }

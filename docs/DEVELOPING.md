@@ -85,7 +85,8 @@ npm run build                                                                   
 The sender that mirrors this PC's desktop to an Apple TV lives in `cmd/open-airplay` (CLI), `internal/airplay` (protocol: discovery, pairing, FairPlay SAP, encrypted H.264 mirroring, capture) and `internal/daemon`. Its protocol core comes from [doubletake](https://github.com/omarroth/doubletake); provenance is in `NOTICE`. It needs Go 1.25+ and an FFmpeg build with `ddagrab` on `PATH`; usage is in the README's quick start.
 
 - `go run ./cmd/open-airplay -list-displays` and `-display 0 -capture-smoke -hwaccel none -no-audio` check capture without contacting a receiver.
-- `go run ./cmd/doubletake-test-receiver -listen 127.0.0.1:7000 -profile modern -auth none` is a local receiver fixture for protocol tests.
+- `go run ./cmd/doubletake-test-receiver -listen 127.0.0.1:7000 -profile modern -auth none` is a local receiver fixture for protocol tests. Its `-stats-interval 5s` output counts audio packets: an ALAC mirror sends about 125 per second.
+- Mirror audio on Windows is WASAPI loopback capture of an output device (`internal/airplay/audio_capture_windows.go`, COM through `syscall`, no cgo). Device packets are resampled to 44.1 kHz and cut into codec frames by `audio_assembler.go` and `audio_resample.go`, then handed to the existing ALAC / AAC-ELD encoders and the mirror clock. `-list-audio-devices` lists the devices; `go test -tags avsync -run TestManualAVOffset -v ./internal/airplay` measures the audio/video offset with a flash-and-beep clip. That test flashes part of display 0 and plays sound, and needs `ffplay`.
 - Validation evidence and limits: `research/mirror-sender-validation.md`; protocol survey: `research/mirror-sender-feasibility.md`.
 - The Go CLI builds an executable also named `open-airplay.exe`; it is separate from the Tauri app (not yet folded into its UI or installer).
 
