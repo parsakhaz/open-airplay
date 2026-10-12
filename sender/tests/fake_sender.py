@@ -4,6 +4,7 @@ Speaks the same JSON-lines protocol as oap_sender.py with three made-up devices:
   Living Room   an Apple TV: a cast plays after 1 s and keeps playing until Stop
   Kitchen       a speaker: same, as an audio stream
   Bedroom       an Apple TV that never answers: a cast fails after 3 s ("didn't answer")
+  Office TV     an Apple TV discovery can't see: only a scan with "hosts": ["127.0.0.1"] finds it
 Every scan returns the list in a new order (so tests can check rows are keyed by device, not position).
 Set OAP_FAKE_SCAN_DELAY (seconds, default 1) to slow scans down.
 """
@@ -18,6 +19,9 @@ DEVICES = [
     {"identifier": "FAKE-TV-1", "name": "Living Room", "address": "10.9.0.11", "model": "Apple TV 4K", "services": ["AirPlay", "Companion", "RAOP"]},
     {"identifier": "FAKE-SPK-2", "name": "Kitchen", "address": "10.9.0.12", "model": "HomePod mini", "services": ["AirPlay", "RAOP"]},
     {"identifier": "FAKE-TV-3", "name": "Bedroom", "address": "10.9.0.13", "model": "Apple TV HD", "services": ["AirPlay", "RAOP"]},
+]
+HIDDEN = [
+    {"identifier": "FAKE-TV-4", "name": "Office TV", "address": "127.0.0.1", "model": "Apple TV 4K", "services": ["AirPlay", "RAOP"]},
 ]
 lock = threading.Lock()
 jobs = {}  # identifier -> request id
@@ -53,7 +57,8 @@ def handle(cmd):
     sys.stderr.flush()
     if kind == "scan":
         time.sleep(float(os.environ.get("OAP_FAKE_SCAN_DELAY", "1")))
-        devices = DEVICES[:]
+        hosts = cmd.get("hosts")
+        devices = [d for d in DEVICES + HIDDEN if d["address"] in hosts] if hosts else DEVICES[:]
         random.shuffle(devices)
         emit({"id": rid, "event": "devices", "devices": devices})
     elif kind in ("play_url", "stream_file"):
