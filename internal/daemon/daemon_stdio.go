@@ -13,12 +13,18 @@ import (
 	"github.com/parsakhaz/open-airplay/internal/airplay"
 )
 
-// StdioMessage is one line written by the stdio control mode. "response"
-// answers the request with the same ID; "state" is pushed whenever the
-// daemon's status changes, so a parent process never has to poll.
+// StdioProtocolVersion is announced in the first line. It changes only when
+// a field or command changes meaning; additions keep the version.
+const StdioProtocolVersion = 1
+
+// StdioMessage is one line written by the stdio control mode. "hello" comes
+// first and carries Protocol; "response" answers the request with the same ID;
+// "state" is pushed whenever the daemon's status changes, so a parent process
+// never has to poll. See docs/control-protocol.md.
 type StdioMessage struct {
-	Type string `json:"type"`
-	ID   uint64 `json:"id,omitempty"`
+	Type     string `json:"type"`
+	ID       uint64 `json:"id,omitempty"`
+	Protocol int    `json:"protocol,omitempty"`
 	Response
 }
 
@@ -39,6 +45,7 @@ func (d *Daemon) RunStdio(ctx context.Context, in io.Reader, out io.Writer) erro
 	defer cancel()
 
 	w := &stdioWriter{enc: json.NewEncoder(out)}
+	w.write(StdioMessage{Type: "hello", Protocol: StdioProtocolVersion})
 
 	if !d.skipDiscovery {
 		d.mu.Lock()
@@ -88,7 +95,7 @@ func (d *Daemon) RunStdio(ctx context.Context, in io.Reader, out io.Writer) erro
 			}
 			var req Request
 			if err := json.Unmarshal(line, &req); err != nil {
-				w.write(StdioMessage{Type: "response", Response: Response{OK: false, Error: "invalid request: " + err.Error()}})
+				w.write(StdioMessage{Type: "response", Response: Response{OK: false, Error: "invalid request: " + err.Error(), ErrorKind: ErrorKindInvalidRequest}})
 				continue
 			}
 			w.write(StdioMessage{Type: "response", ID: req.ID, Response: d.handleRequest(req)})

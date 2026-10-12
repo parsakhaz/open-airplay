@@ -137,6 +137,10 @@ func splitTestAddr(t *testing.T, addr net.Addr) (string, int) {
 func TestStdioStartsWithAnIdleStateLineAndAnswersRequestsByID(t *testing.T) {
 	h := newStdioHarness(t, newStdioTestDaemon(t))
 
+	hello := h.next("hello", func(StdioMessage) bool { return true })
+	if hello.Type != "hello" || hello.Protocol != StdioProtocolVersion {
+		t.Fatalf("first line = %+v, want hello with protocol %d", hello, StdioProtocolVersion)
+	}
 	h.state("initial idle", func(m StdioMessage) bool { return m.State == StateIdle })
 
 	h.send(`{"id":7,"cmd":"status"}`)
@@ -200,6 +204,9 @@ func TestStdioPushesThePINPromptAndRelaysTheCode(t *testing.T) {
 	})
 	if !strings.Contains(failed.Error, "pin pairing") {
 		t.Fatalf("failure line error = %q, want a pin pairing failure", failed.Error)
+	}
+	if len(failed.Errors) != 1 || failed.Errors[0].Target != host || failed.Errors[0].Kind != ErrorKindWrongCode || failed.Errors[0].Device != "PIN TV" {
+		t.Fatalf("per-target errors = %+v, want one wrong_code for %s", failed.Errors, host)
 	}
 	if result := <-serverDone; result.err != nil {
 		t.Fatalf("scripted receiver: %v", result.err)
@@ -332,7 +339,7 @@ func TestStdioConnectRemembersTheChosenDisplay(t *testing.T) {
 	d := newStdioTestDaemon(t)
 	h := newStdioHarness(t, d)
 
-	h.send(fmt.Sprintf(`{"id":1,"cmd":"connect","target":%q,"port":%d,"display":1}`, host, port))
+	h.send(fmt.Sprintf(`{"id":1,"cmd":"connect","target":%q,"port":%d,"options":{"display":1}}`, host, port))
 	if resp := h.response(1); !resp.OK {
 		t.Fatalf("connect rejected: %+v", resp)
 	}
@@ -361,5 +368,44 @@ func TestSourceSizeIsTheChosenDisplaysSize(t *testing.T) {
 	d.listDisplays = func() ([]airplay.Display, error) { return nil, errors.New("not on Windows") }
 	if w, h := d.sourceSize(0); w != 0 || h != 0 {
 		t.Fatalf("sourceSize without displays = %dx%d, want 0x0", w, h)
+	}
+}
+
+func TestStdioUnreachableTargetReportsItsOwnErrorKind(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	host, port := splitTestAddr(t, listener.Addr())
+	listener.Close() // nothing listens: the connect is refused
+
+	h := newStdioHarness(t, newStdioTestDaemon(t))
+	h.send(fmt.Sprintf(`{"id":1,"cmd":"connect","target":%q,"port":%d}`, host, port))
+	if resp := h.response(1); !resp.OK {
+		t.Fatalf("connect rejected: %+v", resp)
+	}
+	line := h.state("unreachable", func(m StdioMessage) bool { return len(m.Errors) > 0 })
+	if line.Errors[0].Kind != ErrorKindUnreachable || line.Errors[0].Target != host || line.Errors[0].Message == "" {
+		t.Fatalf("errors = %+v, want unreachable for %s", line.Errors, host)
+	}
+
+	// Retrying that target acknowledges its error.
+	h.send(fmt.Sprintf(`{"id":2,"cmd":"connect","target":%q,"port":%d}`, host, port))
+	resp := h.response(2)
+	if !resp.OK || len(resp.Errors) != 0 {
+		t.Fatalf("retry response = %+v, want ok with the old error cleared", resp)
+	}
+}
+
+func TestStdioRejectsOptionsItCannotHonourYet(t *testing.T) {
+	h := newStdioHarness(t, newStdioTestDaemon(t))
+	h.send(`{"id":1,"cmd":"connect","target":"127.0.0.1","options":{"fps":60}}`)
+	resp := h.response(1)
+	if resp.OK || resp.ErrorKind != ErrorKindUnsupportedOption || !strings.Contains(resp.Error, "fps") {
+		t.Fatalf("response = %+v, want unsupported_option naming fps", resp)
+	}
+	h.send(`{"id":2,"cmd":"connect","target":"127.0.0.1","options":{"display":-3}}`)
+	if resp := h.response(2); resp.OK || resp.ErrorKind != ErrorKindInvalidRequest {
+		t.Fatalf("negative display response = %+v, want invalid_request", resp)
 	}
 }
