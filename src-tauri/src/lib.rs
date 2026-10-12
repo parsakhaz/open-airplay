@@ -2,6 +2,7 @@ pub mod doctor;
 pub mod engine;
 pub mod launch;
 pub mod mirror;
+pub mod mirror_options;
 pub mod netwatch;
 pub mod panel;
 pub mod prefs;
@@ -470,6 +471,16 @@ fn set_prefs(app: AppHandle, start_at_login: bool) -> Result<AppPrefs, String> {
     let prefs = app.state::<AppState>().update_prefs(|p| p.start_at_login = start_at_login);
     apply_start_at_login(&app, prefs.start_at_login)?;
     Ok(prefs)
+}
+
+/// Saves mirror options under Advanced: the app-wide defaults when `device` is None, else that
+/// device's own choices (all automatic forgets the device).
+#[tauri::command]
+fn set_mirror_options(app: AppHandle, device: Option<String>, options: mirror_options::MirrorOptions) -> AppPrefs {
+    app.state::<AppState>().update_prefs(|p| match device {
+        Some(device) => p.mirror.set_device(&device, options),
+        None => p.mirror.defaults = options,
+    })
 }
 
 fn apply_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
@@ -997,7 +1008,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, set_mirror_options, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
