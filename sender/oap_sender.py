@@ -2,12 +2,13 @@
 
 Protocol: one JSON object per line on stdin (commands) and stdout (events). Every command runs as its
 own task, so a long cast never blocks a scan or another device. Replies carry the command's id.
-  -> {"id": 1, "cmd": "scan", "timeout": 5}
+  -> {"id": 1, "cmd": "scan", "timeout": 5}                    "hosts": ["192.168.1.50"] asks those addresses directly
   <- {"id": 1, "event": "devices", "devices": [{"identifier", "name", "address", "model", "services"}]}
   -> {"id": 2, "cmd": "play_url", "identifier": "...", "name": "Den", "url": "http://..." | "C:/movie.mp4"}
   -> {"id": 3, "cmd": "stream_file", "identifier": "...", "name": "Den", "path": "C:/song.mp3"}
   <- {"id": 2, "event": "playing", "identifier": "..."}           the device took it (not final)
   <- {"id": 2, "event": "ok" | "stopped" | "error", "identifier": "..."}   final: ended, stopped, failed
+  play_url, stream_file, pause and resume also take "address", used to reach a device no scan has seen.
   -> {"id": 4, "cmd": "stop", "identifier": "..."}   stops that device's cast (no identifier: all casts)
   -> {"id": 5, "cmd": "pause" | "resume", "identifier": "..."}
   -> {"id": 6, "cmd": "ping"}     <- {"id": 6, "event": "pong"}
@@ -178,8 +179,10 @@ class Sidecar:
             seconds = max(1, min(int(cmd.get("timeout", 5)), MAX_SCAN_SECONDS))
         except (TypeError, ValueError):
             seconds = 5
+        hosts = [str(h) for h in cmd.get("hosts") or [] if str(h).strip()]
+        kwargs = {"hosts": hosts} if hosts else {}  # unicast: for networks that block discovery
         try:
-            confs = await asyncio.wait_for(self.scan_fn(timeout=seconds), seconds + 2)
+            confs = await asyncio.wait_for(self.scan_fn(timeout=seconds, **kwargs), seconds + 2)
         except Exception as e:
             log.warning("scan failed: %r", e)
             raise Refused("scan_failed", "Couldn't search the network. Check this PC is on Wi-Fi or a network.")
@@ -209,7 +212,7 @@ class Sidecar:
             self.emit({"id": job.request_id, "event": event, "identifier": identifier, **extra})
 
         try:
-            job.atv = await asyncio.wait_for(self.open(identifier, cmd.get("credentials")), CONNECT_SECONDS)
+            job.atv = await asyncio.wait_for(self.open(identifier, cmd.get("credentials"), cmd.get("address")), CONNECT_SECONDS)
             stream = job.atv.stream
             playing = asyncio.ensure_future(stream.play_url(media) if play_url else stream.stream_file(media))
             try:
@@ -235,10 +238,13 @@ class Sidecar:
             if self.jobs.get(identifier) is job:
                 del self.jobs[identifier]
 
-    async def open(self, identifier, credentials):
+    async def open(self, identifier, credentials, address=None):
         conf = self.known.get(identifier)
         if conf is None:
-            confs = await self.scan_fn(identifier=identifier, timeout=5)
+            if address:  # added by address: ask it directly, discovery may be blocked
+                confs = [c for c in await self.scan_fn(hosts=[str(address)], timeout=5) if c.identifier == identifier]
+            else:
+                confs = await self.scan_fn(identifier=identifier, timeout=5)
             if not confs:
                 raise LookupError(f"device {identifier} not found")
             conf = self.known[identifier] = confs[0]

@@ -58,9 +58,12 @@ class Harness:
         self.atvs = []
         self.devices = list(devices)
 
-        async def scan(timeout=5, identifier=None):
+        self.scans = []
+
+        async def scan(timeout=5, identifier=None, hosts=None):
+            self.scans.append({"timeout": timeout, "identifier": identifier, "hosts": hosts})
             await asyncio.sleep(scan_delay)
-            return [d for d in self.devices if identifier in (None, d.identifier)]
+            return [d for d in self.devices if identifier in (None, d.identifier) and (hosts is None or d.address in hosts)]
 
         async def connect(_conf):
             await asyncio.sleep(connect_delay)
@@ -207,6 +210,28 @@ class Jobs(unittest.TestCase):
             h.sidecar.dispatch({"id": 1, "cmd": "scan", "timeout": 1})
             await h.until(lambda: h.replies(1))
             self.assertEqual([d["identifier"] for d in h.replies(1)[0]["devices"]], ["tv"])
+        run(go())
+
+    def test_a_scan_can_ask_addresses_directly(self):
+        async def go():
+            h = Harness([conf("tv", "10.0.0.9"), conf("me", "10.0.0.5"), conf("other", "10.0.0.7")], local=("10.0.0.5",))
+            h.sidecar.dispatch({"id": 1, "cmd": "scan", "timeout": 30, "hosts": ["10.0.0.9", "10.0.0.5"]})
+            await h.until(lambda: h.replies(1))
+            self.assertEqual(h.scans[-1], {"timeout": oap_sender.MAX_SCAN_SECONDS, "identifier": None, "hosts": ["10.0.0.9", "10.0.0.5"]})
+            self.assertEqual([d["identifier"] for d in h.replies(1)[0]["devices"]], ["tv"])  # this PC still left out
+            h.sidecar.dispatch({"id": 2, "cmd": "scan", "timeout": 1, "hosts": ["10.0.0.99"]})
+            await h.until(lambda: h.replies(2))
+            self.assertEqual(h.replies(2)[0], {"id": 2, "event": "devices", "devices": []})
+        run(go())
+
+    def test_a_cast_reaches_an_unscanned_device_by_its_address(self):
+        async def go():
+            h = Harness([conf("tv", "10.0.0.9")])
+            h.sidecar.dispatch({"id": 1, "cmd": "play_url", "identifier": "tv", "address": "10.0.0.9", "url": "http://x/a.mp4"})
+            await h.until(lambda: h.replies(1))
+            self.assertEqual(h.replies(1)[0]["event"], "playing")
+            self.assertEqual(h.scans, [{"timeout": 5, "identifier": None, "hosts": ["10.0.0.9"]}])
+            await h.sidecar.shutdown()
         run(go())
 
     def test_health_lists_the_devices_being_cast_to(self):
