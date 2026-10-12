@@ -1,3 +1,4 @@
+pub mod added;
 pub mod dacp;
 pub mod doctor;
 pub mod engine;
@@ -664,6 +665,32 @@ async fn receiver_stop(app: AppHandle) -> Result<ReceiverStatus, String> {
     tauri::async_runtime::spawn_blocking(move || stop_receiver_inner(&app)).await.map_err(|e| e.to_string())
 }
 
+/// "Add device": checks what the user typed, then that something answers there. Errors are sentences for the user.
+#[tauri::command]
+async fn added_device_check(input: String, port: Option<String>) -> Result<added::Address, String> {
+    let addr = added::parse_address_with_port(&input, port.as_deref()).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || added::check_reachable(&addr, Duration::from_secs(3)).map(|()| addr))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Remembers an added device (or updates the one at that address) and returns the list.
+#[tauri::command]
+fn added_device_save(app: AppHandle, device: added::AddedDevice) -> Result<Vec<added::AddedDevice>, String> {
+    let addr = added::parse_address(&device.host).map_err(|e| e.to_string())?;
+    let device = added::AddedDevice { host: addr.host, ..device };
+    Ok(app.state::<AppState>().update_prefs(|p| added::remember(&mut p.added_devices, device)).added_devices)
+}
+
+/// Forgets an added device and returns the list.
+#[tauri::command]
+fn added_device_remove(app: AppHandle, host: String) -> Vec<added::AddedDevice> {
+    app.state::<AppState>().update_prefs(|p| {
+        added::forget(&mut p.added_devices, &host);
+    })
+    .added_devices
+}
+
 fn sender_python() -> PathBuf {
     std::env::var_os("OAP_PYTHON").map(PathBuf::from).unwrap_or_else(|| {
         let venv = repo_root().join("sender").join(".venv");
@@ -1267,7 +1294,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays, set_mirror_options, mirror_capabilities])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays, set_mirror_options, mirror_capabilities, added_device_check, added_device_save, added_device_remove])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 

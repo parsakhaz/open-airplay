@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::added::AddedDevice;
 use crate::engine::ReceiverSettings;
 use crate::mirror_options::MirrorOptions;
 
@@ -19,6 +20,8 @@ pub struct AppPrefs {
     pub receiving: Option<bool>,
     /// Mirror options under Advanced in the Mirror sheet: the defaults for every mirror.
     pub mirror: MirrorOptions,
+    /// Devices added by IP address or hostname, shown in Send to next to discovered ones.
+    pub added_devices: Vec<AddedDevice>,
 }
 
 impl AppPrefs {
@@ -97,6 +100,7 @@ mod tests {
             start_at_login_offered: true,
             receiving: Some(false),
             mirror: MirrorOptions { fps: Some(30), ..MirrorOptions::default() },
+            added_devices: Vec::new(),
         };
         prefs.save(&path).unwrap();
         assert_eq!(AppPrefs::load(&path, "IGNORED"), prefs);
@@ -150,6 +154,18 @@ mod tests {
         let prefs = AppPrefs::load(&path, "PC");
         assert_eq!(prefs.receiver.name, "Den");
         assert!(prefs.start_at_login);
+    }
+
+    #[test]
+    fn added_devices_are_remembered_in_order() {
+        let path = temp_path("added");
+        let added = vec![
+            AddedDevice { host: "192.168.1.20".into(), port: Some(7100), name: Some("Den".into()), cast_id: Some("AA:BB".into()) },
+            AddedDevice { host: "office.local".into(), ..AddedDevice::default() },
+        ];
+        AppPrefs { added_devices: added.clone(), ..AppPrefs::load(&path, "PC") }.save(&path).unwrap();
+        assert_eq!(AppPrefs::load(&path, "PC").added_devices, added);
+        assert!(AppPrefs::load(&temp_path("added-none"), "PC").added_devices.is_empty());
     }
 
     #[test]

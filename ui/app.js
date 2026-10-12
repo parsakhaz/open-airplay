@@ -35,7 +35,7 @@ async function savePrefs() {
 // ---------- state ----------
 const ui = {
   status: { seq: 0, running: false },
-  page: "home",             // "home" | "settings" | "cast"
+  page: "home",             // "home" | "settings" | "cast" | "add-device"
   target: null,
   devices: [],
   scanned: false,
@@ -235,8 +235,8 @@ function devicesHtml() {
     return `<button class="oai-list-row send-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><b>${esc(d.name)}</b><small class="${sub.cls}">${sub.html}</small></span><svg class="chev"><use href="#i-chev"/></svg></button>`;
   }).join("");
   const empty = list.length && !ui.scanning ? "" : `<div class="devices-empty">${devicesEmptyText()}</div>`;
-  // ux-add-device adds its "Add device by address…" row after the rows.
-  return `<div class="oai-list-label">Send to <button class="oai-icon-btn ${ui.scanning ? "is-spinning" : ""}" data-action="scan" aria-label="Find devices" title="Find devices">${use("i-refresh")}</button></div>${rows}${empty}`;
+  // The "Add device by address…" row (add-device.js) ends the list.
+  return `<div class="oai-list-label">Send to <button class="oai-icon-btn ${ui.scanning ? "is-spinning" : ""}" data-action="scan" aria-label="Find devices" title="Find devices">${use("i-refresh")}</button></div>${rows}${empty}${AddDevice.addRowHtml()}`;
 }
 
 /** The neutral header of a device page: back, the device, its type or what's being sent to it. */
@@ -337,14 +337,14 @@ function render() {
   if (swErr.textContent !== switchError) swErr.textContent = switchError;
 
   if (ui.page === "cast" && !ui.target) ui.page = "home";
-  for (const page of ["home", "settings", "cast", "mirror"]) $("page-" + page).hidden = ui.page !== page;
+  for (const page of ["home", "settings", "cast", "mirror", "add-device"]) $("page-" + page).hidden = ui.page !== page;
   // Sub-pages swap the home header (and its switch) for back, an icon and a title, and drop the footer.
-  // Send pages (a device page, the Mirror sheet) have their own header, send-head.
+  // Send pages (a device page, the Mirror sheet) have their own header, send-head. The Add a device form carries its own header.
   const sendPage = ui.page === "cast" || ui.page === "mirror", head = subHead();
-  $("panel-head").hidden = sendPage || !!head;
+  $("panel-head").hidden = sendPage || !!head || ui.page === "add-device";
   $("panel-subhead").hidden = !head;
   $("send-head").hidden = !sendPage;
-  $("panel-foot").hidden = sendPage || !!head;
+  $("panel-foot").hidden = sendPage || !!head || ui.page === "add-device";
   if (head) {
     patch("sub-ico", use(head.icon));
     if ($("sub-title").textContent !== head.title) $("sub-title").textContent = head.title;
@@ -363,6 +363,7 @@ function render() {
     syncSettingsInputs();
   } else if (ui.page === "cast") {
     patch("send-head", sendHeadHtml());
+    patch("device-extra", deviceExtraHtml());
   } else if (ui.page === "mirror") {
     patch("send-head", mirrorHeadHtml());
     OapMirror.render();
@@ -462,6 +463,16 @@ function selectDevice(identifier) {
   goTo("cast");
 }
 
+// ---------- add device by address (add-device.js) ----------
+$("page-add-device").innerHTML = AddDevice.pageHtml();
+AddDevice.mount($("page-add-device"), {
+  invoke,
+  scanHosts: (host) => OapCast.scan([host]),
+  open: () => goTo("add-device"),
+  done: () => goTo("home"),
+  refresh: refreshAddedDevices,
+});
+
 /** Fills the device page. The Mirror screen tile comes from the mirror code (window.OapMirror) for a
  *  device that can take a mirror; until that code is present the page is Cast media alone. */
 function showDevicePage() {
@@ -469,6 +480,14 @@ function showDevicePage() {
   const mirrorTile = !isSpeaker(d) && window.OapMirror && OapMirror.tile ? OapMirror.tile(d) : null;
   if (canCast(d)) OapCast.show(d, { speaker: isSpeaker(d), mirrorTile });
   $("cast-media").hidden = !canCast(d);
+}
+
+/** Below the cast part: the Mirror tile alone for a device that can mirror but not cast (added by
+ *  address, and no cast scan answered), then Remove for a device added by address. */
+function deviceExtraHtml() {
+  const d = ui.target;
+  const mirrorOnly = !canCast(d) && !isSpeaker(d) && window.OapMirror && OapMirror.tile;
+  return (mirrorOnly ? `<div class="send-body"><div class="send-tiles">${OapMirror.tile(d)}</div></div>` : "") + AddDevice.removeHtml(d);
 }
 
 /** Opens the Mirror sheet from the open device page. */

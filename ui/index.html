@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="components.css">
   <link rel="stylesheet" href="app.css">
   <link rel="stylesheet" href="mirror-advanced.css">
+  <link rel="stylesheet" href="add-device.css">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -112,6 +113,9 @@
         <div class="pop-page" id="page-mirror" hidden>
           <div id="mirror-sheet"></div>
         </div>
+
+        <!-- Add device by address: filled by add-device.js -->
+        <div class="pop-page" id="page-add-device" hidden></div>
       </div>
     </div>
     <footer class="oai-popover-foot" id="panel-foot">
@@ -119,6 +123,7 @@
     </footer>
   </section>
 
+  <script src="add-device.js"></script>
   <script src="cast.js"></script>
   <script src="mirror-advanced.js"></script>
   <script src="mirror-sheet.js"></script>

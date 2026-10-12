@@ -60,6 +60,10 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
 
+      - name: UI tests
+        shell: bash
+        run: node --test tests/ui/*.test.js
+
       - name: Sender tests
         shell: bash
         run: |
