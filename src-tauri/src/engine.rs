@@ -29,6 +29,10 @@ pub enum EngineEvent {
     Pin { code: String },
     /// First frame / new resolution of the mirrored video (engine patch 0002).
     Video { width: u32, height: u32 },
+    /// The mirrored video stopped; the connection may still be open (engine patch 0003).
+    VideoStopped,
+    /// The engine ended the session after a `disconnect` control line (engine patch 0003).
+    Disconnected,
     Error { message: String },
 }
 
@@ -69,6 +73,12 @@ pub fn parse_line(line: &str) -> Option<EngineEvent> {
     }
     if let Some(n) = line.strip_prefix("Open connections: ") {
         return n.trim().parse().ok().map(|count| EngineEvent::OpenConnections { count });
+    }
+    if line == "open-airplay: video stopped" {
+        return Some(EngineEvent::VideoStopped);
+    }
+    if line == "open-airplay: disconnected" {
+        return Some(EngineEvent::Disconnected);
     }
     if let Some(size) = line.strip_prefix("open-airplay: video ") {
         let (w, h) = size.split_once('x')?;
@@ -163,6 +173,12 @@ mod tests {
     fn parses_video_size_from_patched_engine() {
         assert_eq!(parse_line("open-airplay: video 886x1920"), Some(EngineEvent::Video { width: 886, height: 1920 }));
         assert_eq!(parse_line("open-airplay: video 0xbogus"), None);
+    }
+
+    #[test]
+    fn parses_video_stopped_and_the_disconnect_ack_from_patched_engine() {
+        assert_eq!(parse_line("open-airplay: video stopped"), Some(EngineEvent::VideoStopped));
+        assert_eq!(parse_line("open-airplay: disconnected"), Some(EngineEvent::Disconnected));
     }
 
     #[test]

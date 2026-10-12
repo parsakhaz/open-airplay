@@ -70,7 +70,23 @@ To use it in another app, such as open-airdrop-windows:
 3. Load them before your own styles: `tokens.css`, then `components.css`, then `app.css`.
 4. Use only `--oai-*` variables in app styles, so both apps keep the same look and both themes keep working.
 
-The app window has two modes built from these pieces. The **compact** mode is the primary surface: a frosted popover above the tray with status, a receiving switch, Send to devices and quick settings. The **full** mode opens on demand with Expand, or automatically when mirroring starts if you turn that on in Settings. It has a device sidebar and a large stage. F11 toggles full screen, and Esc returns to compact.
+The app has one window built from these pieces: the **tray panel**. It opens above the tray icon, sizes itself to its content, and closes when you click somewhere else, like Windows quick settings. The app's own windows (the mirror video, the UAC prompt, a settings page it opened) don't close it. Esc goes back from a sub-page, then closes it. The mirrored video plays in the engine's own window.
+
+How it stays responsive: the shell publishes `receiver-status` only when the snapshot changes (never for engine log lines), and each snapshot carries a rising `seq` so the UI keeps the newest. The UI renders by region (`ui/app.js`, `patch()`) and only touches a region whose markup changed; inputs are static markup, so typing and clicks survive updates.
+
+### Driving the panel without an iPhone
+
+`src-tauri/examples/fake_engine.rs` stands in for `uxplay.exe`. It prints the lines the shell parses, can storm log lines, and answers `disconnect` on stdin. Its doc comment lists the commands; you send them by appending lines to a control file.
+
+```powershell
+cargo build --manifest-path src-tauri/Cargo.toml --example fake_engine
+$env:OAP_ENGINE = "$PWD\src-tauri\target\debug\examples\fake_engine.exe"
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"   # drive the panel over CDP
+npm run dev
+Add-Content $env:TEMP\oap-fake-engine.ctl "connect"; Add-Content $env:TEMP\oap-fake-engine.ctl "video 886x1920"
+```
+
+If the installed open-airplay is running, a dev build with the same identifier only opens the installed app's panel (single instance). Build with another identifier for testing: `$env:TAURI_CONFIG = '{"identifier":"org.openairplay.app.test"}'`.
 
 ## Build the installer (Windows)
 
