@@ -91,7 +91,15 @@ impl PanelState {
     }
 
     fn allow_own_window(&self) {
-        *self.grace_until.lock().unwrap() = Some(Instant::now() + panel::OWN_WINDOW_GRACE);
+        self.grace_for(panel::OWN_WINDOW_GRACE);
+    }
+
+    fn grace_for(&self, d: std::time::Duration) {
+        let until = Instant::now() + d;
+        let mut grace = self.grace_until.lock().unwrap();
+        if grace.is_none_or(|t| t < until) {
+            *grace = Some(until);
+        }
     }
 }
 
@@ -414,14 +422,28 @@ fn default_settings(app: AppHandle) -> ReceiverSettings {
 fn show_video_window(app: AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
-        app.state::<AppState>().panel.allow_own_window();
-        use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            FindWindowExW, GetWindowThreadProcessId, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+        };
+        let state = app.state::<AppState>();
+        let not_open = || "The video window isn't open.".to_string();
+        let engine = state.sidecars.engine_pid().ok_or_else(not_open)?;
         let class: Vec<u16> = "OpenAirplayMirrorWindow".encode_utf16().chain(Some(0)).collect();
         unsafe {
-            let hwnd = FindWindowW(class.as_ptr(), std::ptr::null());
-            if hwnd.is_null() {
-                return Err("The video window isn't open.".into());
+            // Only our own engine's window: another open-airplay (say, the installed one) has the same class.
+            let mut hwnd = std::ptr::null_mut();
+            loop {
+                hwnd = FindWindowExW(std::ptr::null_mut(), hwnd, class.as_ptr(), std::ptr::null());
+                if hwnd.is_null() {
+                    return Err(not_open());
+                }
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(hwnd, &mut pid);
+                if pid == engine {
+                    break;
+                }
             }
+            state.panel.allow_own_window();
             ShowWindow(hwnd, if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW });
             SetForegroundWindow(hwnd);
         }
@@ -711,6 +733,7 @@ fn show_panel(app: &AppHandle) {
     }
     place_panel(app);
     if let Some(window) = app.get_webview_window("main") {
+        state.panel.grace_for(panel::OPEN_GRACE);
         state.panel.visible.store(true, Ordering::SeqCst);
         let _ = window.show();
         let _ = window.set_focus();
@@ -805,6 +828,13 @@ fn spawn_foreground_watch(app: AppHandle) {
 fn spawn_foreground_watch(_app: AppHandle) {}
 
 pub fn run() {
+    // A second launch (from Start, say) holds the right to take the foreground; let the running
+    // instance it signals use it, so the panel it opens gets the focus.
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
+        AllowSetForegroundWindow(ASFW_ANY);
+    }
     let app = tauri::Builder::default()
         // A second launch focuses the running app instead of starting a rival receiver on the same ports.
         // It never changes receiving; a stray boot launch while running does nothing.

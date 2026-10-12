@@ -15,6 +15,9 @@ pub const TRAY_CLICK_AFTER_DISMISS: Duration = Duration::from_millis(500);
 /// How long a window the app just opened (video window, network settings) may take focus without
 /// closing the panel.
 pub const OWN_WINDOW_GRACE: Duration = Duration::from_secs(4);
+/// Focus changes right after the panel opens (the Start menu closing, a launcher handing over the
+/// foreground) don't close it.
+pub const OPEN_GRACE: Duration = Duration::from_millis(800);
 
 /// A rectangle in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
