@@ -154,7 +154,7 @@ function audioHtml(s) {
   const controls = s.can_control ? `<div class="controls">${ctl("previous", "i-prev", "Previous")}${ctl("play_pause", "i-playpause", "Play or pause")}${ctl("next", "i-next", "Next")}</div>` : "";
   const volume = s.volume == null ? "" : `<div class="volume" role="meter" aria-label="Volume on the phone" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${s.volume}" title="Volume: ${s.volume}% (change it on the phone)">${use("i-volume")}<span class="bar"><i style="width:${s.volume}%"></i></span></div>`;
   const controlError = ["previous", "play_pause", "next"].map((c) => errorLine("control:" + c)).join("");
-  return `<div class="pop-hero is-live is-audio"><div class="top"><div class="art">${art}</div><div class="who"><h3>${esc(title)}</h3>${detail ? `<p>${esc(detail)}</p>` : ""}</div></div><div class="bottom">${controls}${volume}${btn("disconnect", "Disconnect", "is-danger is-small")}</div></div>${controlError}${errorLine("disconnect")}`;
+  return `<div class="oai-live is-audio"><div class="oai-media"><span class="oai-art">${art}</span><div><b>${esc(title)}</b>${detail ? `<small>${esc(detail)}</small>` : ""}</div></div><div class="bottom">${controls}${volume}${btn("disconnect", "Disconnect", "is-danger is-small")}</div>${controlError}${errorLine("disconnect")}</div>`;
 }
 
 // The receive block: a dot (or a spinner while something is happening) next to one sentence and a hint.
