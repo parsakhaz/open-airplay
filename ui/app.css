@@ -142,6 +142,10 @@ button.m-row:focus-visible, .m-row .x:focus-visible, .m-disp:focus-visible { out
 .m-row .x { width: 32px; height: 32px; border: 0; border-radius: var(--oai-radius-md); background: transparent; color: var(--oai-ink-3); display: grid; place-items: center; flex: none; }
 .m-row .x:hover { background: var(--oai-fill); color: var(--oai-ink); }
 .m-row .x svg { width: 12px; height: 12px; }
+.m-row.m-add { color: var(--oai-accent); }
+.m-row.m-add .ico { background: transparent; border: 1px dashed var(--oai-hairline); color: var(--oai-accent); }
+.m-row.m-add-none small { color: var(--oai-ink-2); }
+.m-add-btns { margin-top: 6px; }
 
 .m-displays { display: flex; gap: var(--oai-space-2); }
 .m-disp { flex: 1; border: 0; border-radius: var(--oai-radius-md); background: var(--oai-fill); padding: var(--oai-space-2); display: grid; gap: 6px; justify-items: center; font: inherit; font-size: var(--oai-text-sm); color: var(--oai-ink-2); }

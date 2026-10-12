@@ -21,24 +21,25 @@ window.OapMirror = (() => {
     busy: new Set(),     // "start", "stop", "code"
     error: null,         // a failed command, in plain words
     codeKey: null,       // which prompt the code boxes belong to, so a new prompt starts empty
+    adding: false,       // while mirroring: the Add a device picker is open
   };
   let root = null;
   let host = { changed: () => {}, devices: () => [], back: () => {} };
 
   // ---------- what a tick, Mirror, × and Stop do ----------
-  // One TV at a time for now; the multi-device work replaces these to tick and run several.
+  // Several TVs at once: ticks add up, each TV starts on its own, × removes one TV, Stop all ends all.
   const actions = {
     tick(ip) {
-      state.ticked = state.ticked.includes(ip) ? [] : [ip];
+      state.ticked = state.ticked.includes(ip) ? state.ticked.filter((t) => t !== ip) : [...state.ticked, ip];
     },
     async start(targets) {
       for (const d of targets) {
         await invoke("mirror_start", { target: d.ip, port: d.port ?? null, name: d.name, display: state.displays.length > 1 ? state.display : null });
       }
     },
-    remove: () => invoke("mirror_stop"),
-    stopAll: () => invoke("mirror_stop"),
-    sendCode: (_target, code) => invoke("mirror_code", { code }),
+    remove: (target) => invoke("mirror_stop", { target: target ?? null }),
+    stopAll: () => invoke("mirror_stop", { target: null }),
+    sendCode: (target, code) => invoke("mirror_code", { target: target ?? null, code }),
   };
 
   // ---------- status ----------
@@ -75,7 +76,7 @@ window.OapMirror = (() => {
 
   function model() {
     const devices = offered().map((d) => ({ name: d.name, ip: d.ip }));
-    return MirrorSheet.mirrorSheet({ snapshot: state.snapshot, devices, ticked: state.ticked, adding: false });
+    return MirrorSheet.mirrorSheet({ snapshot: state.snapshot, devices, ticked: state.ticked, adding: state.adding });
   }
 
   /** The sheet's header: { icon, title, sub } (sub is markup). */
@@ -154,6 +155,7 @@ window.OapMirror = (() => {
   /** Opens the sheet from a device page: that device is ticked, unless a mirror is already running. */
   function open(device) {
     state.error = null;
+    state.adding = false;
     if (!sending()) state.ticked = device && device.address ? [device.address] : [];
     loadDisplays();
   }
@@ -213,7 +215,10 @@ window.OapMirror = (() => {
     const showDisplays = m.mode === "pick" && state.displays.length > 1;
     region("displays", showDisplays ? `<div class="m-sect">Display</div><div class="m-displays">${state.displays.map((d) => `<button class="m-disp ${d.index === state.display ? "on" : ""}" data-mirror="display" data-index="${d.index}" aria-pressed="${d.index === state.display}"><span class="scr">${d.index + 1}</span>${d.width}×${d.height}</button>`).join("")}</div>` : "");
     root.querySelector('[data-slot="mirror-advanced"]').hidden = m.mode !== "pick";
-    root.querySelector('[data-slot="mirror-add"]').hidden = m.mode !== "live";
+    const add = root.querySelector('[data-slot="mirror-add"]');
+    add.hidden = m.mode !== "live";
+    if (m.mode !== "live") state.adding = false;
+    else renderAdd(add, m.add);
 
     let button = "";
     if (m.mode === "pick") {
@@ -226,6 +231,24 @@ window.OapMirror = (() => {
     region("button", button);
     renderCode(m);
     tick();
+  }
+
+  /** Add a device: one row while mirroring; pressed, it brings back the ticks for the other TVs. */
+  let addShown = null;
+  function renderAdd(slot, add) {
+    let html;
+    if (!add.open) {
+      html = `<div class="m-rows"><button class="m-row m-add" data-mirror="add-open"><span class="ico">${use("i-plus")}</span><span class="grow"><b>Add a device</b></span></button></div>`;
+    } else if (!add.rows.length) {
+      html = `<div class="m-rows"><div class="m-row m-add-none"><span class="grow"><small>No other devices to add.</small></span><button class="oai-ghost" data-mirror="add-close">Done</button></div></div>`;
+    } else {
+      const busy = state.busy.has("start");
+      html = `<div class="m-sect">Add a device</div><div class="m-rows">${add.rows.map((r) => rowHtml(r, "pick")).join("")}</div>
+        <div class="m-btns m-add-btns"><button class="oai-btn" data-mirror="add-close">Cancel</button><button class="oai-btn is-primary ${busy ? "is-busy" : ""}" data-mirror="add" ${add.button.disabled || busy ? "disabled" : ""}>${esc(add.button.label)}</button></div>`;
+    }
+    if (html === addShown) return;
+    addShown = html;
+    slot.innerHTML = html;
   }
 
   function renderCode(m) {
@@ -291,6 +314,20 @@ window.OapMirror = (() => {
         const chosen = offered().filter((d) => state.ticked.includes(d.ip));
         // A TV that failed and has left the device list can still be retried from its row.
         for (const ip of state.ticked) if (!chosen.some((d) => d.ip === ip)) chosen.push({ ip, name: (entryFor(ip) || {}).device || ip });
+        return act("start", () => actions.start(chosen));
+      }
+      case "add-open":
+        state.adding = true;
+        state.ticked = [];
+        return host.changed();
+      case "add-close":
+        state.adding = false;
+        state.ticked = [];
+        return host.changed();
+      case "add": {
+        const chosen = offered().filter((d) => state.ticked.includes(d.ip));
+        state.adding = false;
+        state.ticked = [];
         return act("start", () => actions.start(chosen));
       }
       case "remove":
