@@ -75,3 +75,12 @@ test("a refused address is reported as the plain sentence and nothing is saved",
   await assert.rejects(AddDevice.add({ input: "192.168.1.300", name: "", port: "" }, f), (e) => e === "192.168.1.300 isn't a valid IP address.");
   assert.deepEqual(f.calls.map((c) => c[0]), ["added_device_check"]);
 });
+
+test("Remove shows only on the page of a device that was added by address", () => {
+  assert.equal(AddDevice.removeHtml({ ...den, added: null }), "");
+  assert.equal(AddDevice.removeHtml(null), "");
+  const html = AddDevice.removeHtml({ ...den, added: "192.168.1.20" });
+  assert.match(html, />Remove from this list</);
+  assert.match(html, /data-host="192\.168\.1\.20"/);
+  assert.match(AddDevice.removeHtml({ added: `a"><b>` }), /data-host="a&quot;&gt;&lt;b&gt;"/, "escaped");
+});

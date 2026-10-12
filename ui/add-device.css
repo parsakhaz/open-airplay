@@ -1,0 +1,44 @@
+/* Add device by address (add-device.js): the last Send to row, the form page and Remove.
+   Built to plans/mockups/device-page/APPROVED.html (states 1 and 16). Tokens only. */
+
+/* the Send to row */
+.ad-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 6px 8px 6px 10px; border: 0; border-radius: var(--oai-radius-md); background: transparent; color: var(--oai-accent); text-align: left; font: inherit; font-size: var(--oai-text-md); cursor: default; }
+.ad-row:hover, .ad-row:focus-visible { background: var(--oai-fill); outline: none; }
+.ad-ico { width: 28px; height: 28px; border-radius: 7px; border: 1px dashed var(--oai-hairline); display: grid; place-items: center; flex: none; }
+.ad-ico svg { width: 15px; height: 15px; }
+.ad-grow { flex: 1; min-width: 0; }
+.ad-grow b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the form page: neutral send header, no footer */
+.ad-page { display: flex; flex-direction: column; margin: 0 -6px -6px; }
+.ad-head { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 12px 12px 10px 6px; border-bottom: 0.5px solid var(--oai-hairline); }
+.ad-back { width: 32px; height: 32px; border: 0; border-radius: var(--oai-radius-md); background: transparent; color: var(--oai-ink-2); display: grid; place-items: center; flex: none; }
+.ad-back:hover { background: var(--oai-fill); color: var(--oai-ink); }
+.ad-back svg { width: 16px; height: 16px; }
+.ad-dico { width: 32px; height: 32px; border-radius: var(--oai-radius-md); background: var(--oai-fill); color: var(--oai-ink); display: grid; place-items: center; flex: none; }
+.ad-dico svg { width: 17px; height: 17px; }
+.ad-tt { flex: 1; min-width: 0; }
+.ad-t { font-weight: 600; letter-spacing: -0.01em; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-s { font-size: var(--oai-text-sm); color: var(--oai-ink-2); line-height: 1.3; }
+.ad-body { display: grid; gap: 10px; padding: 12px; }
+.ad-label { font-size: var(--oai-text-sm); color: var(--oai-ink-2); margin: 0 2px -4px; }
+.ad-input { min-width: 0; height: 32px; padding: 0 10px; border: 0.5px solid var(--oai-hairline); border-radius: var(--oai-radius-md); background: var(--oai-panel); color: var(--oai-ink); font: inherit; font-size: var(--oai-text-md); outline: none; }
+.ad-input::placeholder { color: var(--oai-ink-3); }
+.ad-input:focus { border-color: var(--oai-accent); box-shadow: 0 0 0 3px var(--oai-accent-soft); }
+.ad-disclose { display: flex; align-items: center; gap: 6px; width: 100%; height: 32px; padding: 0 4px; border: 0; background: transparent; color: var(--oai-ink-2); font: inherit; font-size: var(--oai-text-md); }
+.ad-disclose svg { width: 12px; height: 12px; transition: transform var(--oai-dur) var(--oai-ease); }
+.ad-disclose.is-open svg { transform: rotate(90deg); }
+.ad-disclose .ad-sp { flex: 1; }
+.ad-disclose em { font-style: normal; font-size: var(--oai-text-sm); color: var(--oai-ink-3); }
+.ad-advanced { display: grid; gap: 10px; }
+.ad-error { font-size: var(--oai-text-sm); color: var(--oai-bad); line-height: 1.4; }
+.ad-btns { display: flex; gap: 8px; }
+.ad-btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 14px; border: 0; border-radius: var(--oai-radius-md); background: var(--oai-fill-strong); color: var(--oai-ink); font: inherit; font-size: var(--oai-text-md); font-weight: 500; white-space: nowrap; }
+.ad-btn.is-primary { background: var(--oai-accent); color: var(--oai-on-accent); }
+.ad-btn:disabled { opacity: 0.6; }
+.ad-btn.is-busy::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: oai-spin 0.8s linear infinite; }
+.ad-hint { font-size: var(--oai-text-sm); color: var(--oai-ink-2); line-height: 1.4; }
+
+/* Remove, on an added device's page: the link style of "Paste a link instead" */
+.ad-link { border: 0; background: transparent; color: var(--oai-accent); font: inherit; font-size: var(--oai-text-sm); height: 28px; padding: 0 4px; }
+.ad-link:disabled { opacity: 0.6; }

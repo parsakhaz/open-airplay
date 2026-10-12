@@ -37,7 +37,121 @@ const AddDevice = (() => {
     return invoke("added_device_save", { device: { host: addr.host, port: addr.port, name, cast_id: (found && found.identifier) || null } });
   }
 
-  return { merge, add };
+  // ---------- markup (APPROVED.html: state 1's last Send to row, state 16's form, the approved Remove) ----------
+  const ICON = {
+    plus: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round"><path d="M8 3.2v9.6M3.2 8h9.6" stroke-width="1.6"/></svg>',
+    back: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.5 5.5 8l4.5 4.5" stroke-width="1.7"/></svg>',
+    net: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.3"/><path d="M1.7 8h12.6M8 1.7c2 2 2 10.6 0 12.6M8 1.7c-2 2-2 10.6 0 12.6"/></svg>',
+    chev: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5" stroke-width="1.6"/></svg>',
+  };
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const SUBTITLE = "Added by address";
+
+  // The last row of Send to.
+  function addRowHtml() {
+    return `<button class="ad-row" data-add-device="open"><span class="ad-ico">${ICON.plus}</span><span class="ad-grow"><b>Add device by address…</b></span></button>`;
+  }
+
+  // The form page's content; the host puts it in an empty page container and shows it with its own navigation.
+  function pageHtml() {
+    return `<form class="ad-page" data-add-device="form" autocomplete="off" novalidate>
+      <header class="ad-head"><button type="button" class="ad-back" data-add-device="cancel" aria-label="Back">${ICON.back}</button><span class="ad-dico">${ICON.net}</span><div class="ad-tt"><div class="ad-t">Add a device</div><div class="ad-s">For when it doesn’t show up by itself</div></div></header>
+      <div class="ad-body">
+        <label class="ad-label" for="ad-input">IP address or name</label><input class="ad-input" id="ad-input" name="input" placeholder="192.168.1.40" spellcheck="false" autocapitalize="off">
+        <label class="ad-label" for="ad-name">Name in the list (optional)</label><input class="ad-input" id="ad-name" name="name" maxlength="63" placeholder="Office TV">
+        <button type="button" class="ad-disclose" data-add-device="advanced" aria-expanded="false">${ICON.chev}<span>Advanced</span><span class="ad-sp"></span><em>Port 7000</em></button>
+        <div class="ad-advanced" hidden><label class="ad-label" for="ad-port">Port</label><input class="ad-input" id="ad-port" name="port" inputmode="numeric" placeholder="7000"></div>
+        <div class="ad-error" role="alert" hidden></div>
+        <div class="ad-btns"><button type="button" class="ad-btn" data-add-device="cancel">Cancel</button><button type="submit" class="ad-btn is-primary">Add</button></div>
+        <div class="ad-hint">Added devices are remembered and show in Send to with “${SUBTITLE}”. Remove one from its page.</div>
+      </div>
+    </form>`;
+  }
+
+  // For the device page, below the tiles or the drop zone: only for a device that was added by address.
+  function removeHtml(row) {
+    return row && row.added ? `<button class="ad-link" data-add-device="remove" data-host="${esc(row.added)}">Remove from this list</button>` : "";
+  }
+
+  // Wires the form, the Add row and Remove. Host seams:
+  //   invoke(cmd, args)    Tauri invoke
+  //   scanHosts(host)      the cast sidecar's scan with hosts: resolves to its device list
+  //   open()               shows the form page (the host's goTo)
+  //   done()               after a save, a remove or Cancel: back to Send to (the host's goTo)
+  //   refresh()            reloads prefs.added_devices and re-renders the list
+  function mount(root, host) {
+    const form = root.querySelector('[data-add-device="form"]');
+    const field = (name) => form.elements[name];
+    const error = form.querySelector(".ad-error");
+    const submit = form.querySelector('button[type="submit"]');
+    const showError = (text) => {
+      error.textContent = text || "";
+      error.hidden = !text;
+    };
+    const reset = () => {
+      form.reset();
+      showError("");
+      setAdvanced(false);
+    };
+    const setAdvanced = (open) => {
+      const toggle = form.querySelector('[data-add-device="advanced"]');
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.classList.toggle("is-open", open);
+      toggle.querySelector("em").hidden = open;
+      form.querySelector(".ad-advanced").hidden = !open;
+    };
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (submit.disabled) return;
+      submit.disabled = true;
+      submit.classList.add("is-busy");
+      showError("");
+      try {
+        await add({ input: field("input").value, name: field("name").value, port: field("port").value }, host);
+        reset();
+        await host.refresh();
+        host.done();
+      } catch (err) {
+        showError(String(err && err.message ? err.message : err));
+        field("input").focus();
+      } finally {
+        submit.disabled = false;
+        submit.classList.remove("is-busy");
+      }
+    });
+
+    document.addEventListener("click", async (e) => {
+      const el = e.target.closest("[data-add-device]");
+      if (!el) return;
+      switch (el.dataset.addDevice) {
+        case "open":
+          reset();
+          host.open();
+          setTimeout(() => field("input").focus(), 0);
+          return;
+        case "cancel":
+          reset();
+          host.done();
+          return;
+        case "advanced":
+          setAdvanced(el.getAttribute("aria-expanded") !== "true");
+          return;
+        case "remove":
+          el.disabled = true;
+          try {
+            await host.invoke("added_device_remove", { host: el.dataset.host });
+            await host.refresh();
+            host.done();
+          } finally {
+            el.disabled = false;
+          }
+          return;
+      }
+    });
+  }
+
+  return { merge, add, addRowHtml, pageHtml, removeHtml, mount, SUBTITLE };
 })();
 
 if (typeof module !== "undefined") module.exports = AddDevice;
