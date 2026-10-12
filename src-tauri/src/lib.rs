@@ -764,6 +764,11 @@ mod tests {
     }
 
     #[test]
+    fn the_tray_tooltip_says_when_receiving_is_off() {
+        assert_eq!(tray_text(&ReceiverStatus::default()), "open-airplay: receiving is off");
+    }
+
+    #[test]
     fn tray_shows_receiving_during_a_session_and_problem_on_error() {
         assert_eq!(tray_look(Phase::Ready), TrayLook::Normal);
         assert_eq!(tray_look(Phase::Stopped), TrayLook::Normal);
