@@ -1,8 +1,9 @@
 // open-airplay: casting from this PC (links and files to Apple TVs and speakers).
 //
 // A self-contained piece: it owns the conversation with the cast helper (requests, replies, the
-// helper going away) and the "Cast media" controls on a device page. app.js mounts it into a
-// container, tells it which device is open, and re-renders when it says something changed.
+// helper going away) and the cast part of a device page (the approved device-page design: Cast media
+// tile, drop zone, link fallback, the casting card with one Stop). app.js mounts it into the page,
+// tells it which device is open, and re-renders when it says something changed.
 // Each device keeps its own cast state, so casting to one never shows on or blocks another.
 window.OapCast = (() => {
   const T = window.__TAURI__;
@@ -67,18 +68,24 @@ window.OapCast = (() => {
   }
 
   // ---------- casts, one per device ----------
-  // identifier -> { state: "connecting" | "playing" | "paused" | "stopping" | "done" | "error",
-  //                 message, id (the live request), cmd (for Retry), name, timer }
+  // identifier -> { state: "idle" | "connecting" | "playing" | "stopping" | "error", message,
+  //                 id (the live request), name, media (what plays, for its label), timer }
   const casts = new Map();
   let changed = () => {};
 
   const castOf = (identifier) => casts.get(identifier) || { state: "idle", message: "" };
-  const isActive = (c) => c && (c.state === "connecting" || c.state === "playing" || c.state === "paused" || c.state === "stopping");
+  const isActive = (c) => !!c && (c.state === "connecting" || c.state === "playing" || c.state === "stopping");
+  /** What a link or path is called on screen: its file name. */
+  const mediaName = (media) => {
+    const s = String(media || "").split(/[?#]/)[0].replace(/[\\/]+$/, "");
+    const last = s.split(/[\\/]/).pop();
+    try { return decodeURIComponent(last) || s; } catch { return last || s; }
+  };
 
   function update(identifier, fields) {
     const c = { ...castOf(identifier), ...fields };
     casts.set(identifier, c);
-    if (current && current.identifier === identifier) renderLive();
+    if (current && current.identifier === identifier) renderPage();
     changed();
     return c;
   }
@@ -89,17 +96,13 @@ window.OapCast = (() => {
   }
 
   /** Casts a link or a file path. A speaker gets the audio stream; everything else plays it itself. */
-  function cast(device, media, speaker) {
-    const identifier = device.identifier, name = device.name;
+  function cast(device, media) {
+    const { identifier, name, speaker, address } = device;
     if (castOf(identifier).state === "connecting") return; // a double-click sends one request
     const cmd = speaker
       ? { cmd: "stream_file", identifier, name, path: media }
       : { cmd: "play_url", identifier, name, url: media };
-    start(cmd, name);
-  }
-
-  function start(cmd, name) {
-    const identifier = cmd.identifier;
+    if (address) cmd.address = address; // reaches a device added by address that no scan has seen
     clearTimer(identifier);
     const id = send(cmd, (msg) => onCastEvent(identifier, id, msg));
     const timer = setTimeout(() => {
@@ -107,17 +110,16 @@ window.OapCast = (() => {
       update(identifier, { state: "error", message: `${name} didn't answer. Check it's on and on the same network.`, timer: null });
       invoke("sender_stop", { identifier }).catch(() => {});
     }, CONNECT_TIMEOUT_MS);
-    update(identifier, { state: "connecting", message: `Connecting to ${name}…`, id, cmd, name, timer });
+    update(identifier, { state: "connecting", message: "", id, name, media, timer });
   }
 
   function onCastEvent(identifier, id, msg) {
     if (castOf(identifier).id !== id) return; // a newer cast on this device replaced this one
-    const name = castOf(identifier).name;
+    clearTimer(identifier);
     switch (msg.event) {
-      case "playing": clearTimer(identifier); return update(identifier, { state: "playing", message: `Playing on ${name}` });
-      case "ok": clearTimer(identifier); return update(identifier, { state: "done", message: "Finished playing." });
-      case "stopped": clearTimer(identifier); return update(identifier, { state: "idle", message: "" });
-      case "error": clearTimer(identifier); return update(identifier, { state: "error", message: msg.message || "Couldn't cast. Try again." });
+      case "playing": return update(identifier, { state: "playing" });
+      case "ok": case "stopped": return update(identifier, { state: "idle", message: "" });
+      case "error": return update(identifier, { state: "error", message: msg.message || "Couldn't cast. Try again.", open: true });
     }
   }
 
@@ -127,7 +129,7 @@ window.OapCast = (() => {
     if (!isActive(c) || c.state === "stopping") return;
     clearTimer(identifier);
     const id = c.id;
-    update(identifier, { state: "stopping", message: "Stopping…" });
+    update(identifier, { state: "stopping" });
     try {
       await invoke("sender_stop", { identifier });
     } catch (err) {
@@ -140,43 +142,42 @@ window.OapCast = (() => {
     }, STOP_FALLBACK_MS);
   }
 
-  async function pause(identifier) {
-    const c = castOf(identifier);
-    if (c.state !== "playing" && c.state !== "paused") return;
-    const pausing = c.state === "playing", id = c.id;
-    update(identifier, { pending: true });
-    try {
-      await request({ cmd: pausing ? "pause" : "resume", identifier, name: c.name });
-      if (castOf(identifier).id === id) update(identifier, { state: pausing ? "paused" : "playing", message: pausing ? `Paused on ${c.name}` : `Playing on ${c.name}`, pending: false, note: "" });
-    } catch (err) {
-      if (castOf(identifier).id === id) update(identifier, { pending: false, note: String(err) });
-    }
-  }
-
-  function retry(identifier) {
-    const c = castOf(identifier);
-    if (c.cmd && !isActive(c)) start(c.cmd, c.name); // goes to the device it came from
-  }
-
-  // ---------- the "Cast media" controls ----------
+  // ---------- the device page's cast part ----------
+  // Built once inside the page's container; regions are patched only when their markup changes, and
+  // the link field is static, so typing survives every update.
   let root = null;
-  let current = null; // { identifier, name, speaker }
-  const drafts = new Map(); // identifier -> what was typed or chosen on that device's page
+  let current = null; // { identifier, name, speaker, address, mirrorTile }
+  const pages = new Map(); // identifier -> { open (Cast media tile), link (link field shown), draft }
+  const pageOf = (identifier) => pages.get(identifier) || { open: false, link: false, draft: "" };
+  const setPage = (identifier, fields) => pages.set(identifier, { ...pageOf(identifier), ...fields });
+  let dragging = null; // { name } while a file is dragged over the panel
 
-  /** Builds the controls once inside `container`. `onChange` runs whenever any cast changes. */
+  const ICON = {
+    cast: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.7 5.4 10.7 8l-4 2.6z" fill="currentColor"/></svg>',
+    drop: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v7.5M5 6.8 8 9.8l3-3"/><path d="M2.5 10v2a1.5 1.5 0 0 0 1.5 1.5h8a1.5 1.5 0 0 0 1.5-1.5v-2"/></svg>',
+    music: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12.2V3.5l7-1.5v8.7"/><circle cx="4.3" cy="12.2" r="1.7"/><circle cx="11.3" cy="10.7" r="1.7"/></svg>',
+    warn: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8 15 14H1z"/><path d="M8 6v3.6M8 11.6v.4" stroke-width="1.6"/></svg>',
+  };
+
+  /** Builds the page body once inside `container`. `onChange` runs whenever any cast changes. */
   function mount(container, onChange) {
     changed = onChange || (() => {});
     container.innerHTML = `
-      <div class="cast-media">
-        <div class="oai-list-label">Cast media</div>
-        <div class="row">
-          <input class="oai-input" data-cast-field type="text" spellcheck="false" autocomplete="off" aria-label="Link or file to cast" placeholder="Paste a link or choose a file">
+      <div class="send-body">
+        <div data-r="ban"></div>
+        <div data-r="live"></div>
+        <div data-r="tiles"></div>
+        <div data-r="drop"></div>
+        <div data-r="link">
+          <button class="linkbtn" data-cast-action="link">Paste a link instead</button>
+          <div class="cast-link" hidden>
+            <div class="field">
+              <input class="oai-input" data-cast-field type="text" spellcheck="false" autocomplete="off" aria-label="Link to cast" placeholder="https://">
+              <button class="oai-btn is-primary" data-cast-action="cast">Cast</button>
+            </div>
+            <div class="hint">A direct link to a video or song file. Enter also casts.</div>
+          </div>
         </div>
-        <div class="row actions">
-          <button class="oai-btn is-small" data-cast-action="choose">Choose file…</button>
-          <button class="oai-btn is-primary is-small" data-cast-action="cast">Cast</button>
-        </div>
-        <div class="cast-live" data-cast-live aria-live="polite"></div>
       </div>`;
     root = container;
     const field = root.querySelector("[data-cast-field]");
@@ -184,106 +185,128 @@ window.OapCast = (() => {
       const el = e.target.closest("[data-cast-action]");
       if (!el || el.disabled || !current) return;
       switch (el.dataset.castAction) {
+        case "open": setPage(current.identifier, { open: !pageOf(current.identifier).open }); return renderPage();
         case "choose": return chooseFile();
+        case "link": setPage(current.identifier, { link: true }); renderPage(); return field.focus();
         case "cast": return castField();
         case "stop": return stop(current.identifier);
-        case "pause": return pause(current.identifier);
-        case "retry": return retry(current.identifier);
       }
     });
     field.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); castField(); }
     });
-    field.addEventListener("input", () => {
-      if (current && castOf(current.identifier).state === "error" && !isActive(castOf(current.identifier))) {
-        update(current.identifier, { state: "idle", message: "" });
+    field.addEventListener("input", () => setPage(current.identifier, { draft: field.value }));
+    watchDrops();
+  }
+
+  /** Files dragged onto the panel: the window reports real paths (a web drop would not). */
+  function watchDrops() {
+    const webview = T.webview && T.webview.getCurrentWebview && T.webview.getCurrentWebview();
+    if (!webview || !webview.onDragDropEvent) return;
+    webview.onDragDropEvent(({ payload }) => {
+      if (!current || !acceptsCast()) return;
+      if (payload.type === "enter") {
+        dragging = { name: mediaName((payload.paths || [])[0]) };
+        setPage(current.identifier, { open: true });
+      } else if (payload.type === "leave") {
+        dragging = null;
+      } else if (payload.type === "drop") {
+        dragging = null;
+        const path = (payload.paths || [])[0];
+        if (path) cast(current, path);
+      } else {
+        return;
       }
-      syncButtons();
+      renderPage();
     });
   }
 
+  /** Whether the open page currently takes a cast (not while one is running there). */
+  const acceptsCast = () => current && !isActive(castOf(current.identifier));
+
   function castField() {
     const media = root.querySelector("[data-cast-field]").value.trim();
-    if (!media) {
-      return update(current.identifier, { state: "error", message: "Paste a link or choose a file first.", cmd: null });
-    }
-    cast(current, media, current.speaker);
+    if (!media) return root.querySelector("[data-cast-field]").focus();
+    cast(current, media);
   }
 
   async function chooseFile() {
     const dialog = T.dialog;
-    if (!dialog) return update(current.identifier, { state: "error", message: "Choosing a file isn't available. Paste its path instead.", cmd: null });
-    const target = current.identifier;
+    const target = current;
+    if (!dialog) return update(target.identifier, { state: "error", message: "Choosing a file isn't available. Paste a link instead." });
     let picked;
     try {
-      picked = await dialog.open({ multiple: false, directory: false, title: `Choose a file to cast to ${current.name}`, filters: [{ name: "Video and audio", extensions: MEDIA }, { name: "All files", extensions: ["*"] }] });
+      picked = await dialog.open({ multiple: false, directory: false, title: `Choose a song or video to cast to ${target.name}`, filters: [{ name: "Songs and videos", extensions: MEDIA }, { name: "All files", extensions: ["*"] }] });
     } catch (err) {
-      return update(target, { state: "error", message: `Couldn't open the file picker. ${err}`, cmd: null });
+      return update(target.identifier, { state: "error", message: `Couldn't open the file picker. ${err}` });
     }
     const path = picked && (typeof picked === "string" ? picked : picked.path);
-    if (!path) return;
-    drafts.set(target, path);
-    if (!current || current.identifier !== target) return; // the user moved on to another device
-    root.querySelector("[data-cast-field]").value = path;
-    syncButtons();
-    root.querySelector('[data-cast-action="cast"]').focus();
+    if (path) cast(target, path); // choosing a file is the cast
   }
 
-  /** Shows the controls for `device` (null hides nothing; the page does). */
-  function show(device, speaker) {
+  /**
+   * Shows the page for `device`. `options.speaker`: it plays audio streams. `options.mirrorTile`:
+   * markup for the Mirror screen tile when this device can take a mirror (the mirror code supplies
+   * it); without one the page is Cast media alone, like a speaker's.
+   */
+  function show(device, options = {}) {
     const field = root && root.querySelector("[data-cast-field]");
-    if (field && current) drafts.set(current.identifier, field.value);
-    current = device ? { identifier: device.identifier, name: device.name, speaker: !!speaker } : null;
+    if (field && current) setPage(current.identifier, { draft: field.value });
+    current = device ? { identifier: device.identifier, name: device.name, address: device.address, speaker: !!options.speaker, mirrorTile: options.mirrorTile || null } : null;
+    dragging = null;
     if (!root || !current) return;
-    field.value = drafts.get(current.identifier) || "";
-    field.placeholder = speaker ? "Paste an audio link or choose a file" : "Paste a link or choose a file";
-    renderLive();
+    field.value = pageOf(current.identifier).draft || "";
+    renderPage();
   }
 
-  let shownLive = null;
-  function renderLive() {
-    if (!root || !current) return;
-    const c = castOf(current.identifier);
-    let html = "";
-    const btn = (action, label, cls = "") => `<button class="oai-btn is-small ${cls}" data-cast-action="${action}">${esc(label)}</button>`;
-    if (c.state === "connecting" || c.state === "stopping") {
-      html = `<div class="msg"><span class="oai-spinner is-small"></span><span>${esc(c.message)}</span></div>`;
-      if (c.state === "connecting") html += `<div class="oai-btn-row">${btn("stop", "Stop")}</div>`;
-    } else if (c.state === "playing" || c.state === "paused") {
-      html = `<div class="msg is-ok"><span class="oai-dot is-live"></span><span>${esc(c.message)}</span></div>
-        <div class="oai-btn-row">${btn("pause", c.state === "paused" ? "Resume" : "Pause")}${btn("stop", "Stop", "is-danger")}</div>
-        ${c.note ? `<p class="inline-error" role="alert">${esc(c.note)}</p>` : ""}`;
-    } else if (c.state === "error") {
-      html = `<div class="msg is-bad" role="alert"><span>${esc(c.message)}</span>${c.cmd ? btn("retry", "Retry") : ""}</div>`;
-    } else if (c.state === "done") {
-      html = `<div class="msg"><span>${esc(c.message)}</span></div>`;
-    }
-    const live = root.querySelector("[data-cast-live]");
-    if (html !== shownLive) {
-      shownLive = html;
-      live.innerHTML = html;
-    }
-    syncButtons();
+  const shown = new Map();
+  function region(name, html) {
+    if (shown.get(name) === html) return;
+    shown.set(name, html);
+    root.querySelector(`[data-r="${name}"]`).innerHTML = html;
   }
 
-  function syncButtons() {
+  function renderPage() {
     if (!root || !current) return;
-    const c = castOf(current.identifier);
+    const c = castOf(current.identifier), page = pageOf(current.identifier);
+    const active = isActive(c);
+    const tiles = !!current.mirrorTile && !active;
+    const dropOpen = !active && (!tiles || page.open || c.state === "error" || !!dragging);
+
+    region("ban", c.state === "error" ? `<div class="send-ban" role="alert">${ICON.warn}<span>${esc(c.message)}</span></div>` : "");
+    region("live", active ? liveHtml(c) : "");
+    region("tiles", tiles ? `<div class="send-tiles">${current.mirrorTile}<button class="send-tile ${dropOpen ? "is-open" : ""}" data-cast-action="open" aria-expanded="${dropOpen}"><span class="ti">${ICON.cast}</span><span><b>Cast media</b><small>A song, video or link</small></span></button></div>` : "");
+    region("drop", dropOpen ? dropHtml() : "");
+    const linkRegion = root.querySelector('[data-r="link"]');
+    linkRegion.hidden = !dropOpen;
+    root.querySelector(".linkbtn").hidden = page.link;
+    root.querySelector(".cast-link").hidden = !page.link;
     const castBtn = root.querySelector('[data-cast-action="cast"]');
-    const connecting = c.state === "connecting" || c.state === "stopping";
-    castBtn.disabled = connecting;
+    castBtn.disabled = c.state === "connecting";
     castBtn.classList.toggle("is-busy", c.state === "connecting");
-    const pauseBtn = root.querySelector('[data-cast-action="pause"]');
-    if (pauseBtn) { pauseBtn.disabled = !!c.pending; pauseBtn.classList.toggle("is-busy", !!c.pending); }
   }
 
-  /** "Playing" / "Connecting…" for a device row, or null when nothing is being cast to it. */
+  function dropHtml() {
+    if (dragging) {
+      return `<div class="send-drop is-hover"><span class="di">${ICON.drop}</span><b>Drop to cast to ${esc(current.name)}</b><span>${esc(dragging.name)}</span></div>`;
+    }
+    return `<div class="send-drop"><span class="di">${ICON.drop}</span><b>Drop a song or video here</b><button class="oai-btn is-small" data-cast-action="choose">Choose file…</button></div>`;
+  }
+
+  function liveHtml(c) {
+    const sub = c.state === "connecting" ? `<span class="oai-spinner is-small"></span>Connecting to ${esc(c.name)}…`
+      : c.state === "stopping" ? "Stopping…"
+      : `Playing on ${esc(c.name)}`;
+    return `<div class="send-live"><div class="media"><span class="art">${ICON.music}</span><div><b>${esc(mediaName(c.media))}</b><small>${sub}</small></div></div>
+      <button class="oai-btn is-danger wide" data-cast-action="stop" ${c.state === "stopping" ? "disabled" : ""}>Stop</button></div>`;
+  }
+
+  /** A device's cast state for its row and header: { text, kind: "live" | "busy" } or null. */
   function rowStatus(identifier) {
     const c = casts.get(identifier);
     if (!c) return null;
-    if (c.state === "connecting") return "Connecting…";
-    if (c.state === "playing") return "Playing";
-    if (c.state === "paused") return "Paused";
+    if (c.state === "connecting") return { text: "Connecting…", kind: "busy" };
+    if (c.state === "playing") return { text: `Playing ${mediaName(c.media)}`, kind: "live", short: "Playing" };
     return null;
   }
 

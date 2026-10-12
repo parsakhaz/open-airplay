@@ -11,13 +11,20 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const use = (id) => `<svg><use href="#${id}"/></svg>`;
 
 // ---------- app preferences (saved by the Rust side in the app's config folder) ----------
-const prefs = { startAtLogin: false };
+const prefs = { startAtLogin: false, addedDevices: [] };
 
 async function loadPrefs() {
   try {
     const p = await invoke("get_prefs");
     prefs.startAtLogin = !!p.start_at_login;
+    prefs.addedDevices = Array.isArray(p.added_devices) ? p.added_devices : [];
   } catch { /* keep defaults */ }
+}
+
+/** After a device is added or removed by address: reload the list of added devices and redraw. */
+async function refreshAddedDevices() {
+  await loadPrefs();
+  render();
 }
 
 async function savePrefs() {
@@ -88,6 +95,17 @@ function deviceIcon(d) {
 }
 const deviceKind = (d) => ({ "i-tv": "Apple TV", "i-laptop": "Mac", "i-speaker": "Speaker" })[deviceIcon(d)];
 const isSpeaker = (d) => deviceIcon(d) === "i-speaker";
+/** A friendly type: the model's name, unless it's a model id (Mac17,9) or unknown. */
+const friendlyType = (d) => (d.model && !/^[A-Za-z]+\d+,\d+$/.test(d.model) && !/unknown/i.test(d.model) ? d.model : deviceKind(d));
+const canCast = (d) => d.services.includes("AirPlay") || d.services.includes("RAOP");
+/** The Send to rows: scanned devices, joined with devices added by address when that code is present. */
+const sendRows = () => (window.AddDevice ? AddDevice.merge(ui.devices, prefs.addedDevices) : ui.devices);
+/** A row's state line: what's being sent to it, else how it was added, else its type. */
+function rowSub(d) {
+  const live = OapCast.rowStatus(d.identifier);
+  if (live) return { html: live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.text)}`, cls: live.kind === "busy" ? "s-busy" : "s-live" };
+  return { html: esc(d.added ? "Added by address" : friendlyType(d)), cls: "" };
+}
 
 // Busy and disabled states are applied by syncBusy(), not baked into region markup.
 const btn = (name, label, cls = "") => `<button class="oai-btn ${cls}" data-action="${name}">${esc(label)}</button>`;
@@ -166,14 +184,21 @@ function devicesEmptyText() {
 
 function devicesHtml() {
   // Rows carry the device's identifier, never its list position, so a click during a scan opens the right one.
-  const rows = ui.devices.map((d) => `<button class="oai-list-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block">${esc(d.name)}</span></span><span class="oai-meta">${esc(OapCast.rowStatus(d.identifier) || deviceKind(d))}</span></button>`).join("");
-  const empty = ui.devices.length && !ui.scanning ? "" : `<div class="oai-list-row oai-sub" style="color:var(--oai-ink-2)">${devicesEmptyText()}</div>`;
+  const list = sendRows();
+  const rows = list.map((d) => {
+    const sub = rowSub(d);
+    return `<button class="oai-list-row send-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><b>${esc(d.name)}</b><small class="${sub.cls}">${sub.html}</small></span><svg class="chev"><use href="#i-chev"/></svg></button>`;
+  }).join("");
+  const empty = list.length && !ui.scanning ? "" : `<div class="oai-list-row oai-sub" style="color:var(--oai-ink-2)">${devicesEmptyText()}</div>`;
+  // ux-add-device adds its "Add device by address…" row after the rows.
   return `<div class="oai-list-label">Send to <button class="oai-ghost scan-btn ${ui.scanning ? "is-spinning" : ""}" data-action="scan" style="height:22px;padding:0 6px" aria-label="Find AirPlay devices">${use("i-refresh")}</button></div>${rows}${empty}`;
 }
 
-function castHeadHtml() {
-  const d = ui.target;
-  return `<div class="oai-list-row"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block;font-weight:600">${esc(d.name)}</span><span class="oai-sub" style="display:block">${esc(d.model || deviceKind(d))}</span></span></div>`;
+/** The neutral header of a device page: back, the device, its type or what's being sent to it. */
+function sendHeadHtml() {
+  const d = ui.target, live = OapCast.rowStatus(d.identifier);
+  const sub = live ? (live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.short || live.text)}`) : esc(friendlyType(d));
+  return `<button class="send-back" data-action="home" aria-label="Back">${use("i-back")}</button><span class="dico">${use(deviceIcon(d))}</span><div class="tt"><div class="t">${esc(d.name)}</div><div class="s">${sub}</div></div>`;
 }
 
 /** Copies saved values into the static settings inputs, except the one being edited. */
@@ -226,6 +251,11 @@ function render() {
 
   if (ui.page === "cast" && !ui.target) ui.page = "home";
   for (const page of ["home", "settings", "cast"]) $("page-" + page).hidden = ui.page !== page;
+  // Send pages have their own header and no footer.
+  const sendPage = ui.page === "cast";
+  $("panel-head").hidden = sendPage;
+  $("panel-foot").hidden = sendPage;
+  $("send-head").hidden = !sendPage;
 
   if (ui.page === "home") {
     patch("r-notice", noticeHtml());
@@ -237,7 +267,7 @@ function render() {
     patch("r-settings-status", note ? `<span class="${note.ok ? "" : "is-bad"}">${esc(note.text)}</span>` : "");
     syncSettingsInputs();
   } else if (ui.page === "cast") {
-    patch("r-cast-head", castHeadHtml());
+    patch("send-head", sendHeadHtml());
   }
   syncBusy();
   tick();
@@ -253,7 +283,7 @@ function reportHeight() {
   const body = $("pop-body"), cs = getComputedStyle(body);
   const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
   const height = (id) => $(id).getBoundingClientRect().height;   // fractional: the footer has a half-pixel border
-  const h = Math.ceil(height("panel-head") + height("pop-content") + pad + height("panel-foot"));
+  const h = Math.ceil(height("panel-head") + height("send-head") + height("pop-content") + pad + height("panel-foot"));
   if (Math.abs(h - reportedHeight) < 1) return;
   reportedHeight = h;
   invoke("panel_fit", { height: h }).catch(() => {});
@@ -297,7 +327,7 @@ async function scan() {
     ui.devices = await OapCast.scan();
     ui.scanned = true;
     // Keep the open device page pointing at the fresh entry for the same device.
-    if (ui.target) ui.target = ui.devices.find((d) => d.identifier === ui.target.identifier) || ui.target;
+    if (ui.target) ui.target = sendRows().find((d) => d.identifier === ui.target.identifier) || ui.target;
   } catch (err) {
     ui.scanError = String(err);
   } finally {
@@ -313,11 +343,20 @@ function scanIfStale() {
 }
 
 function selectDevice(identifier) {
-  const d = ui.devices.find((x) => x.identifier === identifier);
+  const d = sendRows().find((x) => x.identifier === identifier);
   if (!d) return;
   ui.target = d;
-  OapCast.show(d, isSpeaker(d));
+  showDevicePage();
   goTo("cast");
+}
+
+/** Fills the device page. The Mirror screen tile comes from the mirror code (window.OapMirror) for a
+ *  device that can take a mirror; until that code is present the page is Cast media alone. */
+function showDevicePage() {
+  const d = ui.target;
+  const mirrorTile = !isSpeaker(d) && window.OapMirror && OapMirror.tile ? OapMirror.tile(d) : null;
+  if (canCast(d)) OapCast.show(d, { speaker: isSpeaker(d), mirrorTile });
+  $("cast-media").hidden = !canCast(d);
 }
 
 // ---------- events ----------
