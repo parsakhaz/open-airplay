@@ -335,6 +335,8 @@ struct Inner {
     next_id: u64,
     pending: HashMap<u64, (Pending, Option<mpsc::Sender<Value>>)>,
     published: Option<MirrorSnapshot>,
+    /// Each TV's connect request (port, options), sent again after a wrong code.
+    connects: HashMap<String, Value>,
 }
 
 type OnStatus = Arc<dyn Fn(&MirrorSnapshot) + Send + Sync>;
@@ -374,6 +376,7 @@ impl Mirror {
         if let Some(display) = display {
             request["options"] = json!({ "display": display });
         }
+        inner.connects.insert(target.to_string(), request.clone());
         if let Err(e) = self.write(&mut inner, request, Pending::Connect(target.to_string()), None) {
             inner.targets.sender_exited();
             self.publish(&mut inner);
@@ -592,7 +595,7 @@ impl Mirror {
                 if let Some(session) = inner.targets.get_mut(&target) {
                     session.reconnecting();
                 }
-                let request = json!({ "cmd": "connect", "target": target });
+                let request = inner.connects.get(&target).cloned().unwrap_or_else(|| json!({ "cmd": "connect", "target": target }));
                 if self.write(inner, request, Pending::Connect(target), None).is_err() {
                     inner.targets.sender_exited();
                 }
@@ -758,6 +761,7 @@ import json, sys
 def out(o): print(json.dumps(o), flush=True)
 tvs = {}    # target -> "pin_required" | "streaming"
 errs = {}   # target -> kind
+first = {}  # target -> (port, options) of its first connect
 def status():
     streams = [dict(device="Den TV", device_ip=t, state=st, credential_kind="pin" if st == "pin_required" else "") for t, st in sorted(tvs.items())]
     errors = [dict(target=t, kind=k, message="detail") for t, k in sorted(errs.items())]
@@ -779,6 +783,10 @@ for raw in sys.stdin:
     elif cmd == "connect":
         if tv in tvs:
             reply(rid, ok=False, error_kind="busy"); continue
+        # Like a real sender: a retry on another port or display reaches nothing useful.
+        asked = (req.get("port"), req.get("options"))
+        if first.setdefault(tv, asked) != asked:
+            reply(rid); errs[tv] = "unreachable"; state(); continue
         errs.pop(tv, None); tvs[tv] = "pin_required"
         reply(rid); state()
     elif cmd == "status":
