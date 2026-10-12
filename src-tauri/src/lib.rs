@@ -2,6 +2,7 @@ pub mod doctor;
 pub mod engine;
 pub mod launch;
 pub mod mirror;
+pub mod mirror_targets;
 pub mod netwatch;
 pub mod panel;
 pub mod prefs;
