@@ -538,8 +538,8 @@ async fn receiver_stop(app: AppHandle) -> Result<ReceiverStatus, String> {
 
 /// "Add device": checks what the user typed, then that something answers there. Errors are sentences for the user.
 #[tauri::command]
-async fn added_device_check(input: String) -> Result<added::Address, String> {
-    let addr = added::parse_address(&input).map_err(|e| e.to_string())?;
+async fn added_device_check(input: String, port: Option<u16>) -> Result<added::Address, String> {
+    let addr = added::parse_address_with_port(&input, port).map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || added::check_reachable(&addr, Duration::from_secs(3)).map(|()| addr))
         .await
         .map_err(|e| e.to_string())?

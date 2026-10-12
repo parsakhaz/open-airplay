@@ -137,6 +137,16 @@ pub fn forget(list: &mut Vec<AddedDevice>, host: &str) -> bool {
     list.len() != before
 }
 
+/// `parse_address`, with the port from the form's own Port field (which wins) when there is one.
+pub fn parse_address_with_port(input: &str, port: Option<u16>) -> Result<Address, AddressError> {
+    let addr = parse_address(input)?;
+    match port {
+        Some(0) => Err(AddressError::BadPort),
+        Some(port) => Ok(Address { port: Some(port), ..addr }),
+        None => Ok(addr),
+    }
+}
+
 fn parse_port(text: &str) -> Result<u16, AddressError> {
     match text.parse::<u16>() {
         Ok(port) if port > 0 => Ok(port),
@@ -243,6 +253,13 @@ mod tests {
             check_reachable(&unknown, Duration::from_secs(2)).unwrap_err(),
             "Couldn't find no-such-device.invalid on this network. Check the name, or use its IP address."
         );
+    }
+
+    #[test]
+    fn a_port_from_its_own_field_wins_over_one_typed_in_the_address() {
+        assert_eq!(parse_address_with_port("tv:7100", Some(7200)).unwrap().port, Some(7200));
+        assert_eq!(parse_address_with_port("tv:7100", None).unwrap().port, Some(7100));
+        assert_eq!(parse_address_with_port("tv", Some(0)).unwrap_err(), AddressError::BadPort);
     }
 
     #[test]
