@@ -31,7 +31,10 @@ C:\msys64\usr\bin\bash.exe -lc "/c/path/to/open-airplay/engine/build-engine.sh"
 # 2. Sender sidecar
 python -m venv sender\.venv; sender\.venv\Scripts\python -m pip install -r sender\requirements.txt
 
-# 3. App
+# 3. Mirror sender (for Mirror screen; needs Go 1.25+ and an FFmpeg with ddagrab on PATH)
+go build -o bin\open-airplay-sender.exe ./cmd/open-airplay
+
+# 4. App
 npm install
 npm run dev
 ```
@@ -44,7 +47,9 @@ Start at login is on by default. Sign-in launches pass `--autostart`: the app st
 
 Engine output is logged to `%LOCALAPPDATA%\org.openairplay.app\logs\engine.log`.
 
-Overrides: `OAP_ENGINE` (path to uxplay.exe), `OAP_MSYS2_ROOT` (default `C:\msys64`), `OAP_PYTHON` (sender interpreter).
+The mirror sender logs to `mirror.log` in the same folder.
+
+Overrides: `OAP_ENGINE` (path to uxplay.exe), `OAP_MSYS2_ROOT` (default `C:\msys64`), `OAP_PYTHON` (sender interpreter), `OAP_MIRROR_SENDER` (path to the Go mirror sender).
 
 ## Design system
 
@@ -71,12 +76,15 @@ The app window has two modes built from these pieces. The **compact** mode is th
 
 ```powershell
 C:\msys64\usr\bin\bash.exe -lc "/c/path/to/open-airplay/engine/build-engine.sh"   # builds the engine and stages engine/runtime
+go build -trimpath -ldflags "-s -w" -o engine/runtime/bin/open-airplay-sender.exe ./cmd/open-airplay
+C:\msys64\usr\bin\bash.exe -lc "/c/path/to/open-airplay/engine/stage-mirror-sender.sh"   # adds FFmpeg (ddagrab) for it
 npm run build                                                                       # -> src-tauri/target/release/bundle/nsis/*-setup.exe
 ```
 
 - `engine/stage-runtime.sh` (run by `build-engine.sh`) copies `uxplay.exe`, the 17 GStreamer plugins UxPlay's pipelines use, and every DLL they load into `engine/runtime/` (gitignored): `bin/` holds the exe and DLLs, `lib/gstreamer-1.0/` holds the plugins. GStreamer finds the plugins relative to its own DLL, so the installed app needs no MSYS2, no PATH changes and no `GST_PLUGIN_*` variables.
 - `src-tauri/tauri.windows.conf.json` (merged on Windows only, so macOS and Linux builds keep their own targets) bundles that folder as `engine/` next to the app and builds a per-machine NSIS installer. The installer asks for administrator rights, because it adds a firewall rule.
-- `src-tauri/windows/hooks.nsh`: on install, the installer adds one inbound firewall rule, "open-airplay receiver", scoped to `<install dir>\engine\bin\uxplay.exe`. On uninstall, it stops the app and removes the rule.
+- `engine/stage-mirror-sender.sh` adds Mirror screen's pieces to `engine/runtime/bin/`: the Go sender (`open-airplay-sender.exe`, built beforehand with Windows Go as above), MSYS2's `ffmpeg.exe` (it has `ddagrab`), and the few DLLs it needs that the engine runtime doesn't already ship. The app puts that folder first on the sender's PATH, which is how it finds FFmpeg.
+- `src-tauri/windows/hooks.nsh`: on install, the installer adds two inbound firewall rules: "open-airplay receiver", scoped to `<install dir>\engine\bin\uxplay.exe`, and "open-airplay mirror sender", scoped to `open-airplay-sender.exe` (a TV connects back to the sender for timing). On uninstall, it stops the app, engine and sender and removes both rules.
 - Size: the runtime is about 174 MB on disk and the installer is about 49 MB. Most of that is MSYS2's FFmpeg, which links every codec library (x265, aom, svt-av1, …) even though UxPlay only decodes H.264/H.265, AAC and ALAC. A minimal FFmpeg build would shrink it a lot; that is a follow-up.
 - The installer is unsigned for now (code signing is an ask-first decision), so Windows SmartScreen warns on first run.
 
@@ -87,7 +95,7 @@ The sender that mirrors this PC's desktop to an Apple TV lives in `cmd/open-airp
 - `go run ./cmd/open-airplay -list-displays` and `-display 0 -capture-smoke -hwaccel none -no-audio` check capture without contacting a receiver.
 - `go run ./cmd/doubletake-test-receiver -listen 127.0.0.1:7000 -profile modern -auth none` is a local receiver fixture for protocol tests.
 - Validation evidence and limits: `research/mirror-sender-validation.md`; protocol survey: `research/mirror-sender-feasibility.md`.
-- The Go CLI builds an executable also named `open-airplay.exe`; it is separate from the Tauri app (not yet folded into its UI or installer).
+- The app runs it as `open-airplay-sender.exe -stdio` (renamed because the CLI's default name, `open-airplay.exe`, clashes with the app). The JSON-lines control protocol is in [control-protocol.md](control-protocol.md). Pairing keys live in Windows Credential Manager, shared with the CLI, so a TV paired with either is not asked for a code again.
 
 ## Tests
 

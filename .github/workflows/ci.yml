@@ -85,6 +85,19 @@ jobs:
         shell: msys2 {0}
         run: bash engine/build-engine.sh
 
+      # Mirror screen ships the Go sender and an FFmpeg with ddagrab next to the engine.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build the mirror sender
+        run: go build -trimpath -ldflags "-s -w" -o engine/runtime/bin/open-airplay-sender.exe ./cmd/open-airplay
+
+      - name: Stage the mirror sender with FFmpeg
+        shell: msys2 {0}
+        run: bash engine/stage-mirror-sender.sh
+
   # Proves the core crate still compiles and tests on Linux (not a shipping target yet).
   linux:
     name: Linux / Rust check + test
