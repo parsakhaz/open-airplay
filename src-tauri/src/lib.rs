@@ -473,14 +473,10 @@ fn set_prefs(app: AppHandle, start_at_login: bool) -> Result<AppPrefs, String> {
     Ok(prefs)
 }
 
-/// Saves mirror options under Advanced: the app-wide defaults when `device` is None, else that
-/// device's own choices (all automatic forgets the device).
+/// Saves the Advanced choices in the Mirror sheet: the defaults for every mirror.
 #[tauri::command]
-fn set_mirror_options(app: AppHandle, device: Option<String>, options: mirror_options::MirrorOptions) -> AppPrefs {
-    app.state::<AppState>().update_prefs(|p| match device {
-        Some(device) => p.mirror.set_device(&device, options),
-        None => p.mirror.defaults = options,
-    })
+fn set_mirror_options(app: AppHandle, options: mirror_options::MirrorOptions) -> AppPrefs {
+    app.state::<AppState>().update_prefs(|p| p.mirror = options)
 }
 
 fn apply_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
@@ -634,8 +630,8 @@ fn mirror_status(app: AppHandle) -> mirror::MirrorSnapshot {
 
 /// Mirrors this PC to the TV at `target` (its address from the device list). Progress arrives as
 /// "mirror-status" events: connecting, code (enter the TV's PIN or password), mirroring, error.
-/// The options are the saved Advanced choices for `device_id` (else `target`); a `display` picked on
-/// the spot wins over the saved one.
+/// The options are the saved Advanced choices, plus the `display` picked in the sheet (sent only when
+/// this PC has more than one).
 #[tauri::command]
 async fn mirror_start(
     app: AppHandle,
@@ -643,15 +639,12 @@ async fn mirror_start(
     port: Option<u16>,
     name: String,
     display: Option<i32>,
-    device_id: Option<String>,
 ) -> Result<mirror::MirrorSnapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mirror = the_mirror(&app)?;
         let sender = mirror_sender(&app);
         let caps = mirror.capabilities(&sender).unwrap_or_default();
-        let display_count = if display.is_some() { 0 } else { mirror.displays(&sender).map(|d| d.len()).unwrap_or(0) };
-        let prefs = app.state::<AppState>().prefs.lock().unwrap().mirror.clone();
-        let mut options = prefs.connect_options(device_id.as_deref().unwrap_or(&target), caps, display_count);
+        let mut options = app.state::<AppState>().prefs.lock().unwrap().mirror.connect_options(caps);
         if let Some(display) = display {
             options["display"] = display.into();
         }

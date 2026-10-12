@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::ReceiverSettings;
-use crate::mirror_options::MirrorPrefs;
+use crate::mirror_options::MirrorOptions;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -17,8 +17,8 @@ pub struct AppPrefs {
     pub start_at_login_offered: bool,
     /// The receiving switch as the user last left it; None until they first flip it.
     pub receiving: Option<bool>,
-    /// Mirror options under Advanced: defaults for every device, and each device's own choices.
-    pub mirror: MirrorPrefs,
+    /// Mirror options under Advanced in the Mirror sheet: the defaults for every mirror.
+    pub mirror: MirrorOptions,
 }
 
 impl AppPrefs {
@@ -87,7 +87,7 @@ mod tests {
             start_at_login: false,
             start_at_login_offered: true,
             receiving: Some(false),
-            mirror: MirrorPrefs::default(),
+            mirror: MirrorOptions { fps: Some(30), ..MirrorOptions::default() },
         };
         prefs.save(&path).unwrap();
         assert_eq!(AppPrefs::load(&path, "IGNORED"), prefs);
