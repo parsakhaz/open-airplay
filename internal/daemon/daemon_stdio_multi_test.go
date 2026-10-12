@@ -57,6 +57,25 @@ func sameTargets(got []string, want ...string) bool {
 	return true
 }
 
+// statusUntil asks for the status until it matches. Waiting for a state line
+// instead would race: the line can come before a reply that skips past it, and
+// the daemon writes no second line for the same status.
+func (h *stdioHarness) statusUntil(firstID uint64, what string, match func(StdioMessage) bool) StdioMessage {
+	h.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for id := firstID; ; id++ {
+		h.send(fmt.Sprintf(`{"id":%d,"cmd":"status"}`, id))
+		resp := h.response(id)
+		if match(resp) {
+			return resp
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("status never showed %s; last: %+v", what, resp)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func expectClosed(t *testing.T, closed <-chan struct{}, what string) {
 	t.Helper()
 	select {
@@ -92,7 +111,7 @@ func TestStdioAddsAndRemovesTargetsWhileOthersRun(t *testing.T) {
 	if resp := h.response(2); !resp.OK {
 		t.Fatalf("connect B while A runs rejected: %+v", resp)
 	}
-	both := h.state("two streams", func(m StdioMessage) bool { return len(m.Streams) == 2 })
+	both := h.statusUntil(100, "two streams", func(m StdioMessage) bool { return len(m.Streams) == 2 })
 	if !sameTargets(streamTargets(both), hostA, hostB) {
 		t.Fatalf("streams = %v, want [%s %s] keyed by target", streamTargets(both), hostA, hostB)
 	}
@@ -109,7 +128,7 @@ func TestStdioAddsAndRemovesTargetsWhileOthersRun(t *testing.T) {
 	if resp := h.response(4); !resp.OK || resp.State != StateConnecting {
 		t.Fatalf("disconnect A = %+v, want ok with B still connecting", resp)
 	}
-	left := h.state("only B", func(m StdioMessage) bool { return len(m.Streams) == 1 })
+	left := h.statusUntil(200, "only B", func(m StdioMessage) bool { return len(m.Streams) == 1 })
 	if !sameTargets(streamTargets(left), hostB) || len(left.Errors) != 0 {
 		t.Fatalf("after removing A: streams %v errors %+v, want only %s and no error", streamTargets(left), left.Errors, hostB)
 	}
@@ -121,6 +140,6 @@ func TestStdioAddsAndRemovesTargetsWhileOthersRun(t *testing.T) {
 	if resp := h.response(5); !resp.OK || resp.State != StateIdle {
 		t.Fatalf("disconnect all = %+v", resp)
 	}
-	h.state("idle", func(m StdioMessage) bool { return m.State == StateIdle && len(m.Streams) == 0 })
+	h.statusUntil(300, "idle", func(m StdioMessage) bool { return m.State == StateIdle && len(m.Streams) == 0 })
 	expectClosed(t, closedB, "stop all")
 }
