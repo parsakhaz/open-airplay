@@ -332,8 +332,11 @@ window.OapMirror = (() => {
       }
       case "remove":
         return act("stop", () => actions.remove(target));
-      case "stop-all":
-        return act("stop", () => actions.stopAll());
+      case "stop-all": {
+        // Back in the sheet, the TVs that were mirroring stay ticked, so the main button is the retry.
+        const was = targets().filter((s) => SENDING.has(s.phase)).map((s) => s.target);
+        return act("stop", async () => { await actions.stopAll(); state.ticked = was; });
+      }
       case "cancel-code": {
         const m = model();
         // Cancel ends the attempt and returns to the page the sheet was opened from.
