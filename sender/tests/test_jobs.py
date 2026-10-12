@@ -234,6 +234,34 @@ class Jobs(unittest.TestCase):
             await h.sidecar.shutdown()
         run(go())
 
+    def test_hostnames_are_resolved_and_unresolvable_ones_dropped(self):
+        async def go():
+            names = {"office-tv.local": "10.0.0.9"}
+            saved = oap_sender.to_ipv4
+            oap_sender.to_ipv4 = lambda h: names.get(h) or (h if h[0].isdigit() else None)
+            try:
+                h = Harness([conf("tv", "10.0.0.9")])
+                h.sidecar.dispatch({"id": 1, "cmd": "scan", "timeout": 1, "hosts": ["office-tv.local", "gone.local", "10.0.0.9"]})
+                await h.until(lambda: h.replies(1))
+                self.assertEqual(h.scans[-1]["hosts"], ["10.0.0.9"])
+                self.assertEqual([d["identifier"] for d in h.replies(1)[0]["devices"]], ["tv"])
+                h.sidecar.dispatch({"id": 2, "cmd": "scan", "timeout": 1, "hosts": ["gone.local"]})
+                await h.until(lambda: h.replies(2))
+                self.assertEqual(h.replies(2)[0]["devices"], [])
+                h.sidecar.known.clear()
+                h.sidecar.dispatch({"id": 3, "cmd": "play_url", "identifier": "tv", "name": "Office", "address": "gone.local", "url": "http://x"})
+                await h.until(lambda: h.replies(3))
+                self.assertEqual(h.replies(3)[0]["code"], "unreachable")
+            finally:
+                oap_sender.to_ipv4 = saved
+        run(go())
+
+    def test_ipv4_literals_pass_through_and_ipv6_is_dropped(self):
+        self.assertEqual(oap_sender.to_ipv4(" 192.168.1.50 "), "192.168.1.50")
+        self.assertEqual(oap_sender.to_ipv4("localhost"), "127.0.0.1")
+        self.assertIsNone(oap_sender.to_ipv4("fe80::1"))
+        self.assertIsNone(oap_sender.to_ipv4("no-such-host.invalid"))
+
     def test_health_lists_the_devices_being_cast_to(self):
         async def go():
             h = Harness([conf("tv", "10.0.0.9")])

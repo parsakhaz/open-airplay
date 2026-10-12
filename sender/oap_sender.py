@@ -20,6 +20,7 @@ Built on pyatv (MIT).
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import socket
@@ -119,6 +120,27 @@ def local_addresses():
     return addrs
 
 
+def to_ipv4(host):
+    """An IPv4 address for a host (an IPv4 literal passes through), or None. pyatv only scans IPv4."""
+    host = str(host).strip()
+    try:
+        return str(ipaddress.IPv4Address(host))
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_INET)
+    except (OSError, UnicodeError):
+        return None
+    return infos[0][4][0] if infos else None
+
+
+async def resolve_hosts(hosts):
+    """Resolves each host now (a remembered hostname's address can change), dropping ones that don't."""
+    loop = asyncio.get_running_loop()
+    found = await asyncio.gather(*(loop.run_in_executor(None, to_ipv4, h) for h in hosts if str(h).strip()))
+    return list(dict.fromkeys(a for a in found if a))
+
+
 class Job:
     def __init__(self, request_id, identifier):
         self.request_id = request_id
@@ -179,7 +201,10 @@ class Sidecar:
             seconds = max(1, min(int(cmd.get("timeout", 5)), MAX_SCAN_SECONDS))
         except (TypeError, ValueError):
             seconds = 5
-        hosts = [str(h) for h in cmd.get("hosts") or [] if str(h).strip()]
+        asked = cmd.get("hosts") or []
+        hosts = await resolve_hosts(asked)
+        if asked and not hosts:
+            return {"event": "devices", "devices": []}  # none of the addresses resolved
         kwargs = {"hosts": hosts} if hosts else {}  # unicast: for networks that block discovery
         try:
             confs = await asyncio.wait_for(self.scan_fn(timeout=seconds, **kwargs), seconds + 2)
@@ -242,7 +267,10 @@ class Sidecar:
         conf = self.known.get(identifier)
         if conf is None:
             if address:  # added by address: ask it directly, discovery may be blocked
-                confs = [c for c in await self.scan_fn(hosts=[str(address)], timeout=5) if c.identifier == identifier]
+                hosts = await resolve_hosts([address])
+                if not hosts:
+                    raise LookupError(f"{address} doesn't resolve")
+                confs = [c for c in await self.scan_fn(hosts=hosts, timeout=5) if c.identifier == identifier]
             else:
                 confs = await self.scan_fn(identifier=identifier, timeout=5)
             if not confs:
