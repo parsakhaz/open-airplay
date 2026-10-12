@@ -1,0 +1,33 @@
+diff --git a/uxplay.cpp b/uxplay.cpp
+index a0310ad..63d598d 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -2341,7 +2341,8 @@ static int register_dnssd() {
+         }
+     }
+ 
+-    LOGD("register_dnssd: advertised AirPlay service with \"Features\" code = 0x%llX",
++    /* open-airplay: info level, so a supervising process sees it without -d */
++    LOGI("register_dnssd: advertised AirPlay service with \"Features\" code = 0x%llX",
+          dnssd_get_airplay_features(dnssd));
+     return 0;
+ }
+@@ -2625,14 +2626,16 @@ extern "C" void export_dacp(void *cls, const char *active_remote, const char *da
+ 
+ extern "C" void conn_init (void *cls) {
+     open_connections++;
+-    LOGD("Open connections: %i", open_connections);
++    /* open-airplay: info level, so a supervising process can count connections without -d */
++    LOGI("Open connections: %i", open_connections);
+     //video_renderer_update_background(1);
+ }
+ 
+ extern "C" void conn_destroy (void *cls) {
+     //video_renderer_update_background(-1);
+     open_connections--;
+-    LOGD("Open connections: %i", open_connections);
++    /* open-airplay: info level, so a supervising process can count connections without -d */
++    LOGI("Open connections: %i", open_connections);
+     if (open_connections == 0) {
+         remote_clock_offset = 0;
+         if (use_audio) {
