@@ -11,13 +11,20 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const use = (id) => `<svg><use href="#${id}"/></svg>`;
 
 // ---------- app preferences (saved by the Rust side in the app's config folder) ----------
-const prefs = { startAtLogin: false };
+const prefs = { startAtLogin: false, addedDevices: [] };
 
 async function loadPrefs() {
   try {
     const p = await invoke("get_prefs");
     prefs.startAtLogin = !!p.start_at_login;
+    prefs.addedDevices = Array.isArray(p.added_devices) ? p.added_devices : [];
   } catch { /* keep defaults */ }
+}
+
+/** After a device is added or removed by address: reload the list of added devices and redraw. */
+async function refreshAddedDevices() {
+  await loadPrefs();
+  render();
 }
 
 async function savePrefs() {
@@ -34,11 +41,11 @@ const ui = {
   scanned: false,
   scanning: false,
   scanError: null,
+  lastScan: 0,              // when the device list was last refreshed (ms)
   busy: new Set(),          // actions in flight; only their own controls show busy
   errors: {},               // action -> plain message shown next to its control
   findings: [],
   mirrorSince: null,
-  cast: { state: "idle", message: "" },
   settingsNote: null,       // { ok, text } under the settings form
 };
 
@@ -82,11 +89,25 @@ function elapsed(since) {
 }
 
 function deviceIcon(d) {
-  if (!d.services.includes("AirPlay") || /speaker|homepod|five/i.test(d.model || "")) return "i-speaker";
+  // No services at all: added by address and never answered a cast scan, so it's offered for mirroring.
+  const audioOnly = d.services.length > 0 && !d.services.includes("AirPlay");
+  if (audioOnly || /speaker|homepod|five/i.test(d.model || "")) return "i-speaker";
   if (/mac/i.test(d.model || "")) return "i-laptop";
   return "i-tv";
 }
 const deviceKind = (d) => ({ "i-tv": "Apple TV", "i-laptop": "Mac", "i-speaker": "Speaker" })[deviceIcon(d)];
+const isSpeaker = (d) => deviceIcon(d) === "i-speaker";
+/** A friendly type: the model's name, unless it's a model id (Mac17,9) or unknown. */
+const friendlyType = (d) => (d.model && !/^[A-Za-z]+\d+,\d+$/.test(d.model) && !/unknown/i.test(d.model) ? d.model : deviceKind(d));
+const canCast = (d) => d.services.includes("AirPlay") || d.services.includes("RAOP");
+/** The Send to rows: scanned devices, joined with devices added by address when that code is present. */
+const sendRows = () => (window.AddDevice ? AddDevice.merge(ui.devices, prefs.addedDevices) : ui.devices);
+/** A row's state line: what's being sent to it, else how it was added, else its type. */
+function rowSub(d) {
+  const live = OapCast.rowStatus(d.identifier);
+  if (live) return { html: live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.text)}`, cls: live.kind === "busy" ? "s-busy" : "s-live" };
+  return { html: esc(d.added ? "Added by address" : friendlyType(d)), cls: "" };
+}
 
 // Busy and disabled states are applied by syncBusy(), not baked into region markup.
 const btn = (name, label, cls = "") => `<button class="oai-btn ${cls}" data-action="${name}">${esc(label)}</button>`;
@@ -159,27 +180,27 @@ function findingsHtml() {
 
 function devicesEmptyText() {
   if (ui.scanning) return '<span class="oai-spinner is-small" style="display:inline-block;vertical-align:-2px;margin-right:6px"></span>Searching…';
-  if (ui.scanError) return `Couldn't search: ${esc(ui.scanError)}`;
-  return ui.scanned ? "No AirPlay devices found on this network." : "Press ↻ to find Apple TVs and speakers.";
+  if (ui.scanError) return esc(ui.scanError);
+  return ui.scanned ? "No AirPlay devices found on this network." : "Looking for Apple TVs and speakers…";
 }
 
 function devicesHtml() {
   // Rows carry the device's identifier, never its list position, so a click during a scan opens the right one.
-  const rows = ui.devices.map((d) => `<button class="oai-list-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block">${esc(d.name)}</span></span><span class="oai-meta">${deviceKind(d)}</span></button>`).join("");
-  const empty = ui.devices.length && !ui.scanning ? "" : `<div class="oai-list-row oai-sub" style="color:var(--oai-ink-2)">${devicesEmptyText()}</div>`;
+  const list = sendRows();
+  const rows = list.map((d) => {
+    const sub = rowSub(d);
+    return `<button class="oai-list-row send-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><b>${esc(d.name)}</b><small class="${sub.cls}">${sub.html}</small></span><svg class="chev"><use href="#i-chev"/></svg></button>`;
+  }).join("");
+  const empty = list.length && !ui.scanning ? "" : `<div class="oai-list-row oai-sub" style="color:var(--oai-ink-2)">${devicesEmptyText()}</div>`;
+  // ux-add-device adds its "Add device by address…" row after the rows.
   return `<div class="oai-list-label">Send to <button class="oai-ghost scan-btn ${ui.scanning ? "is-spinning" : ""}" data-action="scan" style="height:22px;padding:0 6px" aria-label="Find AirPlay devices">${use("i-refresh")}</button></div>${rows}${empty}`;
 }
 
-function castHeadHtml() {
-  const d = ui.target;
-  return `<div class="oai-list-row"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block;font-weight:600">${esc(d.name)}</span><span class="oai-sub" style="display:block">${esc(d.model || deviceKind(d))}</span></span></div>`;
-}
-
-function castMsgHtml() {
-  const c = ui.cast;
-  if (c.state === "working") return `<span class="oai-spinner is-small"></span>${esc(c.message)}`;
-  if (c.state === "error") return `${esc(c.message)} ${btn("retry-cast", "Retry", "is-small")}`;
-  return esc(c.message);
+/** The neutral header of a device page: back, the device, its type or what's being sent to it. */
+function sendHeadHtml() {
+  const d = ui.target, live = OapCast.rowStatus(d.identifier);
+  const sub = live ? (live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.short || live.text)}`) : esc(friendlyType(d));
+  return `<button class="send-back" data-action="home" aria-label="Back">${use("i-back")}</button><span class="dico">${use(deviceIcon(d))}</span><div class="tt"><div class="t">${esc(d.name)}</div><div class="s">${sub}</div></div>`;
 }
 
 /** Copies saved values into the static settings inputs, except the one being edited. */
@@ -232,6 +253,11 @@ function render() {
 
   if (ui.page === "cast" && !ui.target) ui.page = "home";
   for (const page of ["home", "settings", "cast"]) $("page-" + page).hidden = ui.page !== page;
+  // Send pages have their own header and no footer.
+  const sendPage = ui.page === "cast";
+  $("panel-head").hidden = sendPage;
+  $("panel-foot").hidden = sendPage;
+  $("send-head").hidden = !sendPage;
 
   if (ui.page === "home") {
     patch("r-notice", noticeHtml());
@@ -243,11 +269,7 @@ function render() {
     patch("r-settings-status", note ? `<span class="${note.ok ? "" : "is-bad"}">${esc(note.text)}</span>` : "");
     syncSettingsInputs();
   } else if (ui.page === "cast") {
-    patch("r-cast-head", castHeadHtml());
-    $("cast-url-row").hidden = !ui.target.services.includes("AirPlay");
-    const msg = $("r-cast-msg");
-    msg.className = "msg " + (ui.cast.state === "error" ? "is-bad" : ui.cast.state === "ok" ? "is-ok" : "");
-    patch("r-cast-msg", castMsgHtml());
+    patch("send-head", sendHeadHtml());
   }
   syncBusy();
   tick();
@@ -263,7 +285,7 @@ function reportHeight() {
   const body = $("pop-body"), cs = getComputedStyle(body);
   const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
   const height = (id) => $(id).getBoundingClientRect().height;   // fractional: the footer has a half-pixel border
-  const h = Math.ceil(height("panel-head") + height("pop-content") + pad + height("panel-foot"));
+  const h = Math.ceil(height("panel-head") + height("send-head") + height("pop-content") + pad + height("panel-foot"));
   if (Math.abs(h - reportedHeight) < 1) return;
   reportedHeight = h;
   invoke("panel_fit", { height: h }).catch(() => {});
@@ -295,20 +317,8 @@ async function run(action, fn) {
 const startReceiver = (settings) => run("start", async () => { acceptStatus(await invoke("receiver_start", { settings })); });
 const stopReceiver = () => run("stop", async () => { acceptStatus(await invoke("receiver_stop")); });
 
-// ---------- sender ----------
-let nextId = 1;
-const pending = new Map();
-
-function request(cmd) {
-  const id = nextId++;
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    invoke("sender_send", { command: { id, ...cmd } }).catch((err) => {
-      pending.delete(id);
-      reject(err);
-    });
-  });
-}
+// ---------- devices (casting itself lives in cast.js) ----------
+const RESCAN_AFTER_MS = 60000;
 
 async function scan() {
   if (ui.scanning) return;
@@ -316,44 +326,39 @@ async function scan() {
   ui.scanError = null;
   render();
   try {
-    const { devices } = await request({ cmd: "scan", timeout: 5 });
-    ui.devices = devices.filter((d) => d.services.includes("AirPlay") || d.services.includes("RAOP"));
+    ui.devices = await OapCast.scan();
     ui.scanned = true;
+    // Keep the open device page pointing at the fresh entry for the same device.
+    if (ui.target) ui.target = sendRows().find((d) => d.identifier === ui.target.identifier) || ui.target;
   } catch (err) {
     ui.scanError = String(err);
   } finally {
     ui.scanning = false;
+    ui.lastScan = Date.now();
     render();
   }
 }
 
-let lastCast = null;
-async function cast(cmd) {
-  if (!ui.target || ui.busy.has("cast")) return;
-  lastCast = cmd;
-  const target = ui.target;
-  ui.busy.add("cast");
-  ui.cast = { state: "working", message: `Connecting to ${target.name}…` };
-  render();
-  try {
-    await request({ ...cmd, identifier: target.identifier });
-    ui.cast = { state: "ok", message: (cmd.cmd === "play_url" ? "Playing on " : "Streaming to ") + target.name };
-  } catch (err) {
-    ui.cast = { state: "error", message: `Couldn't cast: ${err}` };
-  } finally {
-    ui.busy.delete("cast");
-  }
-  render();
+/** Devices appear by themselves: on start, when the panel opens (if the list is old), after a network change. */
+function scanIfStale() {
+  if (Date.now() - ui.lastScan > RESCAN_AFTER_MS) scan();
 }
-const castUrl = () => document.querySelector('[data-cast="url"]').value.trim();
-const castFile = () => document.querySelector('[data-cast="file"]').value.trim();
 
 function selectDevice(identifier) {
-  const d = ui.devices.find((x) => x.identifier === identifier);
+  const d = sendRows().find((x) => x.identifier === identifier);
   if (!d) return;
   ui.target = d;
-  ui.cast = { state: "idle", message: "" };
+  showDevicePage();
   goTo("cast");
+}
+
+/** Fills the device page. The Mirror screen tile comes from the mirror code (window.OapMirror) for a
+ *  device that can take a mirror; until that code is present the page is Cast media alone. */
+function showDevicePage() {
+  const d = ui.target;
+  const mirrorTile = !isSpeaker(d) && window.OapMirror && OapMirror.tile ? OapMirror.tile(d) : null;
+  if (canCast(d)) OapCast.show(d, { speaker: isSpeaker(d), mirrorTile });
+  $("cast-media").hidden = !canCast(d);
 }
 
 // ---------- events ----------
@@ -372,9 +377,6 @@ document.addEventListener("click", (e) => {
     case "home": return goTo("home");
     case "settings": return goTo(ui.page === "settings" ? "home" : "settings");
     case "doctor-check": return run("doctor-check", () => invoke("doctor_check"));
-    case "play-url": return castUrl() && cast({ cmd: "play_url", url: castUrl() });
-    case "stream-file": return castFile() && cast({ cmd: "stream_file", path: castFile() });
-    case "retry-cast": return lastCast && cast(lastCast);
   }
 });
 
@@ -438,22 +440,12 @@ listen("receiver-status", (e) => {
   if (acceptStatus(e.payload)) render();
 });
 
-listen("sender-event", (e) => {
-  const msg = e.payload;
-  const p = pending.get(msg.id);
-  if (!p) return;
-  pending.delete(msg.id);
-  msg.event === "error" ? p.reject(msg.message) : p.resolve(msg);
-});
-
 listen("doctor-findings", (e) => { ui.findings = e.payload || []; render(); });
 
-// The sender sidecar died: fail everything in flight; the next request starts a fresh one.
-listen("sender-exit", (e) => {
-  const message = (e.payload && e.payload.message) || "The sender stopped unexpectedly.";
-  for (const p of pending.values()) p.reject(message);
-  pending.clear();
-});
+listen("panel-shown", scanIfStale);
+listen("network-changed", () => { ui.lastScan = 0; scan(); });
+
+OapCast.mount($("cast-media"), render);
 
 (async () => {
   await loadPrefs();
@@ -466,4 +458,5 @@ listen("sender-exit", (e) => {
     ui.errors.start = String(err);
   }
   render();
+  scan();
 })();

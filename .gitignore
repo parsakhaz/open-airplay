@@ -14,3 +14,5 @@ engine/runtime/
 # Go sender
 /bin
 /artifacts
+sender/dist/
+sender/build/

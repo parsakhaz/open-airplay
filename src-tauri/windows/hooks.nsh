@@ -13,9 +13,9 @@
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; Stop this install's app and engine (only processes running from $INSTDIR, never another UxPlay
+  ; Stop this install's app, engine and cast sidecar (only processes running from $INSTDIR, never another UxPlay
   ; or another app with the same name) so their files can be removed.
-  nsExec::Exec `powershell -NoProfile -NonInteractive -Command "Get-Process open-airplay,uxplay -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like '$INSTDIR\*' } | Stop-Process -Force"`
+  nsExec::Exec `powershell -NoProfile -NonInteractive -Command "Get-Process open-airplay,uxplay,oap-sender -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like '$INSTDIR\*' } | Stop-Process -Force"`
   Pop $0
   nsExec::Exec 'netsh advfirewall firewall delete rule name="${OAP_FW_RULE}"'
   Pop $0

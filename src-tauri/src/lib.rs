@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -33,6 +34,10 @@ pub struct Sidecars {
     /// (generation, sidecar): the generation lets a late exit notice skip a newer sidecar.
     sender: Mutex<Option<(u64, SenderSidecar)>>,
     sender_generation: AtomicU64,
+    /// The running cast sidecar's ready line ({"event": "ready", "pyatv": ...}), once it has printed it.
+    sender_ready: Mutex<Option<Value>>,
+    /// Devices this PC is casting to right now (identifiers), from the sidecar's playing and final events.
+    casting: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl Sidecars {
@@ -46,6 +51,11 @@ impl Sidecars {
     /// The running engine's process id, if any.
     pub fn engine_pid(&self) -> Option<u32> {
         self.supervisor.lock().unwrap().as_ref().and_then(Supervisor::pid)
+    }
+
+    /// True while this PC is casting to at least one device.
+    pub fn is_casting(&self) -> bool {
+        !self.casting.lock().unwrap().is_empty()
     }
 
     pub fn shutdown(&self) {
@@ -536,52 +546,166 @@ fn sender_python() -> PathBuf {
     })
 }
 
+fn find_sender_program(app: &AppHandle) -> Option<sender::SenderProgram> {
+    let resources = app.path().resource_dir().ok();
+    let override_exe = std::env::var_os("OAP_SENDER").map(PathBuf::from);
+    sender::find_sender(resources.as_deref(), override_exe, sender_python(), &repo_root())
+}
+
+/// <app log dir>/sender.log: the cast sidecar's own log (its stderr) and the app's notes about it.
+fn sender_log(app: &AppHandle) -> Option<std::fs::File> {
+    let dir = app.path().app_log_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::OpenOptions::new().create(true).append(true).open(dir.join("sender.log")).ok()
+}
+
+fn sender_log_line(app: &AppHandle, line: &str) {
+    if let Some(mut f) = sender_log(app) {
+        use std::io::Write;
+        let _ = writeln!(f, "open-airplay: {line}");
+    }
+}
+
+const CASTING_UNAVAILABLE: &str = "Casting isn't available. Reinstall open-airplay to fix it.";
+const CASTING_STOPPED: &str = "Casting stopped unexpectedly. Try again.";
+
+type SenderSlot<'a> = std::sync::MutexGuard<'a, Option<(u64, SenderSidecar)>>;
+
+/// Starts the cast sidecar if it isn't running and returns the lock holding it.
+fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
+    let sidecars = &app.state::<AppState>().inner().sidecars;
+    let mut guard = sidecars.sender.lock().unwrap();
+    if guard.as_ref().is_some_and(|(_, s)| !s.is_running()) {
+        *guard = None;
+    }
+    if guard.is_some() {
+        return Ok(guard);
+    }
+    let Some(program) = find_sender_program(app) else {
+        sender_log_line(app, "no cast sidecar found (no bundled oap-sender, OAP_SENDER or dev script)");
+        return Err(CASTING_UNAVAILABLE.into());
+    };
+    let generation = sidecars.sender_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    *sidecars.sender_ready.lock().unwrap() = None;
+    sidecars.casting.lock().unwrap().clear();
+    sender_log_line(app, &format!("starting {:?} {:?} ({:?})", program.program, program.args, program.source));
+    let (events, exits) = (app.clone(), app.clone());
+    let sidecar = SenderSidecar::spawn(
+        &program,
+        sender_log(app),
+        move |event| {
+            let sidecars = &events.state::<AppState>().inner().sidecars;
+            if event["event"] == "ready" {
+                *sidecars.sender_ready.lock().unwrap() = Some(event.clone());
+            }
+            if let Some((identifier, on)) = sender::casting_change(&event) {
+                let mut casting = sidecars.casting.lock().unwrap();
+                if on {
+                    casting.insert(identifier);
+                } else {
+                    casting.remove(&identifier);
+                }
+            }
+            let _ = events.emit("sender-event", &event);
+        },
+        move |exit| {
+            if exit.requested {
+                return;
+            }
+            sender_log_line(&exits, &format!("cast sidecar exited unexpectedly: {:?}", exit.code));
+            let state = exits.state::<AppState>();
+            let mut current = state.sidecars.sender.lock().unwrap();
+            if current.as_ref().is_some_and(|(g, _)| *g == generation) {
+                *current = None;
+                state.sidecars.casting.lock().unwrap().clear();
+            }
+            drop(current);
+            let _ = exits.emit("sender-exit", json!({ "message": CASTING_STOPPED }));
+        },
+    )
+    .map_err(|e| {
+        sender_log_line(app, &format!("could not start the cast sidecar: {e}"));
+        CASTING_UNAVAILABLE.to_string()
+    })?;
+    *guard = Some((generation, sidecar));
+    Ok(guard)
+}
+
+fn send_to_sender(app: &AppHandle, command: &Value) -> Result<(), String> {
+    let mut guard = ensure_sender(app)?;
+    let result = guard.as_ref().unwrap().1.send(command);
+    result.map_err(|e| {
+        *guard = None;
+        sender_log_line(app, &format!("writing to the cast sidecar failed: {e}"));
+        CASTING_STOPPED.to_string()
+    })
+}
+
 /// Sends one command to the pyatv sidecar, (re)starting it if needed. Replies arrive as "sender-event".
 /// If the sidecar dies, "sender-exit" is emitted so the UI can fail outstanding requests and retry.
 #[tauri::command]
 async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || send_to_sender(&app, &command)).await.map_err(|e| e.to_string())?
+}
+
+/// Stops casting to one device, or to every device when `identifier` is absent (the tray's Stop sending).
+/// The ended cast reports "stopped" through "sender-event". With no sidecar running there is nothing to stop.
+pub fn stop_casting(app: &AppHandle, identifier: Option<String>) -> Result<(), String> {
+    let running = app.state::<AppState>().sidecars.sender.lock().unwrap().as_ref().is_some_and(|(_, s)| s.is_running());
+    if !running {
+        return Ok(());
+    }
+    static NEXT_STOP: AtomicU64 = AtomicU64::new(1);
+    let mut command = json!({ "id": format!("stop-{}", NEXT_STOP.fetch_add(1, Ordering::SeqCst)), "cmd": "stop" });
+    if let Some(identifier) = identifier {
+        command["identifier"] = json!(identifier);
+    }
+    send_to_sender(app, &command)
+}
+
+#[tauri::command]
+async fn sender_stop(app: AppHandle, identifier: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || stop_casting(&app, identifier)).await.map_err(|e| e.to_string())?
+}
+
+/// Whether casting works in this install.
+#[derive(Debug, Clone, Serialize)]
+struct SenderHealth {
+    available: bool,
+    source: Option<sender::SenderSource>,
+    /// The casting library's version, from the sidecar's ready line.
+    version: Option<String>,
+    casting: bool,
+    /// A plain sentence when casting isn't available.
+    message: Option<String>,
+}
+
+/// Starts the cast sidecar if needed and waits for its ready line.
+#[tauri::command]
+async fn sender_health(app: AppHandle) -> Result<SenderHealth, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        let sidecars = &state.sidecars;
-        let mut guard = sidecars.sender.lock().unwrap();
-        if guard.as_ref().is_some_and(|(_, s)| !s.is_running()) {
-            *guard = None;
+        let source = find_sender_program(&app).map(|p| p.source);
+        let unavailable = |message: String| SenderHealth { available: false, source, version: None, casting: false, message: Some(message) };
+        if let Err(message) = ensure_sender(&app) {
+            return unavailable(message);
         }
-        if guard.is_none() {
-            let generation = sidecars.sender_generation.fetch_add(1, Ordering::SeqCst) + 1;
-            let script = repo_root().join("sender").join("oap_sender.py");
-            let (events, exits) = (app.clone(), app.clone());
-            let sidecar = SenderSidecar::start(
-                sender_python(),
-                script,
-                move |event| {
-                    let _ = events.emit("sender-event", &event);
-                },
-                move |exit| {
-                    if exit.requested {
-                        return;
-                    }
-                    let state = exits.state::<AppState>();
-                    let mut current = state.sidecars.sender.lock().unwrap();
-                    if current.as_ref().is_some_and(|(g, _)| *g == generation) {
-                        *current = None;
-                    }
-                    drop(current);
-                    eprintln!("open-airplay: the cast helper exited ({:?})", exit.code);
-                    let _ = exits.emit("sender-exit", json!({ "message": "Sending stopped unexpectedly. Try again." }));
-                },
-            )
-            .map_err(|e| format!("Could not start the sender: {e}"))?;
-            *guard = Some((generation, sidecar));
+        let sidecars = &app.state::<AppState>().inner().sidecars;
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(ready) = sidecars.sender_ready.lock().unwrap().clone() {
+                let version = ready["pyatv"].as_str().map(str::to_string);
+                return SenderHealth { available: true, source, version, casting: sidecars.is_casting(), message: None };
+            }
+            let running = sidecars.sender.lock().unwrap().as_ref().is_some_and(|(_, s)| s.is_running());
+            if !running || std::time::Instant::now() > deadline {
+                sender_log_line(&app, "cast sidecar did not announce itself");
+                return unavailable(CASTING_UNAVAILABLE.into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
-        let result = guard.as_ref().unwrap().1.send(&command);
-        result.map_err(|e| {
-            *guard = None;
-            format!("The sender isn't running: {e}. Try again.")
-        })
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 /// The engine exe the doctor checks firewall rules for (without the `\\?\` prefix Windows APIs add).
@@ -677,6 +801,8 @@ fn spawn_network_watcher(app: AppHandle) {
                 ip = sample.primary_ip;
             }
             let Some(reason) = decision else { continue };
+            // The panel refreshes its device list (devices on the old network are gone).
+            let _ = app.emit("network-changed", ());
             let settings = settings_to_restart(&app.state::<AppState>().status.snapshot());
             if let Some(settings) = settings {
                 eprintln!("open-airplay: restarting the receiver ({reason:?})");
@@ -839,6 +965,7 @@ pub fn run() {
                 show_panel(app);
             }
         }))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec![launch::AUTOSTART_ARG])))
         .manage(AppState::default())
         .setup(|app| {
@@ -926,7 +1053,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 

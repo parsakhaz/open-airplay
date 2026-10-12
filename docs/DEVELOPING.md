@@ -17,7 +17,7 @@ iPhone / Mac ──AirPlay──▶ uxplay.exe (UxPlay 1.74 fork, built-in mDNS,
 - `engine/` builds the pinned UxPlay fork (`engine/UXPLAY_PIN`, patches in `engine/patches/`).
 - `src-tauri/src/engine.rs`: settings → UxPlay flags, UxPlay output → events (the engine seam).
 - `src-tauri/src/supervisor.rs`: runs the engine without a console window, restarts it if it exits.
-- `src-tauri/src/sender.rs` + `sender/oap_sender.py`: the pyatv sender sidecar.
+- `src-tauri/src/sender.rs` + `sender/oap_sender.py`: the pyatv cast sidecar. Each command runs as its own task (a long cast never blocks a scan or another device), `stop` ends a device's cast, every request has a time limit, and failures come back as plain sentences with a `code`. The protocol is described at the top of `oap_sender.py`.
 - `design/`: the design system shared with open-airdrop-windows (see below).
 
 ## Run it (Windows, development)
@@ -42,9 +42,9 @@ On a network set to **Public**, Windows allows the app only if you tick Public i
 
 Start at login is on by default. Sign-in launches pass `--autostart`: the app stays in the tray, opens no window and leaves receiving off until you flip the switch. Dev builds never touch the Run entry (it has the same name as the installed app's) unless `OAP_DEV_AUTOSTART=1` is set; to try a boot launch in development, run `npm run tauri dev -- -- --autostart`.
 
-Engine output is logged to `%LOCALAPPDATA%\org.openairplay.app\logs\engine.log`. Each app start moves the previous run's log to `engine.1.log`, and the log also rotates when it reaches 5 MB. Three older files are kept, from `engine.1.log` (newest) to `engine.3.log`. The app runs the engine without UxPlay's `-d`, so the log has no debug output. For that, turn receiving off and run the engine yourself, for example `engine\dist\uxplay.exe -n test-receiver -nh -d` (with `C:\msys64\ucrt64\bin` on `PATH`).
+Engine output is logged to `%LOCALAPPDATA%\org.openairplay.app\logs\engine.log`; the cast sidecar's log goes to `sender.log` in the same folder. Each app start moves the previous run's log to `engine.1.log`, and the log also rotates when it reaches 5 MB. Three older files are kept, from `engine.1.log` (newest) to `engine.3.log`. The app runs the engine without UxPlay's `-d`, so the log has no debug output. For that, turn receiving off and run the engine yourself, for example `engine\dist\uxplay.exe -n test-receiver -nh -d` (with `C:\msys64\ucrt64\bin` on `PATH`).
 
-Overrides: `OAP_ENGINE` (path to uxplay.exe), `OAP_MSYS2_ROOT` (default `C:\msys64`), `OAP_PYTHON` (sender interpreter).
+Overrides: `OAP_ENGINE` (path to uxplay.exe), `OAP_MSYS2_ROOT` (default `C:\msys64`), `OAP_PYTHON` (sender interpreter), `OAP_SENDER` (path to a frozen `oap-sender.exe`, used instead of Python and the script; a `.py` path runs under Python, for example `sender/tests/fake_sender.py`, a stand-in with three made-up devices for driving the cast page without hardware).
 
 ## Design system
 
@@ -87,12 +87,15 @@ If the installed open-airplay is running, a dev build with the same identifier o
 
 ```powershell
 C:\msys64\usr\bin\bash.exe -lc "/c/path/to/open-airplay/engine/build-engine.sh"   # builds the engine and stages engine/runtime
+sender\.venv\Scripts\python -m pip install -r sender\requirements-build.txt
+npm run build-sender                                                                # freezes the cast sidecar into sender/dist/oap-sender/
 npm run build                                                                       # -> src-tauri/target/release/bundle/nsis/*-setup.exe
 ```
 
 - `engine/stage-runtime.sh` (run by `build-engine.sh`) copies `uxplay.exe`, the 17 GStreamer plugins UxPlay's pipelines use, and every DLL they load into `engine/runtime/` (gitignored): `bin/` holds the exe and DLLs, `lib/gstreamer-1.0/` holds the plugins. GStreamer finds the plugins relative to its own DLL, so the installed app needs no MSYS2, no PATH changes and no `GST_PLUGIN_*` variables.
 - `src-tauri/tauri.windows.conf.json` (merged on Windows only, so macOS and Linux builds keep their own targets) bundles that folder as `engine/` next to the app and builds a per-machine NSIS installer. The installer asks for administrator rights, because it adds a firewall rule.
-- `src-tauri/windows/hooks.nsh`: on install, the installer adds one inbound firewall rule, "open-airplay receiver", scoped to `<install dir>\engine\bin\uxplay.exe`. On uninstall, it stops the app and removes the rule.
+- `sender/freeze.py` freezes `oap_sender.py` and pyatv with PyInstaller into `sender/dist/oap-sender/` (gitignored, about 44 MB), which the installer ships as `sender/`. The app runs that exe before falling back to a development venv, so casting works on a PC without Python. It is a folder build, not one file: a one-file exe runs Python as a second process that would outlive Stop. `OAP_SENDER_EXE=... python -m unittest sender.tests.test_sender` runs the protocol tests against the frozen exe.
+- `src-tauri/windows/hooks.nsh`: on install, the installer adds one inbound firewall rule, "open-airplay receiver", scoped to `<install dir>\engine\bin\uxplay.exe`. On uninstall, it stops the app, the engine and the cast sidecar and removes the rule.
 - Size: the runtime is about 174 MB on disk and the installer is about 49 MB. Most of that is MSYS2's FFmpeg, which links every codec library (x265, aom, svt-av1, …) even though UxPlay only decodes H.264/H.265, AAC and ALAC. A minimal FFmpeg build would shrink it a lot; that is a follow-up.
 - The installer is unsigned for now (code signing is an ask-first decision), so Windows SmartScreen warns on first run.
 
@@ -113,4 +116,4 @@ npm test        # Rust unit tests (engine seam, supervisor, sender bridge, prefs
 go test ./...   # FairPlay mirror sender
 go vet ./...
 ```
-The engine's C tests (window sizing, maximized/full-screen reshow) run inside `engine/build-engine.sh`. On Windows, Tauri's build script needs `engine/runtime/` to exist (it is the installer's engine resource); `build-engine.sh` creates it, or `mkdir engine/runtime` is enough for running the Rust tests. CI runs all of these on Windows, plus the Rust check and tests and the Go suite on Linux.
+The engine's C tests (window sizing, maximized/full-screen reshow) run inside `engine/build-engine.sh`. On Windows, Tauri's build script needs `engine/runtime/` to exist (it is the installer's engine resource); `build-engine.sh` creates it, or `mkdir engine/runtime` is enough for running the Rust tests. The same goes for `sender/dist/oap-sender/` (made by `npm run build-sender`). CI runs all of these on Windows, plus the Rust check and tests and the Go suite on Linux.
