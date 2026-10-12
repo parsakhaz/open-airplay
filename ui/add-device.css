@@ -9,8 +9,7 @@
 .ad-grow { flex: 1; min-width: 0; }
 .ad-grow b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* the form page: neutral send header, no footer (app.js sets .is-send-page on the panel) */
-#panel.is-send-page #panel-head, #panel.is-send-page #panel-foot { display: none; }
+/* the form page: neutral send header, no footer (app.js hides the panel's own) */
 .ad-page { display: flex; flex-direction: column; margin: 0 -6px -6px; }
 .ad-head { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 12px 12px 10px 6px; border-bottom: 0.5px solid var(--oai-hairline); }
 .ad-back { width: 32px; height: 32px; border: 0; border-radius: var(--oai-radius-md); background: transparent; color: var(--oai-ink-2); display: grid; place-items: center; flex: none; }
