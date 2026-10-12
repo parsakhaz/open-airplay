@@ -61,7 +61,7 @@ pub enum EngineEvent {
     VideoStopped,
     /// The engine ended the session after a `disconnect` control line (engine patch 0003).
     Disconnected,
-    /// A video link (YouTube) started playing (engine patch 0005).
+    /// A video link (YouTube) started playing (engine patch 0006).
     VideoLink,
     /// A video link from an app other than YouTube, which the engine can't play.
     UnsupportedVideoLink,
