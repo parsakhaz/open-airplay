@@ -1,16 +1,6 @@
-/* open-airplay specific styles. Shared look lives in tokens.css + components.css (design/). */
+/* open-airplay specific styles. Shared look lives in tokens.css + components.css (design/).
+   Only --oai-* tokens here: no raw colours, spacing or radii. */
 
-.scan-btn { background: transparent; color: var(--oai-ink-2); }
-.scan-btn:hover { background: var(--oai-fill); }
-.scan-btn.is-spinning svg { animation: oai-spin 0.8s linear infinite; }
-
-.dots { display: flex; gap: 6px; }
-.dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--oai-accent); animation: blink 1.2s ease-in-out infinite; }
-.dots i:nth-child(2) { animation-delay: 0.2s; }
-.dots i:nth-child(3) { animation-delay: 0.4s; }
-@keyframes blink { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
-
-.pop-hero .acts { display: flex; gap: 6px; }
 /* ---------- the panel: the app's only window ---------- */
 /* An opaque, undecorated window; Windows 11 adds the rounded corners and shadow (tauri.conf "shadow": true).
    The window's height follows the content (app.js reports it); longer content scrolls inside the body. */
@@ -18,38 +8,8 @@
 html, body { height: 100%; background: var(--oai-popover); }
 body { overflow: hidden; }
 #panel { inset: 0; border-radius: 0; box-shadow: none; animation: none; }
-#pop-body { flex: 0 1 auto; }
+#pop-body { flex: 0 1 auto; padding: var(--oai-space-1-5); }
 #pop-content { display: flow-root; }   /* keeps child margins inside, so its height is the whole content */
-.inline-error, .region-error { margin: 6px 4px 0; font-size: var(--oai-text-sm); color: var(--oai-bad); text-align: left; }
-.region-error { margin: 0 8px 8px; }
-.settings-form .status-line { padding: 0 10px; font-size: var(--oai-text-sm); min-height: 1.5em; }
-.oai-banner.notice { margin: 2px 4px 8px; align-items: center; }
-.oai-banner.notice p { font-size: var(--oai-text-sm); }
-.settings-form .status-line .is-bad { color: var(--oai-bad); }
-
-/* status block */
-.pop-status { padding: 4px 10px 10px; }
-.pop-status .line { display: flex; align-items: center; gap: 10px; }
-.pop-status .line .oai-dot { width: 8px; height: 8px; }
-.pop-status .line .oai-dot.is-live { box-shadow: 0 0 0 3px color-mix(in srgb, var(--oai-ok) 22%, transparent); }
-.pop-status b { font-weight: 600; }
-.pop-status .hint { font-size: var(--oai-text-sm); color: var(--oai-ink-2); margin: 6px 0 0 18px; }
-.pop-hero { margin: 2px 4px 8px; padding: 14px; border-radius: var(--oai-radius-lg); background: var(--oai-fill); text-align: center; }
-.pop-hero .oai-spinner { margin: 4px auto 10px; }
-.pop-hero h3 { margin: 0 0 2px; font: 600 var(--oai-text-lg)/1.3 var(--oai-font-display); letter-spacing: -0.01em; }
-.pop-hero p { margin: 0; font-size: var(--oai-text-sm); color: var(--oai-ink-2); }
-.pop-hero .oai-btn-row { margin-top: 12px; }
-.pop-hero.is-live { background: linear-gradient(135deg, rgba(43, 46, 74, 0.95), rgba(27, 29, 46, 0.95)); color: #f5f5f7; text-align: left; display: flex; align-items: center; gap: 12px; }
-.pop-hero.is-live p { color: rgba(255, 255, 255, 0.7); font-variant-numeric: tabular-nums; }
-.pop-hero.is-live .who { flex: 1; min-width: 0; }
-.pop-hero.is-live .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; letter-spacing: 0.05em; color: #ff6b61; margin-bottom: 2px; }
-.pop-hero.is-live .badge i { width: 6px; height: 6px; border-radius: 50%; background: #ff453a; animation: blink 1.6s ease-in-out infinite; }
-.pop-hero.is-live .oai-btn.is-danger { background: rgba(255, 69, 58, 0.2); color: #ff8a80; }
-.pop-hero.is-bad { background: var(--oai-bad-soft); text-align: left; }
-.pop-hero.is-bad h3 { color: var(--oai-bad); }
-.pop-hero .detail { margin: 8px 0 0; font-size: var(--oai-text-xs); }
-.pop-pin { display: flex; gap: 8px; justify-content: center; margin: 12px 0 6px; }
-.pop-pin span { width: 50px; height: 62px; border-radius: 12px; background: var(--oai-panel); box-shadow: var(--oai-shadow); display: grid; place-items: center; font: 600 34px/1 var(--oai-font-rounded); font-variant-numeric: tabular-nums; }
 .pop-page { animation: oai-in var(--oai-dur) var(--oai-ease) both; }
 /* ---------- Send to rows and device pages (approved device-page design) ---------- */
 .send-row { min-height: 44px; }
@@ -113,10 +73,30 @@ body { overflow: hidden; }
 .send-ban { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--oai-radius-lg); background: var(--oai-bad-soft); font-size: var(--oai-text-md); line-height: 1.4; }
 .send-ban svg { width: 16px; height: 16px; color: var(--oai-bad); margin-top: 2px; flex: none; }
 
+.inline-error, .region-error { margin: var(--oai-space-1-5) var(--oai-space-1) 0; font-size: var(--oai-text-sm); color: var(--oai-bad); text-align: left; }
+.region-error { margin: 0 var(--oai-space-2) var(--oai-space-2); }
+.oai-hit .oai-switch { margin: 0; }
+
+/* ---------- home ---------- */
+#page-home { display: grid; gap: var(--oai-space-1-5); }
+#page-home > [id^="r-"]:empty { display: none; }   /* an empty region takes no gap */
+#r-devices { display: grid; }
+.devices-empty { display: flex; align-items: center; gap: var(--oai-space-2); min-height: var(--oai-row-h); padding: 0 var(--oai-space-2-5); font-size: var(--oai-text-md); color: var(--oai-ink-2); }
+.oai-banner p { margin: 0; }
+.oai-banner .oai-btn-row { justify-content: flex-start; margin-top: var(--oai-space-2); }
+.oai-banner .oai-mini { margin-top: var(--oai-space-0-5); color: var(--oai-ink); }
+.oai-banner.is-info { align-items: center; }
+.oai-banner > .oai-icon-btn { margin: calc(-1 * var(--oai-space-1-5)) calc(-1 * var(--oai-space-1-5)) calc(-1 * var(--oai-space-1-5)) 0; }
+/* Secondary buttons on a tinted banner sit on the panel surface. */
+.oai-banner .oai-btn:not(.is-primary) { background: var(--oai-panel); box-shadow: 0 0 0 0.5px var(--oai-hairline); }
+.oai-banner .oai-btn:not(.is-primary):hover { filter: brightness(0.97); }
+.oai-banner .oai-btn:not(.is-primary):active { filter: brightness(0.92); }
+.oai-live .inline-error, .oai-code .inline-error { margin: 0; }
+
 /* network doctor */
-.doctor-list { display: grid; gap: 8px; margin: 4px 6px 8px; }
+.doctor-list { display: grid; gap: var(--oai-space-1-5); }
 .doctor p { font-size: var(--oai-text-sm); line-height: 1.45; }
-.recheck { justify-self: end; font-size: var(--oai-text-xs); color: var(--oai-ink-2); }
+.recheck { justify-self: end; font-size: var(--oai-text-sm); }
 
 /* playing audio: art and track on top; controls, the phone's volume and Disconnect below */
 .pop-hero.is-audio { flex-direction: column; align-items: stretch; gap: 12px; }
@@ -146,3 +126,23 @@ body { overflow: hidden; }
 .advanced[open] summary svg { transform: rotate(90deg); }
 .beta { font-size: 10px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--oai-accent); background: var(--oai-accent-soft); border-radius: 4px; padding: 1px 4px; margin-left: 4px; vertical-align: 1px; }
 .block-link { display: block; margin: -4px auto 6px; font-size: var(--oai-text-sm); }
+
+
+/* ---------- settings: one group of evenly spaced rows ---------- */
+#page-settings { padding: var(--oai-space-1-5); }
+.settings-form { background: var(--oai-panel); border-radius: var(--oai-radius-lg); box-shadow: 0 0 0 0.5px var(--oai-hairline); overflow: hidden; }
+.settings-form > .oai-list-row { min-height: var(--oai-row-h); padding: var(--oai-space-1-5) var(--oai-space-2-5) var(--oai-space-1-5) var(--oai-space-3); border-radius: 0; border-top: 0.5px solid var(--oai-hairline); }
+.settings-form > .oai-list-row:first-child { border-top: 0; }
+.settings-form .oai-sub { font-size: var(--oai-text-xs); line-height: 1.3; }
+.settings-form .status-line { padding: var(--oai-space-2) var(--oai-space-3); border-top: 0.5px solid var(--oai-hairline); font-size: var(--oai-text-sm); color: var(--oai-ink-2); }
+.settings-form .status-line:empty { display: none; }
+.settings-form .status-line .is-bad { color: var(--oai-bad); }
+
+/* ---------- a device page (casting) ---------- */
+.pop-cast { padding: var(--oai-space-1-5); display: grid; gap: var(--oai-space-2); }
+.pop-cast .oai-input { width: 100%; }
+.pop-cast .row { display: flex; gap: var(--oai-space-1-5); }
+.pop-cast .row .oai-input { flex: 1; }
+.pop-cast .msg { font-size: var(--oai-text-sm); color: var(--oai-ink-2); display: flex; align-items: center; gap: var(--oai-space-2); min-height: 1.5em; }
+.pop-cast .msg.is-bad { color: var(--oai-bad); }
+.pop-cast .msg.is-ok { color: var(--oai-ok); }

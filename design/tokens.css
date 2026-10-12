@@ -34,7 +34,9 @@
   --oai-warn-soft: rgba(194, 124, 14, 0.13);
   --oai-bad: #e5484d;
   --oai-bad-soft: rgba(229, 72, 77, 0.12);
+  --oai-ok-soft: rgba(48, 164, 108, 0.16);
   --oai-close-hover: #e81123;
+  --oai-pressed: rgba(0, 0, 0, 0.11);   /* fill while a control is held down */
 
   /* decorative bloom behind the translucent sidebar */
   --oai-bloom-a: #c7d7ff;
@@ -57,8 +59,11 @@
   --oai-tracking-tight: -0.02em;
 
   /* spacing */
+  --oai-space-0-5: 2px;
   --oai-space-1: 4px;
+  --oai-space-1-5: 6px;
   --oai-space-2: 8px;
+  --oai-space-2-5: 10px;
   --oai-space-3: 12px;
   --oai-space-4: 16px;
   --oai-space-5: 20px;
@@ -66,6 +71,7 @@
   --oai-space-8: 32px;
 
   /* shape */
+  --oai-radius-xs: 4px;
   --oai-radius-sm: 6px;
   --oai-radius-md: 8px;
   --oai-radius-lg: 10px;
@@ -95,6 +101,9 @@
   --oai-shadow-popover: 0 0 0 0.5px rgba(0, 0, 0, 0.14), 0 12px 32px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
 
   /* layout */
+  --oai-hit: 32px;          /* smallest clickable control, both ways */
+  --oai-row-h: 44px;        /* list rows that open something */
+  --oai-panel-w: 340px;     /* the tray panel */
   --oai-titlebar-h: 36px;
   --oai-sidebar-w: 236px;
 }
@@ -123,6 +132,8 @@
     --oai-warn-soft: rgba(240, 185, 85, 0.16);
     --oai-bad: #ff6369;
     --oai-bad-soft: rgba(255, 99, 105, 0.16);
+    --oai-ok-soft: rgba(76, 195, 138, 0.16);
+    --oai-pressed: rgba(255, 255, 255, 0.14);
     --oai-bloom-a: #24304d;
     --oai-bloom-b: #3a2a22;
     --oai-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
@@ -156,6 +167,8 @@
   --oai-warn-soft: rgba(240, 185, 85, 0.16);
   --oai-bad: #ff6369;
   --oai-bad-soft: rgba(255, 99, 105, 0.16);
+  --oai-ok-soft: rgba(76, 195, 138, 0.16);
+  --oai-pressed: rgba(255, 255, 255, 0.14);
   --oai-bloom-a: #24304d;
   --oai-bloom-b: #3a2a22;
   --oai-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);

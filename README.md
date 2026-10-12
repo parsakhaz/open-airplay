@@ -51,7 +51,7 @@ The headline feature is **sender-side FairPlay mirroring**: pushing your live de
 <table>
 <tr>
 <td width="50%"><img src="docs/screenshots/popover.png" alt="Tray panel: Ready to receive and Send to" width="100%"><br><sub><b>Tray panel</b>: the receiving switch, status, and devices to send to.</sub></td>
-<td width="50%"><img src="docs/screenshots/settings.png" alt="Settings: name, PIN, codec, autostart" width="100%"><br><sub><b>Settings</b>: device name, PIN, codec, and launch options.</sub></td>
+<td width="50%"><img src="docs/screenshots/settings.png" alt="Settings: name, PIN, high-efficiency video, start at login" width="100%"><br><sub><b>Settings</b>: name, PIN, high-efficiency video, and start at login.</sub></td>
 </tr>
 </table>
 
