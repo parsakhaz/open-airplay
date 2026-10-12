@@ -230,7 +230,7 @@ fn set_tray_look(app: &AppHandle, tray: &tauri::tray::TrayIcon, look: TrayLook) 
 }
 
 /// What the tray menu offers besides Quit: Disconnect while a phone is connected to this PC, and
-/// Stop sending while this PC mirrors to any TV (it stops them all).
+/// Stop sending while this PC mirrors or casts to any device (it stops them all).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct TrayItems {
     disconnect: bool,
@@ -258,13 +258,14 @@ fn tray_menu(app: &AppHandle, items: TrayItems) -> tauri::Result<Menu<tauri::Wry
 }
 
 static TRAY_DISCONNECT: AtomicBool = AtomicBool::new(false);
-static TRAY_SENDING: AtomicBool = AtomicBool::new(false);
+static TRAY_MIRRORING: AtomicBool = AtomicBool::new(false);
+static TRAY_CASTING: AtomicBool = AtomicBool::new(false);
 
 /// Rebuilds the tray menu when what it offers changed. Waits for the main thread, so never call it there.
 fn set_tray_menu(app: &AppHandle, tray: &tauri::tray::TrayIcon) {
     static SHOWN: Mutex<TrayItems> = Mutex::new(TrayItems { disconnect: false, stop_sending: false });
     let mut shown = SHOWN.lock().unwrap();
-    let want = TrayItems { disconnect: TRAY_DISCONNECT.load(Ordering::SeqCst), stop_sending: TRAY_SENDING.load(Ordering::SeqCst) };
+    let want = TrayItems { disconnect: TRAY_DISCONNECT.load(Ordering::SeqCst), stop_sending: TRAY_MIRRORING.load(Ordering::SeqCst) || TRAY_CASTING.load(Ordering::SeqCst) };
     if *shown == want {
         return;
     }
@@ -274,10 +275,10 @@ fn set_tray_menu(app: &AppHandle, tray: &tauri::tray::TrayIcon) {
     }
 }
 
-/// The mirror changed: offer Stop sending while it sends. The caller holds the mirror's lock, so the
-/// menu is rebuilt on its own thread.
-fn set_tray_sending(app: &AppHandle, sending: bool) {
-    if TRAY_SENDING.swap(sending, Ordering::SeqCst) == sending {
+/// Mirroring or casting started or ended: offer Stop sending while either sends. Callers hold the
+/// mirror's or the cast sidecar's lock, so the menu is rebuilt on its own thread.
+fn set_tray_sending(app: &AppHandle, flag: &AtomicBool, sending: bool) {
+    if flag.swap(sending, Ordering::SeqCst) == sending {
         return;
     }
     let app = app.clone();
@@ -635,6 +636,7 @@ fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
     let generation = sidecars.sender_generation.fetch_add(1, Ordering::SeqCst) + 1;
     *sidecars.sender_ready.lock().unwrap() = None;
     sidecars.casting.lock().unwrap().clear();
+    set_tray_sending(app, &TRAY_CASTING, false);
     sender_log_line(app, &format!("starting {:?} {:?} ({:?})", program.program, program.args, program.source));
     let (events, exits) = (app.clone(), app.clone());
     let sidecar = SenderSidecar::spawn(
@@ -652,6 +654,7 @@ fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
                 } else {
                     casting.remove(&identifier);
                 }
+                set_tray_sending(&events, &TRAY_CASTING, !casting.is_empty());
             }
             let _ = events.emit("sender-event", &event);
         },
@@ -665,6 +668,7 @@ fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
             if current.as_ref().is_some_and(|(g, _)| *g == generation) {
                 *current = None;
                 state.sidecars.casting.lock().unwrap().clear();
+                set_tray_sending(&exits, &TRAY_CASTING, false);
             }
             drop(current);
             let _ = exits.emit("sender-exit", json!({ "message": CASTING_STOPPED }));
@@ -1103,7 +1107,7 @@ pub fn run() {
                 let mirror = mirror::Mirror::new(
                     move |snapshot| {
                         let _ = events.emit("mirror-status", snapshot);
-                        set_tray_sending(&events, snapshot.is_sending());
+                        set_tray_sending(&events, &TRAY_MIRRORING, snapshot.is_sending());
                     },
                     || {
                         SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -1144,7 +1148,11 @@ pub fn run() {
                     "stop_sending" => {
                         let app = app.clone();
                         std::thread::spawn(move || {
+                            // Everything this PC sends: every mirrored TV and every cast.
                             if let Err(e) = the_mirror(&app).and_then(|m| m.stop(None)) {
+                                eprintln!("open-airplay: {e}");
+                            }
+                            if let Err(e) = stop_casting(&app, None) {
                                 eprintln!("open-airplay: {e}");
                             }
                         });
