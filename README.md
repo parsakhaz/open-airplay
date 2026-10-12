@@ -48,16 +48,14 @@ The headline feature is **sender-side FairPlay mirroring**: pushing your live de
 
 <div align="center">
 
-<img src="docs/screenshots/full-view.png" alt="open-airplay full view: Ready to receive" width="100%">
-
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshots/popover.png" alt="Tray popover: Ready to receive and Send to" width="100%"><br><sub><b>Tray popover</b>: status, device list, one click to expand.</sub></td>
+<td width="50%"><img src="docs/screenshots/popover.png" alt="Tray panel: Ready to receive and Send to" width="100%"><br><sub><b>Tray panel</b>: the receiving switch, status, and devices to send to.</sub></td>
 <td width="50%"><img src="docs/screenshots/settings.png" alt="Settings: name, PIN, codec, autostart" width="100%"><br><sub><b>Settings</b>: device name, PIN, codec, and launch options.</sub></td>
 </tr>
 </table>
 
-<sub>Light and dark aware. The app lives in the tray and expands to the full media view on demand.</sub>
+<sub>Light and dark aware. The app lives in the tray: one panel that opens above the tray icon, and the mirrored video in its own window.</sub>
 
 </div>
 
@@ -78,7 +76,7 @@ flowchart TD
     class G tv;
 ```
 
-- **Receiver**: a supervised [UxPlay](https://github.com/FDH2/UxPlay) engine with built-in device discovery, wrapped in a clean [Tauri](https://tauri.app) app (a compact tray popover that expands to a full-screen media view).
+- **Receiver**: a supervised [UxPlay](https://github.com/FDH2/UxPlay) engine with built-in device discovery, wrapped in a clean [Tauri](https://tauri.app) app (one tray panel; the mirrored video plays in its own window).
 - **Sender (mirroring)**: captures the chosen display via the Windows Desktop Duplication API, encodes H.264 live, runs the AirPlay 2 and FairPlay SAP pairing and handshake, and streams the encrypted mirror in real time. The protocol core is ported from [doubletake](https://github.com/omarroth/doubletake).
 - **Sender (media)**: hands a video or audio URL to the receiver's AirPlay playback via [pyatv](https://github.com/postlund/pyatv).
 

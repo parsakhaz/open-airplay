@@ -10,8 +10,6 @@ use crate::engine::ReceiverSettings;
 #[serde(default)]
 pub struct AppPrefs {
     pub receiver: ReceiverSettings,
-    /// Switch to the full view automatically when a mirroring session starts.
-    pub open_full_view_on_mirror: bool,
     /// Launch open-airplay when the user signs in to Windows (quietly, receiving off).
     pub start_at_login: bool,
     /// Set once start at login has been turned on by default, so the user's later "off" sticks.
@@ -74,7 +72,6 @@ mod tests {
     fn missing_file_gives_defaults_named_after_the_pc() {
         let mut prefs = AppPrefs::load(&temp_path("missing"), "PARSA-DEVBOX");
         assert_eq!(prefs.receiver, ReceiverSettings { name: "PARSA-DEVBOX".into(), pin_mode: false, h265: false });
-        assert!(!prefs.open_full_view_on_mirror);
         assert!(prefs.offer_start_at_login(), "a new install is offered start at login");
         assert!(prefs.start_at_login, "start at login is on by default");
     }
@@ -84,7 +81,6 @@ mod tests {
         let path = temp_path("roundtrip");
         let prefs = AppPrefs {
             receiver: ReceiverSettings { name: "Living Room PC".into(), pin_mode: true, h265: true },
-            open_full_view_on_mirror: true,
             start_at_login: false,
             start_at_login_offered: true,
             receiving: Some(false),
@@ -131,6 +127,16 @@ mod tests {
         assert!(AppPrefs::load(&path, "PC").receiving_on());
         AppPrefs { receiving: Some(false), ..AppPrefs::load(&path, "PC") }.save(&path).unwrap();
         assert!(!AppPrefs::load(&path, "PC").receiving_on());
+    }
+
+    #[test]
+    fn files_from_before_the_full_view_was_removed_still_load() {
+        let path = temp_path("full-view");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"receiver": {"name": "Den"}, "open_full_view_on_mirror": true, "start_at_login": true}"#).unwrap();
+        let prefs = AppPrefs::load(&path, "PC");
+        assert_eq!(prefs.receiver.name, "Den");
+        assert!(prefs.start_at_login);
     }
 
     #[test]
