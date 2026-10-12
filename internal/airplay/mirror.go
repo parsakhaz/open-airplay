@@ -585,7 +585,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	// SETUP ordering.
 	sessionFirstSetup := true
 
-	audioStreamConnectionID := int64(time.Now().UnixNano() & 0x7FFFFFFFFFFFFFFF)
+	audioStreamConnectionID := newStreamConnectionID()
 	selectedAudioCodec := policy.audioCodec
 	// Use streamConnectionID as the RTSP URI path. Control, audio, RECORD, and
 	// SET_PARAMETER share the audio URI; video uses a separate URI with its own
@@ -1032,7 +1032,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	// Attach the video stream to the prepared session.
 	// Video SETUP uses the same sessionUUID but a different streamConnectionID.
 	// The Apple TV attaches this video stream to the existing session.
-	videoStreamConnectionID := int64(time.Now().UnixNano() & 0x7FFFFFFFFFFFFFFF)
+	videoStreamConnectionID := newStreamConnectionID()
 	videoURI := fmt.Sprintf("rtsp://%s:%d/%d", c.host, c.port, videoStreamConnectionID)
 
 	videoStreamDesc := map[string]interface{}{
