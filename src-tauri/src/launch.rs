@@ -21,12 +21,37 @@ pub fn plan<S: AsRef<str>>(args: &[S], prefs: &AppPrefs) -> Launch {
     Launch { show_panel: !boot, start_receiving: !boot && prefs.receiving_on() }
 }
 
+/// The start-at-login Run entry as Windows reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunEntry {
+    /// No Run value, e.g. after an uninstall removed it.
+    Missing,
+    Enabled,
+    /// Present but turned off in Task Manager.
+    DisabledByUser,
+}
+
+/// Whether this launch should (re)write the Run entry so it exists and carries --autostart.
+pub fn should_write_run_entry(start_at_login: bool, entry: RunEntry) -> bool {
+    start_at_login && entry != RunEntry::DisabledByUser
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn prefs(receiving: Option<bool>) -> AppPrefs {
         AppPrefs { receiving, ..AppPrefs::default() }
+    }
+
+    #[test]
+    fn start_at_login_restores_a_missing_entry_but_respects_task_manager() {
+        assert!(should_write_run_entry(true, RunEntry::Missing), "a reinstall gets its entry back");
+        assert!(should_write_run_entry(true, RunEntry::Enabled), "an old entry gains --autostart");
+        assert!(!should_write_run_entry(true, RunEntry::DisabledByUser), "Task Manager's off stays off");
+        for entry in [RunEntry::Missing, RunEntry::Enabled, RunEntry::DisabledByUser] {
+            assert!(!should_write_run_entry(false, entry));
+        }
     }
 
     #[test]

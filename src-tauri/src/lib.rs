@@ -423,15 +423,41 @@ fn apply_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
     result.or_else(|e| if enabled { Err(format!("Could not turn on start at login: {e}")) } else { Ok(()) })
 }
 
-/// Rewrites a live Run entry so one from an older version gains --autostart. An entry the user turned
-/// off in Task Manager reads as not enabled and is left alone, since enabling would turn it back on.
+/// Brings the Run entry in line with the pref at launch: an older entry gains --autostart, and one an
+/// uninstall removed comes back. An entry the user turned off in Task Manager is left alone, since
+/// enabling it would turn it back on.
 fn refresh_start_at_login(app: &AppHandle) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
-    if app.autolaunch().is_enabled().unwrap_or(false) {
+    let entry = if app.autolaunch().is_enabled().unwrap_or(false) {
+        launch::RunEntry::Enabled
+    } else if run_value_exists(&app.package_info().name) {
+        launch::RunEntry::DisabledByUser
+    } else {
+        launch::RunEntry::Missing
+    };
+    if launch::should_write_run_entry(true, entry) {
         apply_start_at_login(app, true)
     } else {
         Ok(())
     }
+}
+
+/// Whether the current user's Run key has a value with this name (enabled or not).
+#[cfg(windows)]
+fn run_value_exists(name: &str) -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (key, value) = (wide(r"Software\Microsoft\Windows\CurrentVersion\Run"), wide(name));
+    let status = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
+    };
+    status == 0
+}
+
+/// Elsewhere the plugin's "enabled" is the whole story.
+#[cfg(not(windows))]
+fn run_value_exists(_name: &str) -> bool {
+    false
 }
 
 /// Async + spawn_blocking: stopping the old engine joins a thread, which must never happen on the UI thread.
