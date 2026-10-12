@@ -138,11 +138,10 @@ pub fn forget(list: &mut Vec<AddedDevice>, host: &str) -> bool {
 }
 
 /// `parse_address`, with the port from the form's own Port field (which wins) when there is one.
-pub fn parse_address_with_port(input: &str, port: Option<u16>) -> Result<Address, AddressError> {
+pub fn parse_address_with_port(input: &str, port: Option<&str>) -> Result<Address, AddressError> {
     let addr = parse_address(input)?;
-    match port {
-        Some(0) => Err(AddressError::BadPort),
-        Some(port) => Ok(Address { port: Some(port), ..addr }),
+    match port.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(port) => Ok(Address { port: Some(parse_port(port)?), ..addr }),
         None => Ok(addr),
     }
 }
@@ -257,9 +256,12 @@ mod tests {
 
     #[test]
     fn a_port_from_its_own_field_wins_over_one_typed_in_the_address() {
-        assert_eq!(parse_address_with_port("tv:7100", Some(7200)).unwrap().port, Some(7200));
+        assert_eq!(parse_address_with_port("tv:7100", Some(" 7200 ")).unwrap().port, Some(7200));
         assert_eq!(parse_address_with_port("tv:7100", None).unwrap().port, Some(7100));
-        assert_eq!(parse_address_with_port("tv", Some(0)).unwrap_err(), AddressError::BadPort);
+        assert_eq!(parse_address_with_port("tv:7100", Some("")).unwrap().port, Some(7100), "an empty field is no port");
+        for bad in ["0", "70000", "abc", "7.5"] {
+            assert_eq!(parse_address_with_port("tv", Some(bad)).unwrap_err(), AddressError::BadPort);
+        }
     }
 
     #[test]
