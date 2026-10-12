@@ -314,6 +314,8 @@ struct Inner {
     next_id: u64,
     pending: HashMap<u64, (Pending, Option<mpsc::Sender<Value>>)>,
     published: Option<MirrorSnapshot>,
+    /// The session's connect request (port, options), sent again after a wrong code.
+    connect: Option<Value>,
 }
 
 type OnStatus = Arc<dyn Fn(&MirrorSnapshot) + Send + Sync>;
@@ -353,6 +355,7 @@ impl Mirror {
         if let Some(display) = display {
             request["options"] = json!({ "display": display });
         }
+        inner.connect = Some(request.clone());
         if let Err(e) = self.write(&mut inner, request, Pending::Connect, None) {
             inner.session.sender_exited();
             self.publish(&mut inner);
@@ -550,9 +553,9 @@ impl Mirror {
         if state_line {
             let state: SenderState = serde_json::from_value(message).unwrap_or_default();
             if inner.session.on_state(&state, (self.now_ms)()) == FollowUp::Reconnect {
-                if let Some(target) = inner.session.status().target.clone() {
+                if let Some(request) = inner.connect.clone() {
                     inner.session.reconnecting();
-                    if self.write(inner, json!({ "cmd": "connect", "target": target }), Pending::Connect, None).is_err() {
+                    if self.write(inner, request, Pending::Connect, None).is_err() {
                         inner.session.sender_exited();
                     }
                 }
@@ -705,6 +708,10 @@ for raw in sys.stdin:
     elif cmd == "connect":
         tv = req["target"]; err = ""
         out(dict(type="response", id=rid, ok=True, state="connecting"))
+        if req.get("port") != 7000 or req.get("options") != dict(display=1):
+            # Like a real sender: the wrong port or display reaches nothing useful.
+            st = "idle"; err = "unreachable"; state("idle", err)
+            continue
         st = "pin_required"; state("pin_required", streams=[dict(device="Den TV", device_ip=tv, state="pin_required", credential_kind="pin")])
     elif cmd == "status":
         streams = [] if st == "idle" else [dict(device="Den TV", device_ip=tv, state=st)]
@@ -779,7 +786,7 @@ for raw in sys.stdin:
     fn a_sender_crash_mid_session_is_reported() {
         let sender = fake_sender("crash");
         let (mirror, rx) = watched();
-        mirror.start(&sender, "127.0.0.1", None, "Den TV", None).unwrap();
+        mirror.start(&sender, "127.0.0.1", Some(7000), "Den TV", Some(1)).unwrap();
         wait_for(&rx, "code prompt", |s| s.phase == MirrorPhase::Code);
         let mut inner = mirror.inner.lock().unwrap();
         mirror.write(&mut inner, json!({ "cmd": "crash" }), Pending::Reply, None).unwrap();
