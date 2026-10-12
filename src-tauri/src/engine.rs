@@ -150,7 +150,7 @@ pub fn parse_line(line: &str) -> Option<EngineEvent> {
     if line.contains("lost connection with client") {
         return Some(EngineEvent::ClientLost);
     }
-    if line.contains("Unsupported HLS streaming source") {
+    if line.contains("Unsupported HLS streaming source") || line.contains("Unsupported m3u8 HLS streaming format") {
         return Some(EngineEvent::UnsupportedVideoLink);
     }
     if line.contains("rejecting new connection request from") {
@@ -160,8 +160,9 @@ pub fn parse_line(line: &str) -> Option<EngineEvent> {
         let (id, _) = rest.split_once(')')?;
         return Some(EngineEvent::Blocked { device_id: id.trim().into() });
     }
-    if line.contains("pairing registration not found") {
-        // A device the PC was told to forget: the phone asks for the code again. Not a problem.
+    if line.contains("pairing registration not found") || (line.contains("playlist") && line.contains("not found")) {
+        // A device the PC was told to forget (the phone asks for the code again), or something on the
+        // network probing the video-link port. Neither is a problem worth a note.
         return None;
     }
     if let Some(message) = line.strip_prefix("*** ERROR: ") {
@@ -324,6 +325,14 @@ mod tests {
     fn parses_an_unsupported_video_link() {
         let line = "*** ERROR Unsupported HLS streaming source: (exit attempt to stream)";
         assert_eq!(parse_line(line), Some(EngineEvent::UnsupportedVideoLink));
+        let line = "*** WARNING: Unsupported m3u8 HLS streaming format: clientProcName Vimeo not found in supported list: YouTube;";
+        assert_eq!(parse_line(line), Some(EngineEvent::UnsupportedVideoLink));
+    }
+
+    #[test]
+    fn a_probe_of_the_video_link_port_is_not_an_error() {
+        // Seen on a real network with video links on: something sent "HEAD /" to the engine.
+        assert_eq!(parse_line("*** ERROR: airplay_video playlist  not found"), None);
     }
 
     #[test]

@@ -68,7 +68,7 @@ body { overflow: hidden; }
 .sub-rows { margin-left: 14px; padding-left: 4px; border-left: 2px solid var(--oai-fill-strong); }
 .sub-rows .forget { margin: 0 0 4px 4px; font-size: var(--oai-text-sm); color: var(--oai-accent); }
 .oai-list-row.is-stacked { flex-direction: column; align-items: stretch; gap: 6px; }
-.oai-list-row.is-stacked .oai-input { width: 100%; text-align: left; }
+.oai-list-row.is-stacked .oai-input { width: 100%; text-align: left; font: inherit; }
 .advanced summary { list-style: none; cursor: default; justify-content: flex-start; gap: 4px; padding-top: 10px; }
 .advanced summary::-webkit-details-marker { display: none; }
 .advanced summary svg { width: 11px; height: 11px; transition: transform var(--oai-dur-fast) var(--oai-ease); }

@@ -183,7 +183,7 @@ pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
                 status.mirroring_since_ms = None;
             }
             EngineEvent::UnsupportedVideoLink => {
-                status.notice = Some("That video can't play here: only the YouTube app can send videos to this PC. For other apps, use Screen Mirroring.".into());
+                status.notice = Some("That video can't play here. Videos from the YouTube app work; for other apps, use Screen Mirroring.".into());
             }
             EngineEvent::Rejected => {
                 let who = device_name(status).unwrap_or("another device");
