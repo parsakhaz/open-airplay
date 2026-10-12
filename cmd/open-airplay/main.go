@@ -126,6 +126,7 @@ func main() {
 	portRange := flag.String("port-range", "", "Local UDP port range for receiver timing/audio (e.g. \"60000-60010\"); empty = OS ephemeral. Needs at least 3 ports.")
 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
 	daemonize := flag.Bool("daemonize", false, "Run as background daemon with Unix socket control interface (unsupported on Windows)")
+	stdio := flag.Bool("stdio", false, "Run the daemon with JSON-lines control on stdin/stdout instead of a socket (for a parent app; works on Windows)")
 	socketPath := flag.String("socket", daemon.DefaultSocketPath(), "Unix socket path for daemon control interface (non-Windows only)")
 	x11WindowID := flag.String("x11-window-id", "", "X11 window id to capture, decimal or 0xhex (non-Windows only)")
 	x11WindowName := flag.String("x11-window-name", "", "X11 window name to capture; prefer -x11-window-id (non-Windows only)")
@@ -138,6 +139,9 @@ func main() {
 	consoleReader := bufio.NewReader(os.Stdin)
 	if *target != "" && *receiver != "" {
 		log.Fatal("-target and -receiver are mutually exclusive")
+	}
+	if *stdio && *daemonize {
+		log.Fatal("-stdio and -daemonize are mutually exclusive")
 	}
 	if runtime.GOOS == "windows" && *daemonize {
 		log.Fatal("-daemonize is not supported on Windows; run the sender in the foreground")
@@ -202,7 +206,9 @@ func main() {
 		printDisplays(os.Stdout, displays)
 		return
 	}
-	if runtime.GOOS == "windows" && !*testMode {
+	// In stdio mode the parent picks a display per connect request; there is
+	// no console to prompt on.
+	if runtime.GOOS == "windows" && !*testMode && !*stdio {
 		displays, err := airplay.ListDisplays()
 		if err != nil {
 			log.Fatalf("enumerate displays: %v", err)
@@ -267,6 +273,28 @@ func main() {
 	airplay.SetTargetLatency(time.Duration(*targetLatencyMs) * time.Millisecond)
 
 	airplay.SetDebugMode(*debug)
+
+	if *stdio {
+		runStdioDaemon(daemon.Config{
+			CredFile:     *credFile,
+			CredBackend:  *credBackend,
+			FPS:          *fps,
+			Bitrate:      *bitrate,
+			PortMin:      portMin,
+			PortMax:      portMax,
+			HWAccel:      *hwaccel,
+			VideoCodec:   airplay.VideoCodec(*videoCodec),
+			Debug:        *debug,
+			TestMode:     *testMode,
+			NoEncrypt:    *noEncrypt,
+			DirectKey:    *directKey,
+			NoAudio:      *noAudio,
+			ShowCursor:   !*noCursor,
+			DisplayIndex: selectedDisplay,
+			Code:         credential,
+		})
+		return
+	}
 
 	if *daemonize {
 		runDaemon(daemon.Config{
@@ -971,6 +999,21 @@ func runDaemon(cfg daemon.Config) {
 	}()
 
 	if err := d.Run(ctx); err != nil {
+		log.Fatalf("[daemon] %v", err)
+	}
+}
+
+// runStdioDaemon serves the control protocol on stdin/stdout until stdin
+// closes or the process is interrupted. Logs stay on stderr.
+func runStdioDaemon(cfg daemon.Config) {
+	d, err := daemon.New(cfg)
+	if err != nil {
+		log.Fatalf("[daemon] %v", err)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	if err := d.RunStdio(ctx, os.Stdin, os.Stdout); err != nil {
 		log.Fatalf("[daemon] %v", err)
 	}
 }

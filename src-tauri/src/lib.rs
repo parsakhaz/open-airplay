@@ -3,6 +3,7 @@ pub mod doctor;
 pub mod engine;
 pub mod engine_log;
 pub mod launch;
+pub mod mirror;
 pub mod netwatch;
 pub mod panel;
 pub mod prefs;
@@ -15,7 +16,7 @@ pub mod supervisor;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -81,6 +82,8 @@ struct AppState {
     /// Where prefs are saved; set during setup (None in tests or if there's no config folder).
     prefs_path: Mutex<Option<PathBuf>>,
     panel: PanelState,
+    /// Mirroring this PC to a TV; set during setup.
+    mirror: std::sync::OnceLock<mirror::Mirror>,
 }
 
 /// The tray panel's placement and dismissal bookkeeping (see panel.rs for the rules).
@@ -824,6 +827,63 @@ async fn sender_health(app: AppHandle) -> Result<SenderHealth, String> {
     .map_err(|e| e.to_string())
 }
 
+/// The Go mirror sender: bundled next to the engine (with ffmpeg), then OAP_MIRROR_SENDER, then the
+/// dev build from `go build -o bin/open-airplay-sender.exe ./cmd/open-airplay` (ffmpeg from PATH).
+fn mirror_sender(app: &AppHandle) -> mirror::SenderCommand {
+    let name = exe_name("open-airplay-sender");
+    let mut candidates: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    if let Ok(res) = app.path().resource_dir() {
+        let bin = res.join("engine").join("bin");
+        candidates.push((bin.join(&name), vec![bin]));
+    }
+    if let Some(p) = std::env::var_os("OAP_MIRROR_SENDER") {
+        candidates.push((PathBuf::from(p), vec![]));
+    }
+    let dev = (repo_root().join("bin").join(&name), vec![]);
+    let (program, path_prepend) = candidates.into_iter().find(|(p, _)| p.is_file()).unwrap_or(dev);
+    let log = app.path().app_log_dir().ok().and_then(|dir| {
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join("mirror.log"))
+    });
+    mirror::SenderCommand { program, args: vec!["-stdio".into()], path_prepend, log }
+}
+
+fn the_mirror(app: &AppHandle) -> Result<mirror::Mirror, String> {
+    app.state::<AppState>().mirror.get().cloned().ok_or_else(|| "Mirroring isn't ready yet. Try again.".into())
+}
+
+#[tauri::command]
+fn mirror_status(app: AppHandle) -> mirror::MirrorSnapshot {
+    the_mirror(&app).map(|m| m.snapshot()).unwrap_or_default()
+}
+
+/// Mirrors this PC to the TV at `target` (its address from the device list). Progress arrives as
+/// "mirror-status" events: connecting, code (enter the TV's PIN or password), mirroring, error.
+#[tauri::command]
+async fn mirror_start(app: AppHandle, target: String, port: Option<u16>, name: String, display: Option<i32>) -> Result<mirror::MirrorSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.start(&mirror_sender(&app), &target, port, &name, display))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The code shown on the TV, or the password set on it.
+#[tauri::command]
+async fn mirror_code(app: AppHandle, code: String) -> Result<mirror::MirrorSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.submit_code(&code)).await.map_err(|e| e.to_string())?
+}
+
+/// Stop: ends mirroring, a pending connect, or a code prompt.
+#[tauri::command]
+async fn mirror_stop(app: AppHandle) -> Result<mirror::MirrorSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.stop()).await.map_err(|e| e.to_string())?
+}
+
+/// This PC's displays, for the picker shown when there is more than one.
+#[tauri::command]
+async fn mirror_displays(app: AppHandle) -> Result<Vec<mirror::Display>, String> {
+    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.displays(&mirror_sender(&app))).await.map_err(|e| e.to_string())?
+}
+
 /// The engine exe the doctor checks firewall rules for (without the `\\?\` prefix Windows APIs add).
 fn engine_path_for_doctor(status: &ReceiverStatus) -> Option<String> {
     let path = status.engine_path.clone()?;
@@ -1109,6 +1169,13 @@ pub fn run() {
                     eprintln!("open-airplay: {e}");
                 }
             }
+            {
+                let events = app.handle().clone();
+                let mirror = mirror::Mirror::new(move |snapshot| drop(events.emit("mirror-status", snapshot)), || {
+                    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+                });
+                let _ = app.state::<AppState>().mirror.set(mirror);
+            }
             let launch = launch::plan(&std::env::args().collect::<Vec<_>>(), &app.state::<AppState>().prefs.lock().unwrap());
             let menu = tray_menu(app.handle(), false)?;
             TrayIconBuilder::with_id("main")
@@ -1169,7 +1236,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
@@ -1177,6 +1244,9 @@ pub fn run() {
     // explicitly on every way out (tray Quit, closing the last window, OS shutdown).
     app.run(|app, event| {
         if let RunEvent::Exit = event {
+            if let Some(mirror) = app.state::<AppState>().mirror.get() {
+                mirror.shutdown();
+            }
             app.state::<AppState>().sidecars.shutdown();
         }
     });
