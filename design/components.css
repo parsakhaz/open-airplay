@@ -197,6 +197,7 @@ button, input { font: inherit; color: inherit; }
 .oai-banner.is-bad > svg { color: var(--oai-bad); }
 .oai-banner.is-info { background: var(--oai-accent-soft); }
 .oai-banner.is-info > svg { color: var(--oai-accent); }
+.oai-banner > .oai-grow { flex: 1; min-width: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
@@ -253,7 +254,7 @@ button.oai-list-row .oai-ico { width: 28px; height: 28px; }
 .oai-list-row .oai-grow > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .oai-list-row .oai-sub { font-size: var(--oai-text-sm); color: var(--oai-ink-2); }
 .oai-list-row .oai-meta { font-size: var(--oai-text-sm); color: var(--oai-ink-3); }
-.oai-list-row .oai-input { width: 128px; text-align: right; background: var(--oai-fill); border-color: transparent; height: 28px; }
+.oai-list-row .oai-input { width: 128px; text-align: right; background: var(--oai-fill); border-color: transparent; height: var(--oai-hit); }
 .oai-ghost { border: 0; background: transparent; color: var(--oai-ink-2); height: var(--oai-hit); padding: 0 var(--oai-space-2-5); border-radius: var(--oai-radius-md); font-size: var(--oai-text-md); display: inline-flex; align-items: center; gap: 6px; cursor: default; transition: background var(--oai-dur-fast) var(--oai-ease), color var(--oai-dur-fast) var(--oai-ease); }
 .oai-ghost:hover { background: var(--oai-fill); color: var(--oai-ink); }
 .oai-ghost:active { background: var(--oai-pressed); color: var(--oai-ink); }

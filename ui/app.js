@@ -105,34 +105,38 @@ function patch(id, html) {
 function noticeHtml() {
   const n = ui.status.notice;
   if (!n) return "";
-  return `<div class="oai-banner notice"><p class="oai-grow" style="margin:0">${esc(n)}</p><button class="oai-ghost" data-action="dismiss-notice" aria-label="Dismiss">✕</button></div>${errorLine("dismiss-notice")}`;
+  return `<div class="oai-banner is-info"><p class="oai-grow">${esc(n)}</p><button class="oai-icon-btn is-small" data-action="dismiss-notice" aria-label="Dismiss" title="Dismiss">${use("i-x")}</button></div>${errorLine("dismiss-notice")}`;
 }
 
+// The receive block: a dot (or a spinner while something is happening) next to one sentence and a hint.
+const rxBlock = (lead, text, hint) => `<div class="oai-rx">${lead}<div>${text}<small>${hint}</small></div></div>`;
+const DOT_ON = '<span class="oai-dot is-live"></span>', DOT_OFF = '<span class="oai-dot"></span>', SPINNER = '<span class="oai-spinner is-small"></span>';
+
 function statusHtml() {
-  const s = ui.status, phase = phaseOf(s), name = nameOf(s), device = deviceOf(s) || "An iPhone";
-  const disconnect = btn("disconnect", "Disconnect", "is-small");
+  const s = ui.status, phase = phaseOf(s), name = `<b>${esc(nameOf(s))}</b>`, device = esc(deviceOf(s) || "An iPhone");
+  const phone = `<span class="oai-art">${use("i-phone")}</span>`;
   switch (phase) {
     case "starting":
-      return `<div class="pop-hero"><div class="oai-spinner"></div><p>Getting ${esc(name)} ready for iPhones.</p></div>`;
+      return rxBlock(SPINNER, `Getting ready to receive as ${name}`, "This takes a few seconds.");
     case "ready":
-      return `<div class="pop-status"><div class="line"><span class="oai-dot is-live"></span><div>On your iPhone, open Control Center → Screen Mirroring → <b>${esc(name)}</b>.</div></div></div>`;
+      return rxBlock(DOT_ON, `Ready to receive as ${name}`, "On your iPhone, open Control Center → Screen Mirroring.");
     case "connecting":
-      return `<div class="pop-hero"><div class="dots" style="justify-content:center;margin:6px 0 10px"><i></i><i></i><i></i></div><p>${esc(device)} is connecting. The video window opens in a moment.</p><div class="oai-btn-row">${disconnect}</div>${errorLine("disconnect")}</div>`;
+      return `<div class="oai-live"><div class="oai-media">${phone}<div><b>${device}</b><small>The video window opens in a moment.</small></div></div>${btn("disconnect", "Disconnect", "is-danger is-wide")}${errorLine("disconnect")}</div>`;
     case "mirroring":
       // The clock's text is filled in by tick(), outside the compared markup.
-      return `<div class="pop-hero is-live"><div class="who"><h3>${esc(device)}</h3><p data-elapsed></p></div><div class="acts">${btn("show-video", "Show video", "is-small")}${btn("disconnect", "Disconnect", "is-danger is-small")}</div></div>${errorLine("show-video")}${errorLine("disconnect")}`;
+      return `<div class="oai-live"><div class="oai-media">${phone}<div><b>${device}</b><small class="is-live"><span class="oai-pulse"></span><span data-elapsed></span></small></div></div><div class="oai-btns">${btn("show-video", "Show video")}${btn("disconnect", "Disconnect", "is-danger")}</div>${errorLine("show-video")}${errorLine("disconnect")}</div>`;
     case "pin": {
       const digits = String(s.pin).split("").map((d) => `<span>${esc(d)}</span>`).join("");
-      return `<div class="pop-hero"><p>${esc(device)} is asking for this code.</p><div class="pop-pin">${digits}</div><div class="oai-btn-row">${disconnect}</div>${errorLine("disconnect")}</div>`;
+      return `<div class="oai-code"><h4>Enter this code on ${device}</h4><div class="oai-digits">${digits}</div><button class="oai-ghost" data-action="disconnect">Disconnect</button>${errorLine("disconnect")}</div>`;
     }
     case "restarting": {
-      const why = s.restart_reason ? `${capitalise(s.restart_reason)}, so receiving is restarting. ` : "";
-      return `<div class="pop-hero"><div class="oai-spinner"></div><p>${esc(why)}${esc(name)} will be back in a moment.</p></div>`;
+      const why = s.restart_reason ? `${esc(capitalise(s.restart_reason))}, so receiving is restarting.` : "Receiving is restarting.";
+      return rxBlock(SPINNER, why, `${name} will be back in a moment.`);
     }
     case "error":
-      return `<div class="pop-hero is-bad"><p>${esc(s.last_error || `iPhones can't see ${name} right now.`)}</p><p>Turn receiving back on to retry.</p></div>`;
+      return `<div class="oai-banner is-bad">${use("i-warn")}<div class="oai-grow">${esc(s.last_error || `iPhones can't see ${nameOf(s)} right now.`)}<div class="oai-mini">Turn receiving back on to retry.</div></div></div>`;
     default:
-      return `<div class="pop-hero"><p>Turn on receiving to let iPhones mirror to <b>${esc(name)}</b>.</p></div>`;
+      return rxBlock(DOT_OFF, `iPhones can't see ${name}`, "Turn on receiving to mirror an iPhone here.");
   }
 }
 
@@ -152,27 +156,29 @@ function findingsHtml() {
     }
   };
   const items = ui.findings.map(card).filter(Boolean).map(([text, action, button]) =>
-    `<div class="oai-banner doctor"><div class="oai-grow"><p style="margin:0">${text}</p>${button ? `<div class="oai-btn-row" style="margin-top:8px;justify-content:flex-start">${button}</div>` : ""}${action ? errorLine(action) : ""}</div></div>`);
+    `<div class="oai-banner doctor">${use("i-warn")}<div class="oai-grow"><p>${text}</p>${button ? `<div class="oai-btn-row">${button}</div>` : ""}${action ? errorLine(action) : ""}</div></div>`);
   if (!items.length && !ui.errors["doctor-check"]) return "";
   return `<div class="doctor-list">${items.join("")}<button class="oai-ghost recheck" data-action="doctor-check">Check again</button>${errorLine("doctor-check")}</div>`;
 }
 
 function devicesEmptyText() {
-  if (ui.scanning) return '<span class="oai-spinner is-small" style="display:inline-block;vertical-align:-2px;margin-right:6px"></span>Searching…';
+  if (ui.scanning) return '<span class="oai-spinner is-small"></span>Searching…';
   if (ui.scanError) return `Couldn't search: ${esc(ui.scanError)}`;
   return ui.scanned ? "No AirPlay devices found on this network." : "Press ↻ to find Apple TVs and speakers.";
 }
 
 function devicesHtml() {
   // Rows carry the device's identifier, never its list position, so a click during a scan opens the right one.
-  const rows = ui.devices.map((d) => `<button class="oai-list-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block">${esc(d.name)}</span></span><span class="oai-meta">${deviceKind(d)}</span></button>`).join("");
-  const empty = ui.devices.length && !ui.scanning ? "" : `<div class="oai-list-row oai-sub" style="color:var(--oai-ink-2)">${devicesEmptyText()}</div>`;
-  return `<div class="oai-list-label">Send to <button class="oai-ghost scan-btn ${ui.scanning ? "is-spinning" : ""}" data-action="scan" style="height:22px;padding:0 6px" aria-label="Find AirPlay devices">${use("i-refresh")}</button></div>${rows}${empty}`;
+  const rows = ui.devices.map((d) => `<button class="oai-list-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><b>${esc(d.name)}</b><small>${deviceKind(d)}</small></span><svg class="oai-chev"><use href="#i-chev"/></svg></button>`).join("");
+  const empty = ui.devices.length && !ui.scanning ? "" : `<div class="devices-empty">${devicesEmptyText()}</div>`;
+  return `<div class="oai-list-label">Send to <button class="oai-icon-btn ${ui.scanning ? "is-spinning" : ""}" data-action="scan" aria-label="Find devices" title="Find devices">${use("i-refresh")}</button></div>${rows}${empty}`;
 }
 
-function castHeadHtml() {
-  const d = ui.target;
-  return `<div class="oai-list-row"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block;font-weight:600">${esc(d.name)}</span><span class="oai-sub" style="display:block">${esc(d.model || deviceKind(d))}</span></span></div>`;
+/** What the sub-page header shows: an icon, a title and a subtitle. Home has its own header. */
+function subHead() {
+  if (ui.page === "settings") return { icon: "i-gear", title: "Settings", sub: "AirPlay Receiver" };
+  if (ui.page === "cast") return { icon: deviceIcon(ui.target), title: ui.target.name, sub: ui.target.model || deviceKind(ui.target) };
+  return null;
 }
 
 function castMsgHtml() {
@@ -224,7 +230,7 @@ function render() {
   const sw = $("rx-switch");
   if (sw.checked !== isOn(phase)) sw.checked = isOn(phase);
   const tip = isOn(phase) ? "Turn off receiving" : "Turn on receiving";
-  if (sw.title !== tip) sw.title = tip;
+  if ($("rx-switch-hit").title !== tip) $("rx-switch-hit").title = tip;
   const switchError = ui.errors.start || ui.errors.stop || "";
   const swErr = $("r-switch-error");
   swErr.hidden = !switchError;
@@ -232,6 +238,17 @@ function render() {
 
   if (ui.page === "cast" && !ui.target) ui.page = "home";
   for (const page of ["home", "settings", "cast"]) $("page-" + page).hidden = ui.page !== page;
+
+  // Sub-pages swap the home header (and its switch) for back, an icon and a title, and drop the footer.
+  const head = subHead();
+  $("panel-head").hidden = !!head;
+  $("panel-subhead").hidden = !head;
+  $("panel-foot").hidden = !!head;
+  if (head) {
+    patch("sub-ico", use(head.icon));
+    if ($("sub-title").textContent !== head.title) $("sub-title").textContent = head.title;
+    if ($("sub-sub").textContent !== head.sub) $("sub-sub").textContent = head.sub;
+  }
 
   if (ui.page === "home") {
     patch("r-notice", noticeHtml());
@@ -243,7 +260,6 @@ function render() {
     patch("r-settings-status", note ? `<span class="${note.ok ? "" : "is-bad"}">${esc(note.text)}</span>` : "");
     syncSettingsInputs();
   } else if (ui.page === "cast") {
-    patch("r-cast-head", castHeadHtml());
     $("cast-url-row").hidden = !ui.target.services.includes("AirPlay");
     const msg = $("r-cast-msg");
     msg.className = "msg " + (ui.cast.state === "error" ? "is-bad" : ui.cast.state === "ok" ? "is-ok" : "");
@@ -263,7 +279,7 @@ function reportHeight() {
   const body = $("pop-body"), cs = getComputedStyle(body);
   const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
   const height = (id) => $(id).getBoundingClientRect().height;   // fractional: the footer has a half-pixel border
-  const h = Math.ceil(height("panel-head") + height("pop-content") + pad + height("panel-foot"));
+  const h = Math.ceil(height("panel-head") + height("panel-subhead") + height("pop-content") + pad + height("panel-foot"));
   if (Math.abs(h - reportedHeight) < 1) return;
   reportedHeight = h;
   invoke("panel_fit", { height: h }).catch(() => {});

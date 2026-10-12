@@ -47,8 +47,14 @@
   <section class="oai-popover" id="panel" aria-label="open-airplay">
     <header class="oai-popover-head" id="panel-head">
       <svg class="oai-app-icon"><use href="#i-app"/></svg>
-      <div style="min-width:0"><div class="oai-t">AirPlay Receiver</div><div class="oai-s" id="pop-sub">Starting…</div></div>
-      <input type="checkbox" class="oai-switch" id="rx-switch" aria-label="Receiving" title="Turn on receiving">
+      <div class="oai-tt"><div class="oai-t">AirPlay Receiver</div><div class="oai-s" id="pop-sub">Starting…</div></div>
+      <label class="oai-hit" id="rx-switch-hit" title="Turn on receiving"><input type="checkbox" class="oai-switch" id="rx-switch" aria-label="Receiving"></label>
+    </header>
+    <!-- Sub-pages (settings, a device) swap the home header for this one: back, an icon, a title over a subtitle. -->
+    <header class="oai-popover-head is-sub" id="panel-subhead" hidden>
+      <button class="oai-icon-btn" data-action="home" aria-label="Back" title="Back"><svg><use href="#i-back"/></svg></button>
+      <span class="oai-dico" id="sub-ico"></span>
+      <div class="oai-tt"><div class="oai-t" id="sub-title"></div><div class="oai-s" id="sub-sub"></div></div>
     </header>
     <div class="oai-popover-body" id="pop-body">
       <div id="pop-content">
@@ -63,7 +69,6 @@
         </div>
 
         <div class="pop-page" id="page-settings" hidden>
-          <button class="oai-ghost oai-back" data-action="home">‹ Back</button>
           <form class="settings-form" autocomplete="off">
             <label class="oai-list-row"><span class="oai-grow"><span>Name</span><small class="oai-sub" style="display:block">Shown in Screen Mirroring</small></span><input class="oai-input" data-set="name" required maxlength="63"></label>
             <label class="oai-list-row"><span class="oai-grow"><span>Require a PIN</span><small class="oai-sub" style="display:block">Every new connection enters a code</small></span><input type="checkbox" class="oai-switch" data-set="pin_mode"></label>
@@ -74,8 +79,6 @@
         </div>
 
         <div class="pop-page" id="page-cast" hidden>
-          <button class="oai-ghost oai-back" data-action="home">‹ Back</button>
-          <div id="r-cast-head"></div>
           <div class="pop-cast">
             <div class="row" id="cast-url-row"><input class="oai-input" data-cast="url" type="url" placeholder="Video or audio link"><button class="oai-btn is-primary is-small" data-action="play-url">Play</button></div>
             <div class="row"><input class="oai-input" data-cast="file" placeholder="C:\Music\song.mp3"><button class="oai-btn is-small" data-action="stream-file">Stream</button></div>
