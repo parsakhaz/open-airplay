@@ -1,0 +1,132 @@
+diff --git a/renderers/oap_audio.h b/renderers/oap_audio.h
+new file mode 100644
+index 0000000..b2cbb8d
+--- /dev/null
++++ b/renderers/oap_audio.h
+@@ -0,0 +1,37 @@
++/* open-airplay: helpers for the now-playing lines the engine prints for a supervising process.
++ * Pure (no I/O, no globals) so they can be unit-tested; the printing lives in uxplay.cpp.
++ *   open-airplay: track <title>\t<artist>\t<album>
++ *   open-airplay: volume <0-100> */
++#ifndef OAP_AUDIO_H
++#define OAP_AUDIO_H
++
++#include <stddef.h>
++
++/* Copies len bytes of a metadata string into dst (cap bytes, always NUL-terminated). Tabs, CR and LF
++ * become spaces, so the field can't break the line; a field that doesn't fit is cut before the first
++ * UTF-8 character that doesn't fit whole. */
++static inline void oap_audio_field(char *dst, size_t cap, const char *src, size_t len) {
++    if (!dst || cap == 0) return;
++    size_t n = 0;
++    if (src) {
++        n = len < cap - 1 ? len : cap - 1;
++        if (n < len) {
++            /* back off to the start of the character that was cut */
++            while (n > 0 && ((unsigned char) src[n] & 0xC0) == 0x80) n--;
++        }
++    }
++    for (size_t i = 0; i < n; i++) {
++        char c = src[i];
++        dst[i] = (c == '\t' || c == '\r' || c == '\n') ? ' ' : c;
++    }
++    dst[n] = '\0';
++}
++
++/* The sender's volume slider as a percentage: AirPlay sends -30 dB (bottom) to 0 dB (top), -144 for mute. */
++static inline int oap_audio_volume_percent(float airplay_db) {
++    if (airplay_db <= -30.0f) return 0;
++    if (airplay_db >= 0.0f) return 100;
++    return (int) ((30.0f + airplay_db) / 30.0f * 100.0f + 0.5f);
++}
++
++#endif
+diff --git a/uxplay.cpp b/uxplay.cpp
+index ddc39f0..0b3a1b7 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -73,6 +73,7 @@
+ #include "renderers/mux_renderer.h"
+ #include "renderers/oap_window.h"    /* open-airplay */
+ #include "renderers/oap_control.h"   /* open-airplay */
++#include "renderers/oap_audio.h"     /* open-airplay */
+ #ifdef DBUS
+ #include <dbus/dbus.h>
+ #endif
+@@ -2615,6 +2616,10 @@ extern "C" const char *passwd(void *cls, int *len){
+ }
+ 
+ extern "C" void export_dacp(void *cls, const char *active_remote, const char *dacp_id) {
++    /* open-airplay: machine-readable line, so the supervising shell can send play/pause/skip (DACP) */
++    if (dacpfile.length() && dacp_id && active_remote) {
++        printf("open-airplay: dacp %s %s\n", dacp_id, active_remote);
++    }
+       if (dacpfile.length()) {
+         FILE *fp = fopen(dacpfile.c_str(), "w");
+         if (fp) {
+@@ -2890,11 +2895,19 @@ extern "C" void audio_set_volume (void *cls, float volume) {
+     audio_renderer_set_volume(gst_volume);
+     video_renderer_hls_set_volume(gst_volume);
+     LOGI("AirPlay volume %.1f dB (slider %.0f%%): GStreamer volume %.3f", (double) volume, 100.0 * frac, gst_volume);
++    printf("open-airplay: volume %d\n", oap_audio_volume_percent(volume));   /* open-airplay: the sender's slider */
+ }
+ 
++/* open-airplay: 1 while an audio-only stream (music, not a mirror's sound) is playing */
++static bool oap_audio_only = false;
++
+ extern "C" void audio_get_format (void *cls, unsigned char *ct, unsigned short *spf, bool *usingScreen, bool *isMedia, uint64_t *audioFormat) {
+     unsigned char type;
+     LOGI("ct=%d spf=%d usingScreen=%d isMedia=%d  audioFormat=0x%lx",*ct, *spf, *usingScreen, *isMedia, (unsigned long) *audioFormat);
++    if (!*usingScreen) {
++        oap_audio_only = true;
++        printf("open-airplay: audio start\n");   /* machine-readable, for the supervising shell */
++    }
+     switch (*ct) {
+     case 2:
+         type = 0x20;
+@@ -2938,6 +2951,7 @@ extern "C" void audio_set_coverart(void *cls, const void *buffer, int buflen) {
+     if (buffer && coverart_filename.length()) {
+         write_coverart(coverart_filename.c_str(), buffer, buflen);
+         LOGI("coverart size %d written to %s", buflen,  coverart_filename.c_str());
++        printf("open-airplay: art %d\n", buflen);   /* open-airplay: the -ca file holds new cover art */
+     } else if (buffer && render_coverart) {
+         video_renderer_choose_codec(true, false);  /* video_is_jpeg = true */
+         video_renderer_display_jpeg(buffer, &buflen);
+@@ -2946,6 +2960,11 @@ extern "C" void audio_set_coverart(void *cls, const void *buffer, int buflen) {
+ }
+ 
+ extern "C" void audio_stop_coverart_rendering(void *cls) {
++    /* open-airplay: called when the sender tears down its audio stream */
++    if (oap_audio_only) {
++        oap_audio_only = false;
++        printf("open-airplay: audio stopped\n");
++    }
+     if (render_coverart) {
+         video_reset(cls, RESET_TYPE_RTP_SHUTDOWN);
+     }
+@@ -2982,6 +3001,7 @@ extern "C" void audio_set_metadata(void *cls, const void *buffer, int buflen) {
+         return;
+     }
+     std::string metadata_text = "";
++    char oap_title[256] = "", oap_artist[256] = "", oap_album[256] = "";   /* open-airplay */
+     while (buflen >= 8) {
+         count++;
+         if (parse_dmap_header(metadata, dmap_tag, &datalen)) {
+@@ -2991,10 +3011,17 @@ extern "C" void audio_set_metadata(void *cls, const void *buffer, int buflen) {
+         metadata += 8;
+         buflen -= 8;
+         process_metadata(count, (const char *) dmap_tag, metadata, datalen, &metadata_text);
++        if (datalen > 0 && datalen <= buflen) {   /* open-airplay */
++            char *field = !strcmp(dmap_tag, "minm") ? oap_title : !strcmp(dmap_tag, "asar") ? oap_artist
++                        : !strcmp(dmap_tag, "asal") ? oap_album : NULL;
++            if (field) oap_audio_field(field, sizeof(oap_title), (const char *) metadata, (size_t) datalen);
++        }
+         metadata += datalen;
+         buflen -= datalen;
+     }
+     LOGI("%s", metadata_text.c_str());
++    /* open-airplay: machine-readable now-playing line (any field may be empty) */
++    printf("open-airplay: track %s\t%s\t%s\n", oap_title, oap_artist, oap_album);
+     if (metadata_filename.length()) {
+         write_metadata(metadata_filename.c_str(), metadata_text.c_str());
+     }

@@ -1,3 +1,4 @@
+pub mod dacp;
 pub mod doctor;
 pub mod engine;
 pub mod engine_log;
@@ -185,6 +186,7 @@ fn tray_text(status: &ReceiverStatus) -> String {
     let name = status.settings.as_ref().map(|s| s.name.as_str()).unwrap_or("this PC");
     match status.phase {
         Phase::Mirroring => format!("open-airplay: mirroring on '{name}'"),
+        Phase::Audio => format!("open-airplay: playing audio on '{name}'"),
         Phase::Connecting => "open-airplay: connecting…".into(),
         Phase::Pin => "open-airplay: enter the code on your device".into(),
         Phase::Ready => format!("open-airplay: ready to receive as '{name}'"),
@@ -205,7 +207,7 @@ enum TrayLook {
 
 fn tray_look(phase: Phase) -> TrayLook {
     match phase {
-        Phase::Connecting | Phase::Mirroring | Phase::Pin => TrayLook::Receiving,
+        Phase::Connecting | Phase::Mirroring | Phase::Audio | Phase::Pin => TrayLook::Receiving,
         Phase::Error => TrayLook::Problem,
         Phase::Stopped | Phase::Starting | Phase::Restarting | Phase::Ready => TrayLook::Normal,
     }
@@ -291,7 +293,11 @@ fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings, reason: Opt
             ..Default::default()
         }
     });
-    let cmd = EngineCommand { program: engine, args: settings.engine_args(), path_prepend, env, restart_delay: Duration::from_secs(2) };
+    let mut args = settings.engine_args();
+    if let Some(dir) = audio_dir(app) {
+        args.extend(engine::audio_args(&dir));
+    }
+    let cmd = EngineCommand { program: engine, args, path_prepend, env, restart_delay: Duration::from_secs(2) };
     let handle = app.clone();
     // Every engine line and lifecycle event goes to <app log dir>/engine.log (rotated, see engine_log) for diagnosis.
     let log = app.path().app_log_dir().ok().and_then(|dir| engine_log::shared(&dir));
@@ -315,6 +321,13 @@ fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings, reason: Opt
     });
     state.sidecars.replace_supervisor(Some(sup));
     Ok(state.status.snapshot())
+}
+
+/// Where the engine writes cover art and the phone's remote-control id (it needs the folder to exist).
+fn audio_dir(app: &AppHandle) -> Option<PathBuf> {
+    let dir = app.path().app_local_data_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
 }
 
 fn stop_receiver_inner(app: &AppHandle) -> ReceiverStatus {
@@ -360,6 +373,39 @@ fn disconnect_inner(app: &AppHandle) -> Result<(), String> {
     let sup = state.sidecars.supervisor.lock().unwrap();
     let sup = sup.as_ref().ok_or("Receiving is off.")?;
     sup.send_line("disconnect").map_err(|_| "Couldn't disconnect. Try turning receiving off and on.".to_string())
+}
+
+/// Play/pause, next or previous on the phone playing audio to this PC.
+#[tauri::command]
+async fn receiver_control(app: AppHandle, command: dacp::Command) -> Result<(), String> {
+    let remote = app.state::<AppState>().status.snapshot().remote.ok_or("The phone doesn't accept controls from this PC.")?;
+    tauri::async_runtime::spawn_blocking(move || dacp::control(&remote, command)).await.map_err(|e| e.to_string())?
+}
+
+/// The current cover art as a data: URL, or None when there is none.
+#[tauri::command]
+fn receiver_art(app: AppHandle) -> Option<String> {
+    let bytes = std::fs::read(app.path().app_local_data_dir().ok()?.join(engine::ART_FILE)).ok()?;
+    art_data_url(&bytes)
+}
+
+/// Cover art arrives as JPEG or PNG; the engine's placeholder (and anything else) shows no picture.
+fn art_data_url(bytes: &[u8]) -> Option<String> {
+    use base64::Engine as _;
+    let mime = if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.starts_with(&[0x89, b'P', b'N', b'G']) && !is_placeholder_png(bytes) {
+        "image/png"
+    } else {
+        return None;
+    };
+    Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+/// The engine writes a 1x1 PNG over the art file when a new stream starts.
+fn is_placeholder_png(bytes: &[u8]) -> bool {
+    let dim = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    dim(16) == Some(1) && dim(20) == Some(1)
 }
 
 #[tauri::command]
@@ -1053,7 +1099,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
@@ -1089,6 +1135,23 @@ mod tests {
     }
 
     #[test]
+    fn cover_art_shows_jpeg_and_png_but_not_the_engine_placeholder() {
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b'J', b'F', b'I', b'F'];
+        assert_eq!(art_data_url(&jpeg).as_deref(), Some("data:image/jpeg;base64,/9j/4AAQSkZJRg=="));
+        // An IHDR chunk: 600x600, then the engine's 1x1 placeholder.
+        let png = |w: u32, h: u32| {
+            let mut b = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, b'I', b'H', b'D', b'R'];
+            b.extend(w.to_be_bytes());
+            b.extend(h.to_be_bytes());
+            b
+        };
+        assert!(art_data_url(&png(600, 600)).unwrap().starts_with("data:image/png;base64,iVBORw0KGgo"));
+        assert_eq!(art_data_url(&png(1, 1)), None);
+        assert_eq!(art_data_url(b"no data\n"), None);
+        assert_eq!(art_data_url(&[]), None);
+    }
+
+    #[test]
     fn the_tray_tooltip_says_when_receiving_is_off() {
         assert_eq!(tray_text(&ReceiverStatus::default()), "open-airplay: receiving is off");
     }
@@ -1114,6 +1177,7 @@ mod tests {
         assert_eq!(tray_look(Phase::Restarting), TrayLook::Normal);
         assert_eq!(tray_look(Phase::Connecting), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Mirroring), TrayLook::Receiving);
+        assert_eq!(tray_look(Phase::Audio), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Pin), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Error), TrayLook::Problem);
     }

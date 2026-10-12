@@ -33,6 +33,18 @@ pub enum EngineEvent {
     VideoStopped,
     /// The engine ended the session after a `disconnect` control line (engine patch 0003).
     Disconnected,
+    /// A phone started playing audio only (music, a podcast), not a mirror's sound (engine patch 0005).
+    AudioStart,
+    /// The phone stopped its audio stream; the connection may stay open (engine patch 0005).
+    AudioStopped,
+    /// What's playing; any field may be empty (engine patch 0005).
+    Track { title: String, artist: String, album: String },
+    /// New cover art is in the `-ca` file (engine patch 0005).
+    Art,
+    /// The phone's volume slider, 0 to 100 (engine patch 0005).
+    Volume { percent: u8 },
+    /// The phone's remote-control id, for play/pause/skip over DACP (engine patch 0005).
+    Dacp { dacp_id: String, active_remote: String },
     Error { message: String },
 }
 
@@ -60,8 +72,23 @@ impl ReceiverSettings {
     }
 }
 
+/// File names, inside the app's data folder, that the engine writes for an audio session.
+pub const ART_FILE: &str = "now-playing-art";
+pub const DACP_FILE: &str = "dacp-remote";
+
+/// Engine flags for audio sessions: cover art to a file (never plain `-ca`, which draws it in the
+/// mirror window and would look like mirroring) and the phone's remote-control id (`-dacp`).
+pub fn audio_args(dir: &Path) -> Vec<String> {
+    vec!["-ca".into(), dir.join(ART_FILE).display().to_string(), "-dacp".into(), dir.join(DACP_FILE).display().to_string()]
+}
+
 pub fn parse_line(line: &str) -> Option<EngineEvent> {
     let line = line.trim();
+    if let Some(rest) = line.strip_prefix("open-airplay: ") {
+        if let Some(event) = parse_audio_line(rest) {
+            return Some(event);
+        }
+    }
     if let Some(rest) = line.strip_prefix("connection request from ") {
         // "<name> (<model>) with deviceID = <id>"; the name itself may contain parentheses.
         let (head, device_id) = rest.rsplit_once(" with deviceID = ")?;
@@ -98,6 +125,31 @@ pub fn parse_line(line: &str) -> Option<EngineEvent> {
         return Some(EngineEvent::Error { message: message.into() });
     }
     None
+}
+
+/// The audio-session lines from engine patch 0005 (without the "open-airplay: " prefix).
+fn parse_audio_line(rest: &str) -> Option<EngineEvent> {
+    match rest {
+        "audio start" => return Some(EngineEvent::AudioStart),
+        "audio stopped" => return Some(EngineEvent::AudioStopped),
+        _ => {}
+    }
+    let (word, value) = rest.split_once(' ')?;
+    match word {
+        "track" => {
+            // Tab-separated; trailing empty fields may have been trimmed off with the line.
+            let mut fields = value.splitn(3, '\t').map(|f| f.trim().to_string());
+            let mut next = || fields.next().unwrap_or_default();
+            Some(EngineEvent::Track { title: next(), artist: next(), album: next() })
+        }
+        "art" => Some(EngineEvent::Art),
+        "volume" => value.trim().parse().ok().filter(|p| *p <= 100).map(|percent| EngineEvent::Volume { percent }),
+        "dacp" => {
+            let (dacp_id, active_remote) = value.trim().split_once(' ')?;
+            Some(EngineEvent::Dacp { dacp_id: dacp_id.into(), active_remote: active_remote.trim().into() })
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -220,6 +272,50 @@ mod tests {
                 EngineEvent::ClientLost,
             ]
         );
+    }
+
+    #[test]
+    fn parses_the_audio_session_lines_from_patched_engine() {
+        assert_eq!(parse_line("open-airplay: audio start"), Some(EngineEvent::AudioStart));
+        assert_eq!(parse_line("open-airplay: audio stopped"), Some(EngineEvent::AudioStopped));
+        assert_eq!(parse_line("open-airplay: volume 75"), Some(EngineEvent::Volume { percent: 75 }));
+        assert_eq!(parse_line("open-airplay: volume 250"), None);
+        assert_eq!(parse_line("open-airplay: art 48213"), Some(EngineEvent::Art));
+        assert_eq!(
+            parse_line("open-airplay: dacp 1A2B3C4D5E6F7788 1986535575"),
+            Some(EngineEvent::Dacp { dacp_id: "1A2B3C4D5E6F7788".into(), active_remote: "1986535575".into() })
+        );
+        assert_eq!(parse_line("open-airplay: dacp 1A2B3C4D5E6F7788"), None);
+    }
+
+    #[test]
+    fn parses_now_playing_with_empty_fields_and_spaces_kept() {
+        assert_eq!(
+            parse_line("open-airplay: track Blue in Green\tMiles Davis\tKind of Blue"),
+            Some(EngineEvent::Track { title: "Blue in Green".into(), artist: "Miles Davis".into(), album: "Kind of Blue".into() })
+        );
+        // Radio streams often send only a title.
+        assert_eq!(
+            parse_line("open-airplay: track Morning Show\t\t"),
+            Some(EngineEvent::Track { title: "Morning Show".into(), artist: "".into(), album: "".into() })
+        );
+    }
+
+    #[test]
+    fn audio_args_save_art_and_the_remote_id_to_files_never_the_video_window() {
+        let dir = std::path::Path::new("C:/Users/Sam Lee/AppData/Local/open-airplay");
+        let args = audio_args(dir);
+        assert_eq!(
+            args,
+            vec![
+                "-ca".to_string(),
+                dir.join("now-playing-art").display().to_string(),
+                "-dacp".to_string(),
+                dir.join("dacp-remote").display().to_string(),
+            ]
+        );
+        // Plain "-ca" would draw the art in the mirror window; a following path is what avoids that.
+        assert!(!args[1].starts_with('-'));
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
+use crate::dacp::Remote;
 use crate::engine::{EngineEvent, ReceiverSettings};
 use crate::supervisor::SupervisorEvent;
 
@@ -18,6 +19,8 @@ pub enum Phase {
     Ready,
     Connecting,
     Mirroring,
+    /// A phone picked this PC as a speaker (music, a podcast).
+    Audio,
     Pin,
     /// Coming back after a crash, a network change or waking from sleep (`restart_reason` says which).
     Restarting,
@@ -26,6 +29,18 @@ pub enum Phase {
 
 /// Restarts in a row that may fail (exit before announcing the receiver) before it needs attention.
 pub const MAX_FAILED_RESTARTS: u32 = 3;
+
+/// What a phone playing audio to this PC is playing. Fields the phone didn't send are None.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct NowPlaying {
+    /// False after the phone stopped its stream while it still has this PC picked as its speaker.
+    pub playing: bool,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    /// Changes with every new cover-art picture (`receiver_art` reads it); None until one arrives.
+    pub art: Option<u32>,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ReceiverStatus {
@@ -45,6 +60,18 @@ pub struct ReceiverStatus {
     /// Unix time in ms when the current mirroring session's video started.
     pub mirroring_since_ms: Option<u64>,
     pub pin: Option<String>,
+    /// Set while a phone plays audio only (engine patch 0005).
+    pub audio: Option<NowPlaying>,
+    /// The phone's volume slider, 0 to 100, once it has sent one this session.
+    pub volume: Option<u8>,
+    /// The phone accepts play/pause/skip from this PC.
+    pub can_control: bool,
+    /// The phone's remote-control token; it stays in the shell.
+    #[serde(skip)]
+    pub remote: Option<Remote>,
+    /// Cover-art pictures seen, to number the next one.
+    #[serde(skip)]
+    pub art_count: u32,
     /// Why receiving stopped for good; a plain sentence (details go to engine.log).
     pub last_error: Option<String>,
     /// Why the receiver is restarting, as a phrase: "the network changed".
@@ -71,6 +98,8 @@ pub fn phase(s: &ReceiverStatus) -> Phase {
         Phase::Pin
     } else if s.video.is_some() {
         Phase::Mirroring
+    } else if s.audio.is_some() {
+        Phase::Audio
     } else if s.last_device.is_some() && s.connections > 0 {
         Phase::Connecting
     } else if s.advertised {
@@ -82,9 +111,14 @@ pub fn phase(s: &ReceiverStatus) -> Phase {
     }
 }
 
-/// An incoming session is live: a phone is connecting, asking for the code, or mirroring.
+/// An incoming session is live: a phone is connecting, asking for the code, mirroring or playing audio.
 pub fn session_live(s: &ReceiverStatus) -> bool {
-    matches!(phase(s), Phase::Connecting | Phase::Mirroring | Phase::Pin)
+    matches!(phase(s), Phase::Connecting | Phase::Mirroring | Phase::Audio | Phase::Pin)
+}
+
+/// An empty field from the engine means the phone didn't send it.
+fn field(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_string())
 }
 
 /// The device name without its model: "Sam's iPhone (iPhone16,1)" -> "Sam's iPhone".
@@ -114,6 +148,10 @@ pub fn end_session(status: &mut ReceiverStatus) {
     status.video = None;
     status.mirroring_since_ms = None;
     status.pin = None;
+    status.audio = None;
+    status.volume = None;
+    status.can_control = false;
+    status.remote = None;
 }
 
 pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
@@ -163,6 +201,26 @@ pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
                 status.mirroring_since_ms = None;
             }
             EngineEvent::Disconnected => end_session(status),
+            EngineEvent::AudioStart => status.audio.get_or_insert_with(NowPlaying::default).playing = true,
+            EngineEvent::AudioStopped => {
+                if let Some(audio) = status.audio.as_mut() {
+                    audio.playing = false;
+                }
+            }
+            // Metadata and art only come with music, so they start an audio session if none was reported.
+            EngineEvent::Track { title, artist, album } => {
+                let audio = status.audio.get_or_insert_with(|| NowPlaying { playing: true, ..Default::default() });
+                (audio.title, audio.artist, audio.album) = (field(title), field(artist), field(album));
+            }
+            EngineEvent::Art => {
+                status.art_count += 1;
+                status.audio.get_or_insert_with(|| NowPlaying { playing: true, ..Default::default() }).art = Some(status.art_count);
+            }
+            EngineEvent::Volume { percent } => status.volume = Some(*percent),
+            EngineEvent::Dacp { dacp_id, active_remote } => {
+                status.remote = Some(Remote { dacp_id: dacp_id.clone(), active_remote: active_remote.clone() });
+                status.can_control = true;
+            }
             EngineEvent::Pin { code } => status.pin = Some(code.clone()),
             EngineEvent::ClientLost => {
                 let who = device_name(status).unwrap_or("the iPhone");
@@ -418,9 +476,99 @@ mod tests {
         assert_eq!((s.last_device.clone(), s.notice.clone()), (None, None));
     }
 
+    /// A phone that picked this PC as a speaker and started a song.
+    fn playing_audio() -> ReceiverStatus {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &engine(EngineEvent::ConnectionRequest { name: "Sam's iPhone".into(), model: "iPhone16,1".into(), device_id: "x".into() }));
+        apply_event(&mut s, &engine(EngineEvent::AudioStart));
+        s
+    }
+
+    fn track(title: &str, artist: &str, album: &str) -> SupervisorEvent {
+        engine(EngineEvent::Track { title: title.into(), artist: artist.into(), album: album.into() })
+    }
+
     #[test]
-    fn only_connecting_mirroring_and_pin_are_sessions() {
+    fn music_from_a_phone_is_playing_audio_not_connecting() {
+        let s = playing_audio();
+        assert_eq!(s.phase, Phase::Audio);
+        assert!(session_live(&s));
+        assert_eq!(s.audio, Some(NowPlaying { playing: true, ..Default::default() }));
+    }
+
+    #[test]
+    fn now_playing_shows_the_track_volume_and_art() {
+        let mut s = playing_audio();
+        apply_event(&mut s, &track("Blue in Green", "Miles Davis", "Kind of Blue"));
+        apply_event(&mut s, &engine(EngineEvent::Volume { percent: 60 }));
+        apply_event(&mut s, &engine(EngineEvent::Art));
+        let audio = s.audio.clone().unwrap();
+        assert_eq!(
+            (audio.title.as_deref(), audio.artist.as_deref(), audio.album.as_deref()),
+            (Some("Blue in Green"), Some("Miles Davis"), Some("Kind of Blue"))
+        );
+        assert_eq!(s.volume, Some(60));
+        // Each new picture gets a new number, so the UI knows to fetch it again.
+        let first = audio.art.expect("art");
+        apply_event(&mut s, &engine(EngineEvent::Art));
+        assert_ne!(s.audio.clone().unwrap().art, Some(first));
+        // Empty fields mean "not sent", not an empty title.
+        apply_event(&mut s, &track("Morning Show", "", ""));
+        let audio = s.audio.clone().unwrap();
+        assert_eq!((audio.title.as_deref(), audio.artist, audio.album), (Some("Morning Show"), None, None));
+    }
+
+    #[test]
+    fn a_stopped_stream_stays_a_speaker_session_until_the_phone_leaves() {
+        let mut s = playing_audio();
+        apply_event(&mut s, &track("Blue in Green", "Miles Davis", "Kind of Blue"));
+        apply_event(&mut s, &engine(EngineEvent::AudioStopped));
+        assert_eq!(s.phase, Phase::Audio, "never back to a 'connecting' that never ends");
+        assert!(!s.audio.clone().unwrap().playing);
+        apply_event(&mut s, &engine(EngineEvent::AudioStart));
+        assert_eq!(s.audio.clone().unwrap().title.as_deref(), Some("Blue in Green"));
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 0 }));
+        assert_eq!(s.phase, Phase::Ready);
+        assert_eq!((s.audio.clone(), s.volume), (None, None));
+    }
+
+    #[test]
+    fn the_phone_remote_allows_control_for_this_session_only() {
+        let mut s = playing_audio();
+        assert!(!s.can_control);
+        apply_event(&mut s, &engine(EngineEvent::Dacp { dacp_id: "1A2B".into(), active_remote: "42".into() }));
+        assert!(s.can_control);
+        assert_eq!(s.remote, Some(crate::dacp::Remote { dacp_id: "1A2B".into(), active_remote: "42".into() }));
+        apply_event(&mut s, &engine(EngineEvent::Disconnected));
+        assert_eq!((s.can_control, s.remote.clone(), s.audio.clone()), (false, None, None));
+    }
+
+    #[test]
+    fn the_remote_id_never_reaches_the_ui() {
+        let mut s = playing_audio();
+        apply_event(&mut s, &engine(EngineEvent::Dacp { dacp_id: "1A2B".into(), active_remote: "4242".into() }));
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("4242") && json.contains("\"can_control\":true"), "{json}");
+    }
+
+    #[test]
+    fn mirroring_wins_over_the_mirror_sound() {
+        let mut s = mirroring();
+        apply_event(&mut s, &engine(EngineEvent::Volume { percent: 40 }));
+        assert_eq!(s.phase, Phase::Mirroring);
+        // Metadata only ever comes with music, so it turns a mirror-less connection into audio.
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &engine(EngineEvent::ConnectionRequest { name: "Sam's Mac".into(), model: "Mac14,2".into(), device_id: "x".into() }));
+        apply_event(&mut s, &track("Song", "", ""));
+        assert_eq!(s.phase, Phase::Audio);
+    }
+
+    #[test]
+    fn only_connecting_mirroring_audio_and_pin_are_sessions() {
         assert!(session_live(&mirroring()));
+        assert!(session_live(&playing_audio()));
         let mut pin = running(true);
         apply_event(&mut pin, &engine(EngineEvent::Pin { code: "1234".into() }));
         assert!(session_live(&pin));

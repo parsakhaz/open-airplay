@@ -160,13 +160,16 @@ fn spawn_reader(out: impl Read + Send + 'static, events: Sender<SupervisorEvent>
             match reader.read_until(b'\n', &mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    let line = String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string();
-                    let event = match parse_line(&line) {
-                        Some(event) => SupervisorEvent::Engine { event },
-                        None => SupervisorEvent::Log { line },
-                    };
-                    if events.send(event).is_err() {
-                        break;
+                    // A lone "\r" ends a line too: the engine rewrites its music progress line in place.
+                    let text = String::from_utf8_lossy(&buf);
+                    for line in text.trim_end_matches(['\r', '\n']).split('\r').filter(|l| !l.is_empty()) {
+                        let event = match parse_line(line) {
+                            Some(event) => SupervisorEvent::Engine { event },
+                            None => SupervisorEvent::Log { line: line.to_string() },
+                        };
+                        if events.send(event).is_err() {
+                            return;
+                        }
                     }
                 }
             }
@@ -258,6 +261,27 @@ mod tests {
         assert!(matches!(&events[1], SupervisorEvent::Log { line } if line.contains('\u{FFFD}')), "{events:?}");
         assert_eq!(events[2], SupervisorEvent::Engine { event: EngineEvent::OpenConnections { count: 1 } });
         stop_within(sup, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn progress_lines_ending_in_a_carriage_return_dont_swallow_the_next_line() {
+        // UxPlay rewrites its music progress line in place with "\r"; the line after it must still parse.
+        let (tx, rx) = mpsc::channel();
+        let script = "import sys,time\nsys.stdout.buffer.write(b'audio progress (min:sec):   0:01\\raudio progress (min:sec):   0:02\\ropen-airplay: volume 40\\r\\nOpen connections: 1\\n')\nsys.stdout.flush()\ntime.sleep(30)";
+        let sup = Supervisor::start(python_engine(script), move |e| {
+            let _ = tx.send(e);
+        });
+        let events = collect(&rx, 5);
+        stop_within(sup, Duration::from_secs(2));
+        assert_eq!(
+            events[1..],
+            [
+                SupervisorEvent::Log { line: "audio progress (min:sec):   0:01".into() },
+                SupervisorEvent::Log { line: "audio progress (min:sec):   0:02".into() },
+                SupervisorEvent::Engine { event: EngineEvent::Volume { percent: 40 } },
+                SupervisorEvent::Engine { event: EngineEvent::OpenConnections { count: 1 } },
+            ]
+        );
     }
 
     #[test]
