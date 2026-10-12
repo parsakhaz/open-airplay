@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"syscall"
@@ -166,16 +167,72 @@ type Config struct {
 	Code         string // default pairing/Digest credential; request Pin overrides it
 }
 
-func (d *Daemon) mirrorStreamConfig() airplay.StreamConfig {
+// mirrorSettings is what one target is mirrored with: the daemon's
+// configuration with that target's connect options applied on top.
+type mirrorSettings struct {
+	display    int
+	fps        int // zero: the receiver's recommended rate
+	bitrate    int // kbps; zero: tuned for resolution and frame rate
+	latency    time.Duration
+	videoCodec airplay.VideoCodec
+	hwaccel    string
+	showCursor bool
+	noAudio    bool
+}
+
+// mirrorSettingsFor resolves a connect's options against the daemon's
+// configuration. Options must already have passed validateMirrorOptions.
+func (d *Daemon) mirrorSettingsFor(options *MirrorOptions) mirrorSettings {
+	settings := mirrorSettings{
+		display:    d.cfg.DisplayIndex,
+		fps:        d.cfg.FPS,
+		bitrate:    d.cfg.Bitrate,
+		videoCodec: d.cfg.VideoCodec,
+		hwaccel:    d.cfg.HWAccel,
+		showCursor: d.cfg.ShowCursor,
+		noAudio:    d.cfg.NoAudio,
+	}
+	if options == nil {
+		return settings
+	}
+	if options.Display != nil {
+		settings.display = *options.Display
+	}
+	if options.FPS != 0 {
+		settings.fps = options.FPS
+	}
+	if options.BitrateKbps != 0 {
+		settings.bitrate = options.BitrateKbps
+	}
+	if options.LatencyMs != 0 {
+		settings.latency = time.Duration(options.LatencyMs) * time.Millisecond
+	}
+	if options.VideoCodec != "" {
+		settings.videoCodec = airplay.VideoCodec(options.VideoCodec)
+	}
+	if options.HWAccel != "" {
+		settings.hwaccel = options.HWAccel
+	}
+	if options.ShowCursor != nil {
+		settings.showCursor = *options.ShowCursor
+	}
+	if options.Audio != nil {
+		settings.noAudio = !*options.Audio
+	}
+	return settings
+}
+
+func (d *Daemon) mirrorStreamConfig(settings mirrorSettings) airplay.StreamConfig {
 	return airplay.StreamConfig{
-		FPS:        d.cfg.FPS,
-		Bitrate:    d.cfg.Bitrate,
-		VideoCodec: d.cfg.VideoCodec,
-		NoEncrypt:  d.cfg.NoEncrypt,
-		DirectKey:  d.cfg.DirectKey,
-		NoAudio:    d.cfg.NoAudio,
-		PortMin:    d.cfg.PortMin,
-		PortMax:    d.cfg.PortMax,
+		FPS:           settings.fps,
+		Bitrate:       settings.bitrate,
+		VideoCodec:    settings.videoCodec,
+		TargetLatency: settings.latency,
+		NoEncrypt:     d.cfg.NoEncrypt,
+		DirectKey:     d.cfg.DirectKey,
+		NoAudio:       settings.noAudio,
+		PortMin:       d.cfg.PortMin,
+		PortMax:       d.cfg.PortMax,
 	}
 }
 
@@ -275,18 +332,25 @@ type activeStream struct {
 	cancelFn       context.CancelFunc
 	credentialCh   chan string
 	credentialKind CredentialKind
-	displayIndex   int // capture display chosen when the stream was requested
+	settings       mirrorSettings // display, encoder and audio choices made when the stream was requested
 }
 
 // videoCaptureKey identifies captures which can safely share one encoded
-// stream. Capture settings are daemon-wide, so only the receiver's negotiated
-// canvas, frame rate, and codec vary between concurrent targets.
+// stream: same display, negotiated canvas, frame rate and codec, and the same
+// per-target encoder choices.
 type videoCaptureKey struct {
 	display   int
 	maxWidth  int
 	maxHeight int
 	fps       int
 	codec     airplay.VideoCodec
+
+	bitrate    int
+	hwaccel    string
+	showCursor bool
+	// explicitLatency skips the HEVC capture-lead measurement, so a group
+	// started without it cannot serve a target on automatic latency.
+	explicitLatency bool
 }
 
 // videoCaptureGroup owns one capture/encoder and its byte-stream fan-out. A
@@ -818,35 +882,61 @@ func (d *Daemon) handleDisplays() Response {
 	return Response{OK: true, State: d.handleStatus().State, Displays: infos}
 }
 
-// validateMirrorOptions rejects options this build cannot honour yet, so a
-// client never believes a setting took effect when it did not. Each option is
-// accepted here as the daemon learns to apply it per target.
+// validateMirrorOptions refuses options this build cannot honour (rather than
+// ignoring them, so a client never believes a setting took effect when it did
+// not) and values out of range.
 func validateMirrorOptions(options *MirrorOptions) (ErrorKind, string) {
 	if options == nil {
 		return "", ""
 	}
+	invalid := func(message string) (ErrorKind, string) { return ErrorKindInvalidRequest, message }
+	unsupported := func(name, value string) (ErrorKind, string) {
+		return ErrorKindUnsupportedOption, fmt.Sprintf("option %s %q is not supported by this build", name, value)
+	}
 	if options.Display != nil && *options.Display < 0 {
-		return ErrorKindInvalidRequest, "display must be zero or greater"
+		return invalid("display must be zero or greater")
 	}
-	unsupported := []struct {
-		name string
-		set  bool
-	}{
-		{"fps", options.FPS != 0},
-		{"bitrate_kbps", options.BitrateKbps != 0},
-		{"latency_ms", options.LatencyMs != 0},
-		{"video_codec", options.VideoCodec != "" && options.VideoCodec != string(airplay.VideoCodecAuto)},
-		{"hwaccel", options.HWAccel != "" && options.HWAccel != "auto"},
-		{"show_cursor", options.ShowCursor != nil},
-		{"audio", options.Audio != nil},
+	if options.FPS < 0 || options.FPS > maxOptionFPS {
+		return invalid(fmt.Sprintf("fps must be 0 (automatic) to %d", maxOptionFPS))
 	}
-	for _, option := range unsupported {
-		if option.set {
-			return ErrorKindUnsupportedOption, "option " + option.name + " is not supported yet"
+	if options.BitrateKbps < 0 || options.BitrateKbps > maxOptionBitrateKbps {
+		return invalid(fmt.Sprintf("bitrate_kbps must be 0 (automatic) to %d", maxOptionBitrateKbps))
+	}
+	if options.LatencyMs != 0 && (options.LatencyMs < minOptionLatencyMs || options.LatencyMs > maxOptionLatencyMs) {
+		return invalid(fmt.Sprintf("latency_ms must be 0 (automatic) or %d to %d", minOptionLatencyMs, maxOptionLatencyMs))
+	}
+	if err := airplay.ValidateVideoCodec(options.VideoCodec); err != nil {
+		return invalid("video_codec: " + err.Error())
+	}
+	if err := airplay.ValidateHWAccel(options.HWAccel); err != nil {
+		return invalid("hwaccel: " + err.Error())
+	}
+	if runtime.GOOS == "windows" {
+		// Desktop Duplication capture encodes H.264 with nvenc or libx264 only.
+		switch options.VideoCodec {
+		case "", string(airplay.VideoCodecAuto), string(airplay.VideoCodecH264):
+		default:
+			return unsupported("video_codec", options.VideoCodec)
 		}
+		switch options.HWAccel {
+		case "", "auto", "nvenc", "none":
+		default:
+			return unsupported("hwaccel", options.HWAccel)
+		}
+	}
+	if options.Audio != nil && *options.Audio && !airplay.SystemAudioCaptureAvailable() {
+		return ErrorKindUnsupportedOption, "option audio is not supported by this build (no system audio capture)"
 	}
 	return "", ""
 }
+
+// Bounds for connect options. Latency matches airplay.SetTargetLatency.
+const (
+	maxOptionFPS         = 120
+	maxOptionBitrateKbps = 100000
+	minOptionLatencyMs   = 5
+	maxOptionLatencyMs   = 2000
+)
 
 func (d *Daemon) handleConnect(req Request) Response {
 	if kind, message := validateMirrorOptions(req.Options); kind != "" {
@@ -940,10 +1030,7 @@ func (d *Daemon) handleConnect(req Request) Response {
 		state:        StateConnecting,
 		cancelFn:     cancel,
 		credentialCh: make(chan string, 1),
-		displayIndex: d.cfg.DisplayIndex,
-	}
-	if req.Options != nil && req.Options.Display != nil {
-		entry.displayIndex = *req.Options.Display
+		settings:     d.mirrorSettingsFor(req.Options),
 	}
 	d.clearLastErrorForTargetLocked(target)
 	d.streams[target] = entry
@@ -1284,15 +1371,15 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 	// not start an encoder until control SETUP exposes session-time display info.
 	// This preserves the receiver deadline while avoiding the provisional 720p
 	// fallback used by receivers whose public /info omits displays.
-	capturePreparation, err := d.prepareVideoCapture(ctx, entry.displayIndex, screenCastRestoreToken, deviceID)
+	capturePreparation, err := d.prepareVideoCapture(ctx, entry.settings, screenCastRestoreToken, deviceID)
 	if err != nil {
 		removeStream(ErrorKindCaptureFailed, fmt.Sprintf("prepare capture failed: %v", err))
 		return
 	}
 	defer func() { capturePreparation.Close() }()
-	streamCfg := d.mirrorStreamConfig()
+	streamCfg := d.mirrorStreamConfig(entry.settings)
 	if !d.cfg.TestMode {
-		streamCfg.SourceWidth, streamCfg.SourceHeight = d.sourceSize(entry.displayIndex)
+		streamCfg.SourceWidth, streamCfg.SourceHeight = d.sourceSize(entry.settings.display)
 	}
 	streamCfg.AutomaticHEVCAvailable = capturePreparation.AutomaticHEVCAvailable()
 	streamCfg.MeasuredVideoLatency = capturePreparation.MeasuredVideoLatency()
@@ -1326,7 +1413,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 				if saved := d.credStore.Lookup(deviceID); saved != nil && saved.RestoreToken != "" {
 					restoreToken = saved.RestoreToken
 				}
-				replacement, fallbackErr := d.prepareVideoCapture(ctx, entry.displayIndex, restoreToken, deviceID, airplay.VideoCodecH264)
+				replacement, fallbackErr := d.prepareVideoCapture(ctx, entry.settings, restoreToken, deviceID, airplay.VideoCodecH264)
 				if fallbackErr != nil {
 					return airplay.VideoPreparationResult{}, fmt.Errorf("%v; prepare H.264 fallback: %w", startErr, fallbackErr)
 				}
@@ -1405,7 +1492,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 	// so the stream worker does not outlive daemon shutdown.
 	var audioCapture *airplay.AudioCapture
 	var audioDone chan error
-	if !d.cfg.NoAudio && session.HasAudio() {
+	if !entry.settings.noAudio && session.HasAudio() {
 		var audioErr error
 		audioCapture, audioErr = airplay.StartAudioCapture(ctx, d.cfg.TestMode, session.AudioCodec())
 		if audioErr != nil {
@@ -1515,26 +1602,38 @@ func normalizedVideoCaptureProfileKey(profile airplay.VideoProfile) videoCapture
 	return key
 }
 
+// captureGroupKey is the encoder group a target joins. Receivers share an
+// encoder only when they mirror the same display with the same encoder choices.
+func captureGroupKey(profile airplay.VideoProfile, settings mirrorSettings) videoCaptureKey {
+	key := normalizedVideoCaptureProfileKey(profile)
+	key.display = settings.display
+	key.bitrate = settings.bitrate
+	key.hwaccel = settings.hwaccel
+	key.showCursor = settings.showCursor
+	key.explicitLatency = settings.latency > 0 || airplay.HasExplicitTargetLatency()
+	return key
+}
+
 // prepareVideoCapture completes interactive capture authorization before the
 // receiver session begins, but leaves GStreamer unstarted until control SETUP
 // reveals the session-time display canvas. Portal serialization is deliberately
 // separate from captureStartMu: a different user prompt must not block an
 // already-negotiated receiver from starting its encoder before its deadline.
-func (d *Daemon) prepareVideoCapture(ctx context.Context, displayIndex int, restoreToken, deviceID string, codecs ...airplay.VideoCodec) (*airplay.CapturePreparation, error) {
+func (d *Daemon) prepareVideoCapture(ctx context.Context, settings mirrorSettings, restoreToken, deviceID string, codecs ...airplay.VideoCodec) (*airplay.CapturePreparation, error) {
 	d.capturePortalMu.Lock()
 	defer d.capturePortalMu.Unlock()
 
-	codec := d.cfg.VideoCodec
+	codec := settings.videoCodec
 	if len(codecs) != 0 {
 		codec = codecs[0]
 	}
 	cfg := airplay.CaptureConfig{
-		FPS:          d.cfg.FPS,
-		Bitrate:      d.cfg.Bitrate,
-		HWAccel:      d.cfg.HWAccel,
+		FPS:          settings.fps,
+		Bitrate:      settings.bitrate,
+		HWAccel:      settings.hwaccel,
 		VideoCodec:   codec,
-		ShowCursor:   d.cfg.ShowCursor,
-		DisplayIndex: displayIndex,
+		ShowCursor:   settings.showCursor,
+		DisplayIndex: settings.display,
 		RestoreToken: restoreToken,
 	}
 	if deviceID != "" {
@@ -1556,9 +1655,7 @@ func (d *Daemon) getOrStartPreparedCaptureGroup(ctx context.Context, entry *acti
 	d.captureStartMu.Lock()
 	defer d.captureStartMu.Unlock()
 
-	key := normalizedVideoCaptureProfileKey(profile)
-	// Receivers share an encoder only when they mirror the same display.
-	key.display = entry.displayIndex
+	key := captureGroupKey(profile, entry.settings)
 	d.mu.Lock()
 	if d.streams[entry.deviceIP] != entry {
 		d.mu.Unlock()
@@ -1600,7 +1697,7 @@ func (d *Daemon) getOrStartPreparedCaptureGroup(ctx context.Context, entry *acti
 	}
 
 	minimumVideoLead := time.Duration(0)
-	if key.codec == airplay.VideoCodecHEVC && !airplay.HasExplicitTargetLatency() {
+	if key.codec == airplay.VideoCodecHEVC && !key.explicitLatency {
 		minimumVideoLead, err = airplay.MeasureVideoCaptureLatency(ctx, capture, key.fps)
 		if err != nil {
 			captureCancel()
@@ -1940,7 +2037,7 @@ func (d *Daemon) handleSetMute(req Request, muted bool) Response {
 
 	sessions := make([]*airplay.MirrorSession, 0, len(targets))
 	for _, t := range targets {
-		if t.session != nil && (d.cfg.NoAudio || t.session.HasAudio()) {
+		if t.session != nil && (t.settings.noAudio || t.session.HasAudio()) {
 			sessions = append(sessions, t.session)
 		}
 	}
