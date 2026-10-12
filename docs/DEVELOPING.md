@@ -36,9 +36,11 @@ npm install
 npm run dev
 ```
 
-The app starts receiving immediately. On the iPhone: Control Center → Screen Mirroring → pick the PC's name.
+A manual launch opens the tray panel and restores the receiving switch as you left it (on the first time). On the iPhone: Control Center → Screen Mirroring → pick the PC's name.
 The first launch shows a Windows Firewall prompt for `uxplay.exe`; allow it, or iPhones cannot connect.
 On a network set to **Public**, Windows allows the app only if you tick Public in that prompt.
+
+Start at login is on by default. Sign-in launches pass `--autostart`: the app stays in the tray, opens no window and leaves receiving off until you flip the switch. Dev builds never touch the Run entry (it has the same name as the installed app's) unless `OAP_DEV_AUTOSTART=1` is set; to try a boot launch in development, run `npm run tauri dev -- -- --autostart`.
 
 Engine output is logged to `%LOCALAPPDATA%\org.openairplay.app\logs\engine.log`.
 

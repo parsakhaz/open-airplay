@@ -1,5 +1,6 @@
 pub mod doctor;
 pub mod engine;
+pub mod launch;
 pub mod netwatch;
 pub mod prefs;
 pub mod process_guard;
@@ -247,7 +248,7 @@ fn tray_text(status: &ReceiverStatus) -> String {
         Phase::Ready => format!("open-airplay: ready to receive as '{name}'"),
         Phase::Starting => "open-airplay: starting…".into(),
         Phase::Error => "open-airplay: needs attention".into(),
-        Phase::Stopped => "open-airplay: receiver off".into(),
+        Phase::Stopped => "open-airplay: receiving is off".into(),
     }
 }
 
@@ -411,6 +412,11 @@ fn set_prefs(app: AppHandle, open_full_view_on_mirror: bool, start_at_login: boo
 
 fn apply_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
+    // Dev builds share the installed app's Run entry name; registering target\debug would hijack it.
+    if cfg!(debug_assertions) && std::env::var_os("OAP_DEV_AUTOSTART").is_none() {
+        eprintln!("open-airplay: dev build, leaving start at login alone (set OAP_DEV_AUTOSTART=1 to test it)");
+        return Ok(());
+    }
     let launcher = app.autolaunch();
     let result = if enabled { launcher.enable() } else { launcher.disable() };
     // Disabling when it was never enabled is fine.
@@ -420,11 +426,13 @@ fn apply_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
 /// Async + spawn_blocking: stopping the old engine joins a thread, which must never happen on the UI thread.
 #[tauri::command]
 async fn receiver_start(app: AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
+    app.state::<AppState>().update_prefs(|p| p.receiving = Some(true));
     tauri::async_runtime::spawn_blocking(move || start_receiver_inner(&app, settings)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 async fn receiver_stop(app: AppHandle) -> Result<ReceiverStatus, String> {
+    app.state::<AppState>().update_prefs(|p| p.receiving = Some(false));
     tauri::async_runtime::spawn_blocking(move || stop_receiver_inner(&app)).await.map_err(|e| e.to_string())
 }
 
@@ -548,6 +556,11 @@ async fn doctor_fix(app: AppHandle, kind: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// A network change or wake restarts only a receiver the user has on; one that is off stays off.
+fn settings_to_restart(status: &ReceiverStatus) -> Option<ReceiverSettings> {
+    status.wanted.then(|| status.settings.clone()).flatten()
+}
+
 /// Restarts the receiver after sleep or a network change, so iPhones on the (new) network can find it.
 fn spawn_network_watcher(app: AppHandle) {
     std::thread::spawn(move || {
@@ -567,11 +580,7 @@ fn spawn_network_watcher(app: AppHandle) {
                 ip = sample.primary_ip;
             }
             let Some(reason) = decision else { continue };
-            let state = app.state::<AppState>();
-            let settings = {
-                let st = state.status.lock().unwrap();
-                (st.wanted).then(|| st.settings.clone()).flatten()
-            };
+            let settings = settings_to_restart(&app.state::<AppState>().status.lock().unwrap());
             if let Some(settings) = settings {
                 eprintln!("open-airplay: restarting the receiver ({reason:?})");
                 let _ = start_receiver_inner(&app, settings);
@@ -586,6 +595,29 @@ fn toggle_popover(window: &WebviewWindow, icon_rect: tauri::Rect) {
         let _ = window.hide();
         return;
     }
+    show_popover_at(window, icon_rect);
+}
+
+/// Opens the popover by the tray icon, or at the bottom-right of the work area if the icon can't be found.
+fn show_popover(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    match app.tray_by_id("main").and_then(|t| t.rect().ok().flatten()) {
+        Some(rect) => show_popover_at(&window, rect),
+        None => {
+            if let (Ok(size), Ok(Some(monitor))) = (window.outer_size(), window.primary_monitor()) {
+                let area = monitor.work_area();
+                let gap = (12.0 * window.scale_factor().unwrap_or(1.0)) as i32;
+                let x = area.position.x + area.size.width as i32 - size.width as i32 - gap;
+                let y = area.position.y + area.size.height as i32 - size.height as i32 - gap;
+                let _ = window.set_position(PhysicalPosition::new(x, y));
+            }
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
+
+fn show_popover_at(window: &WebviewWindow, icon_rect: tauri::Rect) {
     let scale = window.scale_factor().unwrap_or(1.0);
     let icon_pos: PhysicalPosition<f64> = icon_rect.position.to_physical(scale);
     let icon_size: tauri::PhysicalSize<f64> = icon_rect.size.to_physical(scale);
@@ -606,13 +638,13 @@ fn toggle_popover(window: &WebviewWindow, icon_rect: tauri::Rect) {
 pub fn run() {
     let app = tauri::Builder::default()
         // A second launch focuses the running app instead of starting a rival receiver on the same ports.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
+        // It never changes receiving; a stray boot launch while running does nothing.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if !launch::is_autostart(&args) {
+                show_popover(app);
             }
         }))
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec![launch::AUTOSTART_ARG])))
         .manage(AppState::default())
         .setup(|app| {
             // Load saved prefs before anything reads them.
@@ -626,7 +658,16 @@ pub fn run() {
                 });
                 *state.prefs.lock().unwrap() = prefs;
                 *state.prefs_path.lock().unwrap() = path;
+                // Persists the one-time "start at login on" marker, then refreshes the Run entry so older
+                // entries gain --autostart.
+                let prefs = state.update_prefs(|_| {});
+                if prefs.start_at_login {
+                    if let Err(e) = apply_start_at_login(app.handle(), true) {
+                        eprintln!("open-airplay: {e}");
+                    }
+                }
             }
+            let launch = launch::plan(&std::env::args().collect::<Vec<_>>(), &app.state::<AppState>().prefs.lock().unwrap());
             let show = MenuItem::with_id(app, "show", "Open open-airplay", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -656,9 +697,18 @@ pub fn run() {
 
             spawn_network_watcher(app.handle().clone());
 
-            // Start receiving right away so the PC shows up in Screen Mirroring without a click.
+            // A boot launch shows the off state in the tray and nothing else. A manual launch opens the
+            // panel and, if the switch was left on, starts receiving so the PC shows up without a click.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
+                let off = receiver_status(handle.clone());
+                publish(&handle, &off);
+                if launch.show_panel {
+                    show_popover(&handle);
+                }
+                if !launch.start_receiving {
+                    return;
+                }
                 let saved = handle.state::<AppState>().prefs.lock().unwrap().receiver.clone();
                 if let Err(e) = start_receiver_inner(&handle, saved) {
                     let state = handle.state::<AppState>();
@@ -693,6 +743,16 @@ mod tests {
 
     fn running(advertised: bool) -> ReceiverStatus {
         ReceiverStatus { wanted: true, running: true, advertised, ..Default::default() }
+    }
+
+    #[test]
+    fn a_network_change_restarts_only_a_receiver_that_is_on() {
+        let settings = Some(ReceiverSettings { name: "Den".into(), pin_mode: false, h265: false });
+        let off = ReceiverStatus { settings: settings.clone(), ..Default::default() };
+        assert_eq!(settings_to_restart(&off), None);
+        assert_eq!(settings_to_restart(&ReceiverStatus::default()), None);
+        let on = ReceiverStatus { wanted: true, settings: settings.clone(), ..Default::default() };
+        assert_eq!(settings_to_restart(&on), settings);
     }
 
     #[test]

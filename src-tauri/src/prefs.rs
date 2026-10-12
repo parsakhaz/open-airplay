@@ -12,8 +12,12 @@ pub struct AppPrefs {
     pub receiver: ReceiverSettings,
     /// Switch to the full view automatically when a mirroring session starts.
     pub open_full_view_on_mirror: bool,
-    /// Launch open-airplay when the user signs in to Windows.
+    /// Launch open-airplay when the user signs in to Windows (quietly, receiving off).
     pub start_at_login: bool,
+    /// Set once start at login has been turned on by default, so the user's later "off" sticks.
+    pub start_at_login_offered: bool,
+    /// The receiving switch as the user last left it; None until they first flip it.
+    pub receiving: Option<bool>,
 }
 
 impl AppPrefs {
@@ -26,7 +30,17 @@ impl AppPrefs {
         if prefs.receiver.name.trim().is_empty() {
             prefs.receiver.name = default_name.to_string();
         }
+        // New installs, and older ones whose "off" was the old default rather than a choice.
+        if !prefs.start_at_login_offered {
+            prefs.start_at_login = true;
+            prefs.start_at_login_offered = true;
+        }
         prefs
+    }
+
+    /// Whether a manual launch starts receiving: the remembered switch, on if never chosen.
+    pub fn receiving_on(&self) -> bool {
+        self.receiving.unwrap_or(true)
     }
 
     /// Writes atomically (temp file, then rename) so a crash never leaves a half-written file.
@@ -55,7 +69,7 @@ mod tests {
         let prefs = AppPrefs::load(&temp_path("missing"), "PARSA-DEVBOX");
         assert_eq!(prefs.receiver, ReceiverSettings { name: "PARSA-DEVBOX".into(), pin_mode: false, h265: false });
         assert!(!prefs.open_full_view_on_mirror);
-        assert!(!prefs.start_at_login);
+        assert!(prefs.start_at_login, "start at login is on by default");
     }
 
     #[test]
@@ -64,7 +78,9 @@ mod tests {
         let prefs = AppPrefs {
             receiver: ReceiverSettings { name: "Living Room PC".into(), pin_mode: true, h265: true },
             open_full_view_on_mirror: true,
-            start_at_login: true,
+            start_at_login: false,
+            start_at_login_offered: true,
+            receiving: Some(false),
         };
         prefs.save(&path).unwrap();
         assert_eq!(AppPrefs::load(&path, "IGNORED"), prefs);
@@ -85,7 +101,26 @@ mod tests {
         std::fs::write(&path, r#"{"receiver": {"name": "Den", "pin_mode": true}}"#).unwrap();
         let prefs = AppPrefs::load(&path, "PC");
         assert_eq!(prefs.receiver, ReceiverSettings { name: "Den".into(), pin_mode: true, h265: false });
-        assert!(!prefs.start_at_login);
+    }
+
+    #[test]
+    fn an_older_install_gets_start_at_login_turned_on_once() {
+        let path = temp_path("upgrade");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"receiver": {"name": "Den"}, "start_at_login": false}"#).unwrap();
+        let mut prefs = AppPrefs::load(&path, "PC");
+        assert!(prefs.start_at_login);
+        prefs.start_at_login = false;
+        prefs.save(&path).unwrap();
+        assert!(!AppPrefs::load(&path, "PC").start_at_login, "turning it off survives the next launch");
+    }
+
+    #[test]
+    fn receiving_is_remembered_and_on_when_never_chosen() {
+        let path = temp_path("receiving");
+        assert!(AppPrefs::load(&path, "PC").receiving_on());
+        AppPrefs { receiving: Some(false), ..AppPrefs::load(&path, "PC") }.save(&path).unwrap();
+        assert!(!AppPrefs::load(&path, "PC").receiving_on());
     }
 
     #[test]
