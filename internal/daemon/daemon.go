@@ -39,12 +39,19 @@ const (
 	CredentialKindPassword CredentialKind = "password"
 )
 
-// Request is a command sent to the daemon over the control socket.
+// Request is a command sent to the daemon over the control socket or, in
+// stdio mode, as one JSON line on stdin.
 type Request struct {
+	// ID is echoed on the stdio response so a caller can match replies to
+	// requests among pushed state lines. The socket protocol ignores it.
+	ID     uint64 `json:"id,omitempty"`
 	Cmd    string `json:"cmd"`
 	Target string `json:"target,omitempty"`
 	Port   int    `json:"port,omitempty"`
 	Pin    string `json:"pin,omitempty"`
+	// Display selects the capture display for a new connect; nil keeps the
+	// daemon's configured display.
+	Display *int `json:"display,omitempty"`
 }
 
 // StreamInfo describes one active (or connecting) mirror stream.
@@ -73,6 +80,18 @@ type Response struct {
 	Error           string         `json:"error,omitempty"`
 	Devices         []DeviceInfo   `json:"devices,omitempty"`
 	Streams         []StreamInfo   `json:"streams,omitempty"`
+	Displays        []DisplayInfo  `json:"displays,omitempty"`
+}
+
+// DisplayInfo is one display this machine can mirror, in capture index order.
+type DisplayInfo struct {
+	Index   int    `json:"index"`
+	Name    string `json:"name"`
+	X       int    `json:"x"`
+	Y       int    `json:"y"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+	Primary bool   `json:"primary"`
 }
 
 // DeviceInfo is a simplified view of a discovered AirPlay device.
@@ -214,12 +233,14 @@ type activeStream struct {
 	cancelFn       context.CancelFunc
 	credentialCh   chan string
 	credentialKind CredentialKind
+	displayIndex   int // capture display chosen when the stream was requested
 }
 
 // videoCaptureKey identifies captures which can safely share one encoded
 // stream. Capture settings are daemon-wide, so only the receiver's negotiated
 // canvas, frame rate, and codec vary between concurrent targets.
 type videoCaptureKey struct {
+	display   int
 	maxWidth  int
 	maxHeight int
 	fps       int
@@ -322,6 +343,9 @@ type Daemon struct {
 	listener       net.Listener
 	streamWorkers  sync.WaitGroup // stream, capture, and externally detached cleanup workers
 	shuttingDown   bool
+
+	listDisplays  func() ([]airplay.Display, error) // nil means airplay.ListDisplays
+	skipDiscovery bool                              // tests: no mDNS browsing in RunStdio
 }
 
 // New creates a new Daemon with the given configuration.
@@ -550,6 +574,8 @@ func (d *Daemon) handleRequest(req Request) Response {
 		return d.handleConnect(req)
 	case "disconnect":
 		return d.handleDisconnect(req)
+	case "displays":
+		return d.handleDisplays()
 	case "mute":
 		return d.handleSetMute(req, true)
 	case "unmute":
@@ -699,6 +725,49 @@ func (d *Daemon) handleDevices() Response {
 	}
 }
 
+func (d *Daemon) displays() ([]airplay.Display, error) {
+	if d.listDisplays != nil {
+		return d.listDisplays()
+	}
+	return airplay.ListDisplays()
+}
+
+// sourceSize returns the size of the display being mirrored, which the CLI
+// also passes so the receiver's canvas fits that screen. Zero (keep the
+// receiver's nominal canvas) when displays cannot be listed.
+func (d *Daemon) sourceSize(index int) (int, int) {
+	displays, err := d.displays()
+	if err != nil {
+		return 0, 0
+	}
+	for _, display := range displays {
+		if display.Index == index {
+			return display.Width, display.Height
+		}
+	}
+	return 0, 0
+}
+
+func (d *Daemon) handleDisplays() Response {
+	displays, err := d.displays()
+	if err != nil {
+		return Response{OK: false, State: d.handleStatus().State, Error: "list displays: " + err.Error()}
+	}
+	infos := make([]DisplayInfo, len(displays))
+	for i, display := range displays {
+		infos[i] = DisplayInfo{
+			Index:   display.Index,
+			Name:    display.Name,
+			X:       display.X,
+			Y:       display.Y,
+			Width:   display.Width,
+			Height:  display.Height,
+			Primary: display.Primary,
+		}
+	}
+	return Response{OK: true, State: d.handleStatus().State, Displays: infos}
+}
+
 func (d *Daemon) handleConnect(req Request) Response {
 	d.mu.Lock()
 	if d.shuttingDown {
@@ -788,6 +857,10 @@ func (d *Daemon) handleConnect(req Request) Response {
 		state:        StateConnecting,
 		cancelFn:     cancel,
 		credentialCh: make(chan string, 1),
+		displayIndex: d.cfg.DisplayIndex,
+	}
+	if req.Display != nil {
+		entry.displayIndex = *req.Display
 	}
 	d.clearLastErrorForTargetLocked(target)
 	d.streams[target] = entry
@@ -1117,13 +1190,16 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 	// not start an encoder until control SETUP exposes session-time display info.
 	// This preserves the receiver deadline while avoiding the provisional 720p
 	// fallback used by receivers whose public /info omits displays.
-	capturePreparation, err := d.prepareVideoCapture(ctx, screenCastRestoreToken, deviceID)
+	capturePreparation, err := d.prepareVideoCapture(ctx, entry.displayIndex, screenCastRestoreToken, deviceID)
 	if err != nil {
 		removeStream(fmt.Sprintf("prepare capture failed: %v", err))
 		return
 	}
 	defer func() { capturePreparation.Close() }()
 	streamCfg := d.mirrorStreamConfig()
+	if !d.cfg.TestMode {
+		streamCfg.SourceWidth, streamCfg.SourceHeight = d.sourceSize(entry.displayIndex)
+	}
 	streamCfg.AutomaticHEVCAvailable = capturePreparation.AutomaticHEVCAvailable()
 	streamCfg.MeasuredVideoLatency = capturePreparation.MeasuredVideoLatency()
 	var broadcast *airplay.BroadcastCapture
@@ -1156,7 +1232,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 				if saved := d.credStore.Lookup(deviceID); saved != nil && saved.RestoreToken != "" {
 					restoreToken = saved.RestoreToken
 				}
-				replacement, fallbackErr := d.prepareVideoCapture(ctx, restoreToken, deviceID, airplay.VideoCodecH264)
+				replacement, fallbackErr := d.prepareVideoCapture(ctx, entry.displayIndex, restoreToken, deviceID, airplay.VideoCodecH264)
 				if fallbackErr != nil {
 					return airplay.VideoPreparationResult{}, fmt.Errorf("%v; prepare H.264 fallback: %w", startErr, fallbackErr)
 				}
@@ -1324,7 +1400,7 @@ func normalizedVideoCaptureProfileKey(profile airplay.VideoProfile) videoCapture
 // reveals the session-time display canvas. Portal serialization is deliberately
 // separate from captureStartMu: a different user prompt must not block an
 // already-negotiated receiver from starting its encoder before its deadline.
-func (d *Daemon) prepareVideoCapture(ctx context.Context, restoreToken, deviceID string, codecs ...airplay.VideoCodec) (*airplay.CapturePreparation, error) {
+func (d *Daemon) prepareVideoCapture(ctx context.Context, displayIndex int, restoreToken, deviceID string, codecs ...airplay.VideoCodec) (*airplay.CapturePreparation, error) {
 	d.capturePortalMu.Lock()
 	defer d.capturePortalMu.Unlock()
 
@@ -1338,7 +1414,7 @@ func (d *Daemon) prepareVideoCapture(ctx context.Context, restoreToken, deviceID
 		HWAccel:      d.cfg.HWAccel,
 		VideoCodec:   codec,
 		ShowCursor:   d.cfg.ShowCursor,
-		DisplayIndex: d.cfg.DisplayIndex,
+		DisplayIndex: displayIndex,
 		RestoreToken: restoreToken,
 	}
 	if deviceID != "" {
@@ -1361,6 +1437,8 @@ func (d *Daemon) getOrStartPreparedCaptureGroup(ctx context.Context, entry *acti
 	defer d.captureStartMu.Unlock()
 
 	key := normalizedVideoCaptureProfileKey(profile)
+	// Receivers share an encoder only when they mirror the same display.
+	key.display = entry.displayIndex
 	d.mu.Lock()
 	if d.streams[entry.deviceIP] != entry {
 		d.mu.Unlock()
