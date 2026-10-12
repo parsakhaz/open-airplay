@@ -1274,7 +1274,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 	// FairPlay setup
 	if err := client.FairPlaySetup(ctx); err != nil {
 		if !errors.Is(err, airplay.ErrFairPlayUnsupported) {
-			removeStream(ErrorKindRejected, fmt.Sprintf("FairPlay setup failed: %v", err))
+			removeStream(setupFailureKind(err, credential), fmt.Sprintf("FairPlay setup failed: %v", err))
 			return
 		}
 		log.Printf("[daemon] FairPlay SAP unsupported (%v); continuing with pair-verify DataStream setup", err)
@@ -1359,11 +1359,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 		},
 	)
 	if err != nil {
-		kind := ErrorKindRejected
-		if errors.Is(err, airplay.ErrCredentialsRequired) {
-			kind = ErrorKindWrongCode
-		}
-		removeStream(kind, fmt.Sprintf("mirror setup failed: %v", err))
+		removeStream(setupFailureKind(err, credential), fmt.Sprintf("mirror setup failed: %v", err))
 		return
 	}
 	if broadcast == nil {
@@ -1467,6 +1463,20 @@ type credentialRejectedError struct{ err error }
 
 func (e *credentialRejectedError) Error() string { return e.err.Error() }
 func (e *credentialRejectedError) Unwrap() error { return e.err }
+
+// setupFailureKind classifies a FairPlay or mirror SETUP failure. A receiver
+// with "Require Password" answers a wrong password with a second 401, which is
+// a wrong code the user can retry, not a refusal.
+func setupFailureKind(err error, credential string) ErrorKind {
+	if errors.Is(err, airplay.ErrCredentialsRequired) {
+		return ErrorKindWrongCode
+	}
+	var status *airplay.HTTPStatusError
+	if credential != "" && errors.As(err, &status) && status.StatusCode == 401 {
+		return ErrorKindWrongCode
+	}
+	return ErrorKindRejected
+}
 
 func credentialFailureKind(err error) ErrorKind {
 	var rejected *credentialRejectedError
