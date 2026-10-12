@@ -101,6 +101,8 @@ go run ./cmd/open-airplay -receiver "Living Room" -display 0
 
 Credentials are saved in Windows Credential Manager, so you pair only once. Press `Ctrl+C` to stop and tear down cleanly. Only ever target a receiver you own.
 
+The mirror carries this PC's sound, captured from the default output device and kept in sync with the picture. It follows you when you switch output devices. To mirror another device's sound, pick it from `-list-audio-devices` with `-audio-device "<name>"`. Add `-no-audio` for video only. The capture follows the Windows volume, so leave the PC's volume up and set the TV's volume to taste. If the sound runs ahead of or behind the picture on your TV, nudge it with `-audio-offset-ms` (positive delays the sound).
+
 **Receive AirPlay on your PC**
 
 ```console
@@ -115,7 +117,7 @@ This stands on years of open reverse-engineering by others. See the **[reverse-e
 
 ## What's next
 
-- [ ] **Audio for mirroring**: WASAPI capture so the desktop mirror carries sound (currently video-only).
+- [x] **Audio for mirroring**: WASAPI loopback capture so the desktop mirror carries sound, in sync with the video.
 - [ ] **Higher fidelity by default**: native-resolution capture, 60fps, hardware encoding (NVENC / QSV / AMF), and adaptive bitrate tuned to the link.
 - [ ] **One-click UI for the mirror**: device picker, PIN flow, and a quality / latency settings panel, folded into the same app as the receiver.
 - [ ] **FairPlay provenance review**: document and isolate the FairPlay constants (see doubletake [#59](https://github.com/omarroth/doubletake/issues/59)) before any binary release.

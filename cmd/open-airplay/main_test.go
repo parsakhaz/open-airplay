@@ -313,3 +313,28 @@ func TestRestoreSavedPairingRestoresRawProtocol(t *testing.T) {
 		t.Fatalf("restored protocol = %q, want raw", got)
 	}
 }
+
+func TestValidateAudioOffset(t *testing.T) {
+	for _, ms := range []int{-1000, -40, 0, 25, 1000} {
+		if err := validateAudioOffset(ms); err != nil {
+			t.Fatalf("validateAudioOffset(%d) = %v, want nil", ms, err)
+		}
+	}
+	for _, ms := range []int{-1001, 1001, 60000} {
+		if err := validateAudioOffset(ms); err == nil {
+			t.Fatalf("validateAudioOffset(%d) accepted, want error", ms)
+		}
+	}
+}
+
+func TestPrintAudioDevicesMarksDefault(t *testing.T) {
+	var output strings.Builder
+	printAudioDevices(&output, []airplay.AudioDevice{
+		{ID: "{a}", Name: "Speakers", Default: true},
+		{ID: "{b}", Name: "Headphones"},
+	})
+	want := "* 1. Speakers\n     id: {a}\n  2. Headphones\n     id: {b}\n* = default output device (followed when -audio-device is not set)\n"
+	if output.String() != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", output.String(), want)
+	}
+}

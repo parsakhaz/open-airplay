@@ -100,6 +100,7 @@ type Config struct {
 	NoEncrypt    bool
 	DirectKey    bool
 	NoAudio      bool
+	Audio        airplay.AudioCaptureOptions // device, offset and test tone for mirror audio
 	ShowCursor   bool
 	DisplayIndex int
 	Code         string // default pairing/Digest credential; request Pin overrides it
@@ -1233,7 +1234,9 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 	var audioDone chan error
 	if !d.cfg.NoAudio && session.HasAudio() {
 		var audioErr error
-		audioCapture, audioErr = airplay.StartAudioCapture(ctx, d.cfg.TestMode, session.AudioCodec())
+		audioOptions := d.cfg.Audio
+		audioOptions.TestTone = audioOptions.TestTone || d.cfg.TestMode
+		audioCapture, audioErr = airplay.StartAudioCaptureWithOptions(ctx, session.AudioCodec(), audioOptions)
 		if audioErr != nil {
 			log.Printf("[daemon] audio capture failed: %v (continuing without audio)", audioErr)
 		} else {
