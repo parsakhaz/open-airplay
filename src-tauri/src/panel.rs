@@ -39,9 +39,11 @@ impl Rect {
 
 /// Where the panel's top-left corner goes, in physical px.
 ///
-/// With the tray icon's rectangle: centred on the icon, `gap` away from the taskbar on whichever
-/// side the taskbar is (the side of the work area the icon lies outside of), clamped to the work
-/// area. Without it: the bottom-right corner of the work area.
+/// With the tray icon's rectangle: `gap` away from the taskbar on whichever side the taskbar is (the
+/// side of the work area the icon lies outside of), clamped to the work area. Beside a bottom or top
+/// taskbar it is centred on the icon; beside a side taskbar its bottom lines up with the icon's, so
+/// the footer stays put when the content (and the panel) grows. Without an icon: the bottom-right
+/// corner of the work area.
 pub fn position(icon: Option<Rect>, width: f64, height: f64, work: Rect, gap: f64) -> (f64, f64) {
     let clamp_x = |x: f64| x.min(work.right() - width - gap).max(work.x + gap);
     let clamp_y = |y: f64| y.min(work.bottom() - height - gap).max(work.y + gap);
@@ -54,12 +56,12 @@ pub fn position(icon: Option<Rect>, width: f64, height: f64, work: Rect, gap: f6
     } else if cy <= work.y {
         (clamp_x(cx - width / 2.0), clamp_y(work.y))
     } else if cx <= work.x {
-        (clamp_x(work.x), clamp_y(cy - height / 2.0))
+        (clamp_x(work.x), clamp_y(icon.bottom() - height))
+    } else if cx >= work.right() {
+        (clamp_x(work.right()), clamp_y(icon.bottom() - height))
     } else {
-        // Taskbar on the right, or an icon inside the work area (the tray overflow flyout): open
-        // beside it, above if there's room.
-        let x = if cx >= work.right() { work.right() } else { cx - width / 2.0 };
-        (clamp_x(x), clamp_y(icon.y - height - gap))
+        // An icon inside the work area (the tray overflow flyout): open above it if there's room.
+        (clamp_x(cx - width / 2.0), clamp_y(icon.y - height - gap))
     }
 }
 
@@ -147,9 +149,16 @@ mod tests {
     #[test]
     fn opens_beside_a_side_taskbar() {
         let left = Rect { x: 60.0, y: 0.0, w: 1860.0, h: 1080.0 };
-        assert_eq!(position(icon_at(18.0, 500.0), 340.0, 400.0, left, 10.0), (70.0, 512.0 - 200.0));
+        assert_eq!(position(icon_at(18.0, 500.0), 340.0, 400.0, left, 10.0), (70.0, 524.0 - 400.0));
         let right = Rect { x: 0.0, y: 0.0, w: 1860.0, h: 1080.0 };
-        assert_eq!(position(icon_at(1878.0, 900.0), 340.0, 400.0, right, 10.0).0, 1860.0 - 340.0 - 10.0);
+        assert_eq!(position(icon_at(1878.0, 900.0), 340.0, 400.0, right, 10.0), (1860.0 - 340.0 - 10.0, 924.0 - 400.0));
+    }
+
+    #[test]
+    fn beside_a_side_taskbar_the_footer_stays_put_as_the_panel_grows() {
+        let left = Rect { x: 60.0, y: 0.0, w: 1860.0, h: 1080.0 };
+        let bottom = |h: f64| position(icon_at(18.0, 700.0), 340.0, h, left, 10.0).1 + h;
+        assert_eq!(bottom(300.0), bottom(520.0));
     }
 
     #[test]

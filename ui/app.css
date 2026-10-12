@@ -19,10 +19,12 @@ html, body { height: 100%; background: var(--oai-popover); }
 body { overflow: hidden; }
 #panel { inset: 0; border-radius: 0; box-shadow: none; animation: none; }
 #pop-body { flex: 0 1 auto; }
+#pop-content { display: flow-root; }   /* keeps child margins inside, so its height is the whole content */
 .inline-error, .region-error { margin: 6px 4px 0; font-size: var(--oai-text-sm); color: var(--oai-bad); text-align: left; }
 .region-error { margin: 0 8px 8px; }
 .settings-form .status-line { padding: 0 10px; font-size: var(--oai-text-sm); min-height: 1.5em; }
-.settings-form .status-line .is-ok { color: var(--oai-ok); }
+.oai-banner.notice { margin: 2px 4px 8px; align-items: center; }
+.oai-banner.notice p { font-size: var(--oai-text-sm); }
 .settings-form .status-line .is-bad { color: var(--oai-bad); }
 
 /* status block */

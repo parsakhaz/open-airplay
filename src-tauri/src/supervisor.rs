@@ -1,8 +1,8 @@
 //! Runs a sidecar process, turns its output into events, and restarts it when it dies.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -46,6 +46,8 @@ const DRAIN: Duration = Duration::from_millis(500);
 pub struct Supervisor {
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
+    /// The running engine's stdin, for control lines (engine patch 0003).
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -59,17 +61,27 @@ impl Supervisor {
                 on_event(event);
             }
         });
-        let (stop2, child2) = (stop.clone(), child.clone());
+        let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+        let (stop2, child2, stdin2) = (stop.clone(), child.clone(), stdin.clone());
         let handle = thread::spawn(move || {
             while !stop2.load(Ordering::SeqCst) {
-                run_once(&cmd, &stop2, &child2, &events);
+                run_once(&cmd, &stop2, &child2, &stdin2, &events);
                 let deadline = Instant::now() + cmd.restart_delay;
                 while Instant::now() < deadline && !stop2.load(Ordering::SeqCst) {
                     thread::sleep(POLL);
                 }
             }
         });
-        Supervisor { stop, child, handle: Some(handle) }
+        Supervisor { stop, child, stdin, handle: Some(handle) }
+    }
+
+    /// Sends one control line to the running engine (for example `disconnect`).
+    pub fn send_line(&self, line: &str) -> std::io::Result<()> {
+        let mut stdin = self.stdin.lock().unwrap();
+        let pipe = stdin.as_mut().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotConnected, "the engine isn't running"))?;
+        pipe.write_all(format!("{line}
+").as_bytes())?;
+        pipe.flush()
     }
 
     /// Process id of the engine while it runs.
@@ -99,7 +111,7 @@ impl Drop for Supervisor {
 }
 
 /// One engine run: spawn, stream output, wait for exit (or kill it when stopping).
-fn run_once(cmd: &EngineCommand, stop: &AtomicBool, child: &Mutex<Option<Child>>, events: &Sender<SupervisorEvent>) {
+fn run_once(cmd: &EngineCommand, stop: &AtomicBool, child: &Mutex<Option<Child>>, stdin: &Mutex<Option<ChildStdin>>, events: &Sender<SupervisorEvent>) {
     let mut c = match spawn(cmd) {
         Ok(c) => c,
         Err(e) => {
@@ -108,6 +120,8 @@ fn run_once(cmd: &EngineCommand, stop: &AtomicBool, child: &Mutex<Option<Child>>
         }
     };
     crate::process_guard::tie_to_app(&c);
+    // The pipe is in place before anyone hears the engine started, so a control line can follow at once.
+    *stdin.lock().unwrap() = c.stdin.take();
     let _ = events.send(SupervisorEvent::Started { pid: c.id() });
     let reader = c.stdout.take().map(|out| spawn_reader(out, events.clone()));
     *child.lock().unwrap() = Some(c);
@@ -127,6 +141,7 @@ fn run_once(cmd: &EngineCommand, stop: &AtomicBool, child: &Mutex<Option<Child>>
         thread::sleep(POLL);
     };
     child.lock().unwrap().take();
+    stdin.lock().unwrap().take();
     if let Some(done) = reader {
         let _ = done.recv_timeout(DRAIN);
     }
@@ -162,7 +177,7 @@ fn spawn_reader(out: impl Read + Send + 'static, events: Sender<SupervisorEvent>
 
 fn spawn(cmd: &EngineCommand) -> std::io::Result<Child> {
     let mut c = Command::new(&cmd.program);
-    c.args(&cmd.args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    c.args(&cmd.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     c.envs(cmd.env.iter().map(|(k, v)| (k, v)));
     if !cmd.path_prepend.is_empty() {
         let mut paths = cmd.path_prepend.clone();
@@ -268,6 +283,39 @@ mod tests {
         seen_rx.recv_timeout(Duration::from_secs(10)).expect("started");
         stop_within(sup, Duration::from_secs(2));
         drop(release_tx);
+    }
+
+    #[test]
+    fn control_lines_reach_the_running_engine() {
+        let (tx, rx) = mpsc::channel();
+        let echo = "import sys
+for line in sys.stdin:
+    print('got ' + line.strip(), flush=True)";
+        let sup = Supervisor::start(python_engine(echo), move |e| {
+            let _ = tx.send(e);
+        });
+        assert!(matches!(collect(&rx, 1)[0], SupervisorEvent::Started { .. }));
+        sup.send_line("disconnect").unwrap();
+        assert_eq!(collect(&rx, 1)[0], SupervisorEvent::Log { line: "got disconnect".into() });
+        stop_within(sup, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_control_line_without_a_running_engine_is_an_error() {
+        let cmd = EngineCommand {
+            program: "definitely-not-a-real-engine.exe".into(),
+            args: vec![],
+            path_prepend: vec![],
+            env: vec![],
+            restart_delay: Duration::from_secs(60),
+        };
+        let (tx, rx) = mpsc::channel();
+        let sup = Supervisor::start(cmd, move |e| {
+            let _ = tx.send(e);
+        });
+        collect(&rx, 1);
+        assert!(sup.send_line("disconnect").is_err());
+        sup.stop();
     }
 
     #[test]

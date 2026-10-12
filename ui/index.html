@@ -34,13 +34,14 @@
     <header class="oai-popover-head" id="panel-head">
       <svg class="oai-app-icon"><use href="#i-app"/></svg>
       <div style="min-width:0"><div class="oai-t">AirPlay Receiver</div><div class="oai-s" id="pop-sub">Starting…</div></div>
-      <input type="checkbox" class="oai-switch" id="rx-switch" aria-label="Receiving">
+      <input type="checkbox" class="oai-switch" id="rx-switch" aria-label="Receiving" title="Turn on receiving">
     </header>
     <div class="oai-popover-body" id="pop-body">
       <div id="pop-content">
         <div class="region-error" id="r-switch-error" hidden></div>
 
         <div class="pop-page" id="page-home">
+          <div id="r-notice"></div>
           <div id="r-status"></div>
           <div id="r-findings"></div>
           <div class="oai-sep"></div>
@@ -52,9 +53,8 @@
           <form class="settings-form" autocomplete="off">
             <label class="oai-list-row"><span class="oai-grow"><span>Name</span><small class="oai-sub" style="display:block">Shown in Screen Mirroring</small></span><input class="oai-input" data-set="name" required maxlength="63"></label>
             <label class="oai-list-row"><span class="oai-grow"><span>Require a PIN</span><small class="oai-sub" style="display:block">Every new connection enters a code</small></span><input type="checkbox" class="oai-switch" data-set="pin_mode"></label>
-            <label class="oai-list-row"><span class="oai-grow"><span>Prefer H.265</span><small class="oai-sub" style="display:block">Try this if iOS 27 won't connect</small></span><input type="checkbox" class="oai-switch" data-set="h265"></label>
+            <label class="oai-list-row"><span class="oai-grow"><span>High-efficiency video</span><small class="oai-sub" style="display:block">Turn on if a newer iPhone can't connect</small></span><input type="checkbox" class="oai-switch" data-set="h265"></label>
             <label class="oai-list-row"><span class="oai-grow"><span>Start at login</span><small class="oai-sub" style="display:block">Open quietly in the tray when you sign in</small></span><input type="checkbox" class="oai-switch" data-pref="startAtLogin"></label>
-            <div class="oai-btn-row" style="justify-content:flex-end;padding:6px 10px 2px" id="r-apply"></div>
             <div class="status-line" id="r-settings-status"></div>
           </form>
         </div>

@@ -19,8 +19,13 @@ pub enum Phase {
     Connecting,
     Mirroring,
     Pin,
+    /// Coming back after a crash, a network change or waking from sleep (`restart_reason` says which).
+    Restarting,
     Error,
 }
+
+/// Restarts in a row that may fail (exit before announcing the receiver) before it needs attention.
+pub const MAX_FAILED_RESTARTS: u32 = 3;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ReceiverStatus {
@@ -40,15 +45,26 @@ pub struct ReceiverStatus {
     /// Unix time in ms when the current mirroring session's video started.
     pub mirroring_since_ms: Option<u64>,
     pub pin: Option<String>,
+    /// Why receiving stopped for good; a plain sentence (details go to engine.log).
     pub last_error: Option<String>,
+    /// Why the receiver is restarting, as a phrase: "the network changed".
+    pub restart_reason: Option<String>,
+    /// A dismissible note about something that ended on its own ("Lost the connection to …").
+    pub notice: Option<String>,
+    /// Saved settings wait for the live session to end before the receiver restarts with them.
+    pub settings_pending: bool,
+    /// Engine exits since the receiver last announced itself.
+    #[serde(skip)]
+    pub failed_starts: u32,
 }
 
 pub fn phase(s: &ReceiverStatus) -> Phase {
     if !s.running {
-        return match (s.wanted, s.last_error.is_some()) {
-            (false, _) => Phase::Stopped,
-            (true, true) => Phase::Error,
-            (true, false) => Phase::Starting,
+        return match (s.wanted, s.last_error.is_some(), s.restart_reason.is_some()) {
+            (false, _, _) => Phase::Stopped,
+            (true, true, _) => Phase::Error,
+            (true, false, true) => Phase::Restarting,
+            (true, false, false) => Phase::Starting,
         };
     }
     if s.pin.is_some() {
@@ -59,8 +75,32 @@ pub fn phase(s: &ReceiverStatus) -> Phase {
         Phase::Connecting
     } else if s.advertised {
         Phase::Ready
+    } else if s.restart_reason.is_some() {
+        Phase::Restarting
     } else {
         Phase::Starting
+    }
+}
+
+/// An incoming session is live: a phone is connecting, asking for the code, or mirroring.
+pub fn session_live(s: &ReceiverStatus) -> bool {
+    matches!(phase(s), Phase::Connecting | Phase::Mirroring | Phase::Pin)
+}
+
+/// The device name without its model: "Sam's iPhone (iPhone16,1)" -> "Sam's iPhone".
+fn device_name(s: &ReceiverStatus) -> Option<&str> {
+    let d = s.last_device.as_deref()?;
+    Some(d.rsplit_once(" (").map_or(d, |(name, _)| name))
+}
+
+/// The receiver stopped without being asked to: restart with a reason, or give up after too many.
+fn unexpected_stop(status: &mut ReceiverStatus, problem: &str) {
+    status.failed_starts += 1;
+    if status.failed_starts > MAX_FAILED_RESTARTS {
+        status.restart_reason = None;
+        status.last_error = Some(problem.into());
+    } else {
+        status.restart_reason.get_or_insert_with(|| "the receiver closed unexpectedly".into());
     }
 }
 
@@ -82,21 +122,30 @@ pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
             status.running = true;
             status.last_error = None;
         }
-        SupervisorEvent::Exited { code } => {
+        SupervisorEvent::Exited { .. } => {
             status.running = false;
             status.advertised = false;
             end_session(status);
             if status.wanted {
-                status.last_error = Some(format!("The receiver stopped unexpectedly (exit code {code:?}). Restarting…"));
+                unexpected_stop(status, "The receiver keeps closing unexpectedly.");
             }
         }
-        SupervisorEvent::SpawnFailed { message } => {
+        SupervisorEvent::SpawnFailed { .. } => {
             status.running = false;
-            status.last_error = Some(format!("Could not start the receiver: {message}"));
+            if status.wanted {
+                unexpected_stop(status, "The receiver couldn't start. Reinstalling open-airplay may help.");
+            }
         }
         SupervisorEvent::Engine { event } => match event {
-            EngineEvent::Advertised => status.advertised = true,
-            EngineEvent::ConnectionRequest { name, model, .. } => status.last_device = Some(format!("{name} ({model})")),
+            EngineEvent::Advertised => {
+                status.advertised = true;
+                status.restart_reason = None;
+                status.failed_starts = 0;
+            }
+            EngineEvent::ConnectionRequest { name, model, .. } => {
+                status.last_device = Some(format!("{name} ({model})"));
+                status.notice = None;
+            }
             EngineEvent::OpenConnections { count } => {
                 if *count == 0 {
                     end_session(status);
@@ -109,9 +158,20 @@ pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
                 status.pin = None;
                 status.mirroring_since_ms.get_or_insert_with(now_ms);
             }
+            EngineEvent::VideoStopped => {
+                status.video = None;
+                status.mirroring_since_ms = None;
+            }
+            EngineEvent::Disconnected => end_session(status),
             EngineEvent::Pin { code } => status.pin = Some(code.clone()),
-            EngineEvent::ClientLost => status.last_error = Some("Lost the connection to the sender.".into()),
-            EngineEvent::Error { message } => status.last_error = Some(message.clone()),
+            EngineEvent::ClientLost => {
+                let who = device_name(status).unwrap_or("the iPhone");
+                status.notice = Some(format!("Lost the connection to {who}."));
+            }
+            // The message is technical and already in engine.log; the panel says it plainly.
+            EngineEvent::Error { .. } => {
+                status.notice = Some("Something went wrong with the connection. If it keeps happening, turn receiving off and on.".into());
+            }
         },
         SupervisorEvent::Log { .. } => {}
     }
@@ -215,10 +275,10 @@ mod tests {
     }
 
     #[test]
-    fn an_unexpected_exit_is_an_error_but_a_requested_stop_is_not() {
+    fn an_unexpected_exit_restarts_but_a_requested_stop_does_not() {
         let mut s = running(true);
         apply_event(&mut s, &SupervisorEvent::Exited { code: Some(1) });
-        assert_eq!(s.phase, Phase::Error);
+        assert_eq!(s.phase, Phase::Restarting);
         let mut stopped = ReceiverStatus { wanted: false, running: true, ..Default::default() };
         apply_event(&mut stopped, &SupervisorEvent::Exited { code: Some(1) });
         assert_eq!(stopped.phase, Phase::Stopped);
@@ -261,5 +321,112 @@ mod tests {
         assert_eq!(hub.snapshot(), second);
         let third = hub.update(|s| apply_event(s, &engine(EngineEvent::Pin { code: "1234".into() }))).unwrap();
         assert_eq!(third.seq, 3);
+    }
+
+    #[test]
+    fn a_crash_restarts_with_a_reason_and_no_exit_code() {
+        let mut s = running(true);
+        apply_event(&mut s, &SupervisorEvent::Exited { code: Some(1) });
+        assert_eq!(s.phase, Phase::Restarting);
+        assert_eq!(s.restart_reason.as_deref(), Some("the receiver closed unexpectedly"));
+        assert_eq!(s.last_error, None);
+        apply_event(&mut s, &SupervisorEvent::Started { pid: 7 });
+        assert_eq!(s.phase, Phase::Restarting);
+        apply_event(&mut s, &engine(EngineEvent::Advertised));
+        assert_eq!((s.phase, s.restart_reason.clone()), (Phase::Ready, None));
+    }
+
+    #[test]
+    fn three_failed_restarts_in_a_row_need_attention() {
+        let mut s = running(true);
+        for _ in 0..=MAX_FAILED_RESTARTS {
+            assert_ne!(s.phase, Phase::Error);
+            apply_event(&mut s, &SupervisorEvent::Exited { code: Some(1) });
+            if s.phase != Phase::Error {
+                apply_event(&mut s, &SupervisorEvent::Started { pid: 7 });
+            }
+        }
+        assert_eq!(s.phase, Phase::Error);
+        let message = s.last_error.clone().unwrap();
+        assert!(!message.contains("exit code") && !message.contains("Some("), "{message}");
+    }
+
+    #[test]
+    fn an_advertisement_resets_the_failure_count() {
+        let mut s = running(true);
+        for _ in 0..10 {
+            apply_event(&mut s, &SupervisorEvent::Exited { code: Some(1) });
+            apply_event(&mut s, &SupervisorEvent::Started { pid: 7 });
+            apply_event(&mut s, &engine(EngineEvent::Advertised));
+        }
+        assert_eq!(s.phase, Phase::Ready);
+    }
+
+    #[test]
+    fn a_restart_for_a_network_change_says_so_until_ready() {
+        let mut s = ReceiverStatus { wanted: true, restart_reason: Some("the network changed".into()), ..Default::default() };
+        assert_eq!(phase(&s), Phase::Restarting);
+        apply_event(&mut s, &SupervisorEvent::Started { pid: 7 });
+        assert_eq!(s.phase, Phase::Restarting);
+        apply_event(&mut s, &engine(EngineEvent::Advertised));
+        assert_eq!(s.phase, Phase::Ready);
+    }
+
+    fn mirroring() -> ReceiverStatus {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &engine(EngineEvent::ConnectionRequest { name: "Sam's iPhone".into(), model: "iPhone16,1".into(), device_id: "x".into() }));
+        apply_event(&mut s, &engine(EngineEvent::Video { width: 886, height: 1920 }));
+        assert_eq!(s.phase, Phase::Mirroring);
+        s
+    }
+
+    #[test]
+    fn a_dropped_phone_leaves_a_note_naming_it() {
+        let mut s = mirroring();
+        apply_event(&mut s, &engine(EngineEvent::ClientLost));
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 0 }));
+        assert_eq!(s.phase, Phase::Ready);
+        assert_eq!(s.notice.as_deref(), Some("Lost the connection to Sam's iPhone."));
+        // The next connection clears it.
+        apply_event(&mut s, &engine(EngineEvent::ConnectionRequest { name: "Sam's iPhone".into(), model: "iPhone16,1".into(), device_id: "x".into() }));
+        assert_eq!(s.notice, None);
+    }
+
+    #[test]
+    fn an_error_while_running_is_a_note_not_a_stopped_receiver() {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::Error { message: "failed to open DACP export file".into() }));
+        assert_eq!(s.phase, Phase::Ready);
+        let note = s.notice.clone().unwrap();
+        assert!(!note.contains("DACP"), "technical detail stays in the log: {note}");
+    }
+
+    #[test]
+    fn video_stopping_leaves_mirroring_while_the_connection_stays() {
+        let mut s = mirroring();
+        apply_event(&mut s, &engine(EngineEvent::VideoStopped));
+        assert_eq!(s.phase, Phase::Connecting);
+        assert_eq!(s.mirroring_since_ms, None);
+    }
+
+    #[test]
+    fn a_disconnect_ends_the_session_and_keeps_receiving() {
+        let mut s = mirroring();
+        apply_event(&mut s, &engine(EngineEvent::Disconnected));
+        assert_eq!((s.phase, s.wanted, s.running), (Phase::Ready, true, true));
+        assert_eq!((s.last_device.clone(), s.notice.clone()), (None, None));
+    }
+
+    #[test]
+    fn only_connecting_mirroring_and_pin_are_sessions() {
+        assert!(session_live(&mirroring()));
+        let mut pin = running(true);
+        apply_event(&mut pin, &engine(EngineEvent::Pin { code: "1234".into() }));
+        assert!(session_live(&pin));
+        let mut probe = running(true);
+        apply_event(&mut probe, &engine(EngineEvent::OpenConnections { count: 1 }));
+        assert!(!session_live(&probe));
+        assert!(!session_live(&ReceiverStatus::default()));
     }
 }

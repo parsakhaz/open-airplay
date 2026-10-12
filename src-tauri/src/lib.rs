@@ -22,7 +22,7 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, RunEven
 use engine::{EngineEvent, ReceiverSettings};
 use prefs::AppPrefs;
 use sender::SenderSidecar;
-use status::{apply_event, end_session, Phase, ReceiverStatus, StatusHub};
+use status::{apply_event, end_session, session_live, Phase, ReceiverStatus, StatusHub};
 use supervisor::{EngineCommand, Supervisor, SupervisorEvent};
 
 /// The processes the app owns. `shutdown` stops and reaps all of them; it runs on every exit path.
@@ -125,14 +125,15 @@ enum EngineSource {
     Bundled,
 }
 
-/// The installed engine wins, then OAP_ENGINE, then the dev build (engine/dist).
+/// OAP_ENGINE wins (an explicit override, e.g. the test fake engine), then the installed engine,
+/// then the dev build (engine/dist).
 fn find_engine(app: &AppHandle) -> Option<(PathBuf, EngineSource)> {
     let mut candidates: Vec<(PathBuf, EngineSource)> = Vec::new();
-    if let Ok(res) = app.path().resource_dir() {
-        candidates.push((res.join("engine").join("bin").join(exe_name("uxplay")), EngineSource::Bundled));
-    }
     if let Some(p) = std::env::var_os("OAP_ENGINE") {
         candidates.push((PathBuf::from(p), EngineSource::Dev));
+    }
+    if let Ok(res) = app.path().resource_dir() {
+        candidates.push((res.join("engine").join("bin").join(exe_name("uxplay")), EngineSource::Bundled));
     }
     candidates.push((repo_root().join("engine").join("dist").join(exe_name("uxplay")), EngineSource::Dev));
     candidates.into_iter().find(|(p, _)| p.is_file())
@@ -169,6 +170,7 @@ fn tray_text(status: &ReceiverStatus) -> String {
         Phase::Pin => "open-airplay: enter the code on your device".into(),
         Phase::Ready => format!("open-airplay: ready to receive as '{name}'"),
         Phase::Starting => "open-airplay: starting…".into(),
+        Phase::Restarting => "open-airplay: restarting…".into(),
         Phase::Error => "open-airplay: needs attention".into(),
         Phase::Stopped => "open-airplay: receiving is off".into(),
     }
@@ -186,7 +188,7 @@ fn tray_look(phase: Phase) -> TrayLook {
     match phase {
         Phase::Connecting | Phase::Mirroring | Phase::Pin => TrayLook::Receiving,
         Phase::Error => TrayLook::Problem,
-        Phase::Stopped | Phase::Starting | Phase::Ready => TrayLook::Normal,
+        Phase::Stopped | Phase::Starting | Phase::Restarting | Phase::Ready => TrayLook::Normal,
     }
 }
 
@@ -205,10 +207,32 @@ fn set_tray_look(app: &AppHandle, tray: &tauri::tray::TrayIcon, look: TrayLook) 
     }
 }
 
+/// The tray menu: Disconnect while a phone is connected to this PC, and Quit.
+fn tray_menu(app: &AppHandle, session: bool) -> tauri::Result<Menu<tauri::Wry>> {
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    if session {
+        let disconnect = MenuItem::with_id(app, "disconnect", "Disconnect", true, None::<&str>)?;
+        Menu::with_items(app, &[&disconnect, &quit])
+    } else {
+        Menu::with_items(app, &[&quit])
+    }
+}
+
+fn set_tray_menu(app: &AppHandle, tray: &tauri::tray::TrayIcon, session: bool) {
+    static CURRENT: AtomicBool = AtomicBool::new(false);
+    if CURRENT.swap(session, Ordering::SeqCst) == session {
+        return;
+    }
+    if let Ok(menu) = tray_menu(app, session) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
 fn publish(app: &AppHandle, snapshot: &ReceiverStatus) {
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(tray_text(snapshot)));
         set_tray_look(app, &tray, tray_look(snapshot.phase));
+        set_tray_menu(app, &tray, session_live(snapshot));
     }
     let _ = app.emit("receiver-status", snapshot);
 }
@@ -227,10 +251,12 @@ fn update_status(app: &AppHandle, change: impl FnOnce(&mut ReceiverStatus)) -> R
     }
 }
 
-fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
+/// Starts (or restarts) receiving with `settings`. `reason` says why it restarts on its own
+/// ("the network changed"); None when the user turned it on.
+fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings, reason: Option<&str>) -> Result<ReceiverStatus, String> {
     let state = app.state::<AppState>();
     state.update_prefs(|p| p.receiver = settings.clone());
-    let (engine, source) = find_engine(app).ok_or("The receiver engine isn't installed. Reinstall open-airplay (or, in development, run engine/build-engine.sh).")?;
+    let (engine, source) = find_engine(app).ok_or("Part of open-airplay is missing, so it can't receive. Reinstall open-airplay.")?;
     state.sidecars.replace_supervisor(None);
     let (path_prepend, mut env) = match source {
         EngineSource::Dev => engine_runtime(),
@@ -242,6 +268,7 @@ fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings) -> Result<R
             wanted: true,
             engine_path: Some(engine.display().to_string()),
             settings: Some(settings.clone()),
+            restart_reason: reason.map(str::to_string),
             ..Default::default()
         }
     });
@@ -266,7 +293,8 @@ fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings) -> Result<R
         if matches!(event, SupervisorEvent::Log { .. }) {
             return;
         }
-        update_status(&handle, |st| apply_event(st, &event));
+        let snapshot = update_status(&handle, |st| apply_event(st, &event));
+        after_event(&handle, &snapshot);
         if matches!(event, SupervisorEvent::Engine { event: EngineEvent::Advertised }) {
             run_doctor(&handle);
         }
@@ -285,6 +313,90 @@ fn stop_receiver_inner(app: &AppHandle) -> ReceiverStatus {
         st.last_error = None;
         end_session(st);
     })
+}
+
+/// Follow-ups to a status change that need the receiver restarted or stopped (off this thread:
+/// replacing the supervisor joins its worker).
+fn after_event(app: &AppHandle, snapshot: &ReceiverStatus) {
+    let app = app.clone();
+    if snapshot.phase == Phase::Error && app.state::<AppState>().sidecars.engine_pid().is_none() {
+        // Too many failed restarts: stop trying until the user turns receiving back on.
+        std::thread::spawn(move || {
+            let state = app.state::<AppState>();
+            if state.status.snapshot().phase == Phase::Error {
+                state.sidecars.replace_supervisor(None);
+            }
+        });
+    } else if snapshot.settings_pending && snapshot.wanted && !session_live(snapshot) {
+        // The session ended: apply the settings saved during it. Taking the flag here schedules one restart.
+        update_status(&app, |st| st.settings_pending = false);
+        std::thread::spawn(move || {
+            let settings = app.state::<AppState>().prefs.lock().unwrap().receiver.clone();
+            if let Err(e) = start_receiver_inner(&app, settings, None) {
+                update_status(&app, |st| st.last_error = Some(e));
+            }
+        });
+    }
+}
+
+/// Ends only the current incoming session: the engine drops the phone and keeps advertising,
+/// so the PC stays in the phone's Screen Mirroring list (engine patch 0003).
+fn disconnect_inner(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let sup = state.sidecars.supervisor.lock().unwrap();
+    let sup = sup.as_ref().ok_or("Receiving is off.")?;
+    sup.send_line("disconnect").map_err(|_| "Couldn't disconnect. Try turning receiving off and on.".to_string())
+}
+
+#[tauri::command]
+async fn receiver_disconnect(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || disconnect_inner(&app)).await.map_err(|e| e.to_string())?
+}
+
+/// What saving receiver settings should do to a receiver in this state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsChange {
+    /// Receiving is off (or needs attention): just save; the switch uses them next time.
+    SaveOnly,
+    /// Receiving and idle: restart now so phones see the change.
+    RestartNow,
+    /// A phone is connected: restart when the session ends.
+    AfterSession,
+}
+
+fn settings_change(status: &ReceiverStatus) -> SettingsChange {
+    if !status.wanted || status.last_error.is_some() {
+        SettingsChange::SaveOnly
+    } else if session_live(status) {
+        SettingsChange::AfterSession
+    } else {
+        SettingsChange::RestartNow
+    }
+}
+
+/// Saves receiver settings as the user changes them. Never turns receiving on.
+fn save_settings_inner(app: &AppHandle, mut settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
+    settings.name = settings.name.trim().to_string();
+    if settings.name.is_empty() {
+        return Err("Enter a name. iPhones show it in Screen Mirroring.".into());
+    }
+    let state = app.state::<AppState>();
+    state.update_prefs(|p| p.receiver = settings.clone());
+    match settings_change(&state.status.snapshot()) {
+        SettingsChange::RestartNow => start_receiver_inner(app, settings, None),
+        SettingsChange::AfterSession => Ok(update_status(app, |st| st.settings_pending = true)),
+        SettingsChange::SaveOnly => Ok(update_status(app, |st| st.settings = Some(settings))),
+    }
+}
+
+#[tauri::command]
+async fn receiver_save_settings(app: AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || save_settings_inner(&app, settings)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn receiver_dismiss_notice(app: AppHandle) -> Result<ReceiverStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || update_status(&app, |st| st.notice = None)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -389,7 +501,7 @@ fn run_value_exists(_name: &str) -> bool {
 #[tauri::command]
 async fn receiver_start(app: AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
     app.state::<AppState>().update_prefs(|p| p.receiving = Some(true));
-    tauri::async_runtime::spawn_blocking(move || start_receiver_inner(&app, settings)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || start_receiver_inner(&app, settings, None)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -437,8 +549,8 @@ async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
                         *current = None;
                     }
                     drop(current);
-                    let code = exit.code.map(|c| format!(" (exit code {c})")).unwrap_or_default();
-                    let _ = exits.emit("sender-exit", json!({ "message": format!("The sender stopped unexpectedly{code}. Try again.") }));
+                    eprintln!("open-airplay: the cast helper exited ({:?})", exit.code);
+                    let _ = exits.emit("sender-exit", json!({ "message": "Sending stopped unexpectedly. Try again." }));
                 },
             )
             .map_err(|e| format!("Could not start the sender: {e}"))?;
@@ -550,7 +662,13 @@ fn spawn_network_watcher(app: AppHandle) {
             let settings = settings_to_restart(&app.state::<AppState>().status.snapshot());
             if let Some(settings) = settings {
                 eprintln!("open-airplay: restarting the receiver ({reason:?})");
-                let _ = start_receiver_inner(&app, settings);
+                let why = match reason {
+                    netwatch::Restart::Resumed => "the PC woke up",
+                    netwatch::Restart::NetworkChanged { .. } => "the network changed",
+                };
+                if let Err(e) = start_receiver_inner(&app, settings, Some(why)) {
+                    update_status(&app, |st| st.last_error = Some(e));
+                }
             }
         }
     });
@@ -576,8 +694,10 @@ fn place_panel(app: &AppHandle) {
     let width = (panel::WIDTH * scale).round();
     let content = state.panel.content_height.lock().unwrap().map(|h| h * scale);
     let height = content.or_else(|| window.inner_size().ok().map(|s| s.height as f64)).unwrap_or(400.0 * scale);
-    let height = height.min(panel::max_height(work, gap)).round();
+    // Round up: a pixel short and the content scrolls.
+    let height = height.ceil().min(panel::max_height(work, gap).floor());
     let (x, y) = panel::position(icon, width, height, work, gap);
+    eprintln!("open-airplay: panel at {x:.0},{y:.0} size {width}x{height} (tray icon {icon:?}, work area {work:?})");
     let _ = window.set_size(PhysicalSize::new(width, height));
     let _ = window.set_position(PhysicalPosition::new(x.round(), y.round()));
 }
@@ -721,9 +841,7 @@ pub fn run() {
                 }
             }
             let launch = launch::plan(&std::env::args().collect::<Vec<_>>(), &app.state::<AppState>().prefs.lock().unwrap());
-            let show = MenuItem::with_id(app, "show", "Open open-airplay", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = tray_menu(app.handle(), false)?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().expect("bundle icon"))
                 .tooltip("open-airplay")
@@ -744,7 +862,14 @@ pub fn run() {
                     }
                 })
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => show_panel(app),
+                    "disconnect" => {
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            if let Err(e) = disconnect_inner(&app) {
+                                eprintln!("open-airplay: {e}");
+                            }
+                        });
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -766,7 +891,7 @@ pub fn run() {
                     return;
                 }
                 let saved = handle.state::<AppState>().prefs.lock().unwrap().receiver.clone();
-                if let Err(e) = start_receiver_inner(&handle, saved) {
+                if let Err(e) = start_receiver_inner(&handle, saved, None) {
                     update_status(&handle, |st| {
                         st.wanted = true;
                         st.last_error = Some(e);
@@ -775,7 +900,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, panel_fit, panel_hide])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
@@ -816,9 +941,24 @@ mod tests {
     }
 
     #[test]
+    fn saving_settings_never_turns_receiving_on_and_waits_for_a_live_session() {
+        let off = ReceiverStatus::default();
+        assert_eq!(settings_change(&off), SettingsChange::SaveOnly);
+        let problem = ReceiverStatus { wanted: true, last_error: Some("x".into()), ..Default::default() };
+        assert_eq!(settings_change(&problem), SettingsChange::SaveOnly);
+        let ready = ReceiverStatus { wanted: true, running: true, advertised: true, ..Default::default() };
+        assert_eq!(settings_change(&ready), SettingsChange::RestartNow);
+        let mirroring = ReceiverStatus { video: Some((886, 1920)), ..ready.clone() };
+        assert_eq!(settings_change(&mirroring), SettingsChange::AfterSession);
+        let pin = ReceiverStatus { pin: Some("1234".into()), ..ready };
+        assert_eq!(settings_change(&pin), SettingsChange::AfterSession);
+    }
+
+    #[test]
     fn tray_shows_receiving_during_a_session_and_problem_on_error() {
         assert_eq!(tray_look(Phase::Ready), TrayLook::Normal);
         assert_eq!(tray_look(Phase::Stopped), TrayLook::Normal);
+        assert_eq!(tray_look(Phase::Restarting), TrayLook::Normal);
         assert_eq!(tray_look(Phase::Connecting), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Mirroring), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Pin), TrayLook::Receiving);

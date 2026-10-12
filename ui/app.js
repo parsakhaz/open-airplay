@@ -42,6 +42,9 @@ const ui = {
   settingsNote: null,       // { ok, text } under the settings form
 };
 
+// The header says the status once; the body never repeats it.
+const HEADER = { stopped: "Off", starting: "Starting…", ready: "Ready", connecting: "Connecting…", pin: "Enter the code", restarting: "Restarting…", error: "Needs attention" };
+
 // ---------- receiver phase ----------
 // The shell sends `phase`; otherwise derive it the same way from the raw fields.
 function phaseOf(s) {
@@ -56,6 +59,8 @@ function phaseOf(s) {
 const nameOf = (s) => (s.settings && s.settings.name) || "this PC";
 const deviceOf = (s) => (s.last_device ? s.last_device.replace(/ \(.*\)$/, "") : null);
 const isOn = (phase) => phase !== "stopped" && phase !== "error";
+const inSession = (phase) => phase === "connecting" || phase === "mirroring" || phase === "pin";
+const capitalise = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** Takes a status snapshot unless it's older than the one shown (pushes and replies can cross). */
 function acceptStatus(s) {
@@ -97,27 +102,37 @@ function patch(id, html) {
   return true;
 }
 
+function noticeHtml() {
+  const n = ui.status.notice;
+  if (!n) return "";
+  return `<div class="oai-banner notice"><p class="oai-grow" style="margin:0">${esc(n)}</p><button class="oai-ghost" data-action="dismiss-notice" aria-label="Dismiss">✕</button></div>${errorLine("dismiss-notice")}`;
+}
+
 function statusHtml() {
   const s = ui.status, phase = phaseOf(s), name = nameOf(s), device = deviceOf(s) || "An iPhone";
+  const disconnect = btn("disconnect", "Disconnect", "is-small");
   switch (phase) {
     case "starting":
-      return `<div class="pop-hero"><div class="oai-spinner"></div><h3>Starting…</h3><p>Getting ${esc(name)} ready</p></div>`;
+      return `<div class="pop-hero"><div class="oai-spinner"></div><p>Getting ${esc(name)} ready for iPhones.</p></div>`;
     case "ready":
-      return `<div class="pop-status"><div class="line"><span class="oai-dot is-live"></span><div>Ready to receive, <b>${esc(name)}</b></div></div>
-        <div class="hint">On your iPhone, open Control Center → Screen Mirroring.</div></div>`;
+      return `<div class="pop-status"><div class="line"><span class="oai-dot is-live"></span><div>On your iPhone, open Control Center → Screen Mirroring → <b>${esc(name)}</b>.</div></div></div>`;
     case "connecting":
-      return `<div class="pop-hero"><div class="dots" style="justify-content:center;margin:6px 0 10px"><i></i><i></i><i></i></div><h3>${esc(device)} is connecting</h3><p>The video window opens in a moment.</p></div>`;
+      return `<div class="pop-hero"><div class="dots" style="justify-content:center;margin:6px 0 10px"><i></i><i></i><i></i></div><p>${esc(device)} is connecting. The video window opens in a moment.</p><div class="oai-btn-row">${disconnect}</div>${errorLine("disconnect")}</div>`;
     case "mirroring":
       // The clock's text is filled in by tick(), outside the compared markup.
-      return `<div class="pop-hero is-live"><div class="who"><div class="badge"><i></i>MIRRORING</div><h3>${esc(device)}</h3><p data-elapsed></p></div><div class="acts">${btn("show-video", "Show", "is-small")}${btn("stop", "Stop", "is-danger is-small")}</div></div>${errorLine("show-video")}`;
+      return `<div class="pop-hero is-live"><div class="who"><h3>${esc(device)}</h3><p data-elapsed></p></div><div class="acts">${btn("show-video", "Show video", "is-small")}${btn("disconnect", "Disconnect", "is-danger is-small")}</div></div>${errorLine("show-video")}${errorLine("disconnect")}`;
     case "pin": {
       const digits = String(s.pin).split("").map((d) => `<span>${esc(d)}</span>`).join("");
-      return `<div class="pop-hero"><h3>Enter this code on ${esc(deviceOf(s) || "your iPhone")}</h3><div class="pop-pin">${digits}</div><p>PIN mode is on</p></div>`;
+      return `<div class="pop-hero"><p>${esc(device)} is asking for this code.</p><div class="pop-pin">${digits}</div><div class="oai-btn-row">${disconnect}</div>${errorLine("disconnect")}</div>`;
+    }
+    case "restarting": {
+      const why = s.restart_reason ? `${capitalise(s.restart_reason)}, so receiving is restarting. ` : "";
+      return `<div class="pop-hero"><div class="oai-spinner"></div><p>${esc(why)}${esc(name)} will be back in a moment.</p></div>`;
     }
     case "error":
-      return `<div class="pop-hero is-bad"><h3>Receiver stopped</h3><p>iPhones can't see ${esc(name)} right now.</p><div class="detail">${esc(s.last_error)}</div><div class="oai-btn-row" style="justify-content:flex-start">${btn("start", "Try again", "is-primary is-small")}</div></div>`;
+      return `<div class="pop-hero is-bad"><p>${esc(s.last_error || `iPhones can't see ${name} right now.`)}</p><p>Turn receiving back on to retry.</p></div>`;
     default:
-      return `<div class="pop-hero"><h3>Receiving is off</h3><p>Turn it on so iPhones can mirror here.</p><div class="oai-btn-row">${btn("start", "Start receiving", "is-primary is-small")}</div></div>`;
+      return `<div class="pop-hero"><p>Turn on receiving to let iPhones mirror to <b>${esc(name)}</b>.</p></div>`;
   }
 }
 
@@ -127,7 +142,7 @@ function findingsHtml() {
       case "public_network":
         return [`Windows treats “${esc(f.network)}” as a public network, so iPhones may not find this PC.`, "fix:public_network", btn("fix:public_network", "Open network settings", "is-small")];
       case "firewall_blocks":
-        return ["Windows Firewall is blocking the receiver, so iPhones can't connect.", "fix:firewall_blocks", btn("fix:firewall_blocks", "Allow (needs admin)", "is-small is-primary")];
+        return ["Windows Firewall is blocking open-airplay, so iPhones can't connect. Windows will ask for permission.", "fix:firewall_blocks", btn("fix:firewall_blocks", "Allow in Windows Firewall", "is-small is-primary")];
       case "guest_network":
         return [`“${esc(f.network)}” looks like a guest Wi-Fi. Guest networks often stop devices from seeing each other; if your iPhone can't find this PC, put both on your main Wi-Fi.`, null, ""];
       case "other_receiver":
@@ -167,11 +182,6 @@ function castMsgHtml() {
   return esc(c.message);
 }
 
-function settingsApplyHtml() {
-  const on = isOn(phaseOf(ui.status));
-  return `<button type="submit" class="oai-btn is-primary is-small" data-action="apply">${on ? "Apply and restart" : "Apply and start"}</button>`;
-}
-
 /** Copies saved values into the static settings inputs, except the one being edited. */
 function syncSettingsInputs() {
   const s = currentSettings();
@@ -179,9 +189,9 @@ function syncSettingsInputs() {
     const el = document.querySelector(sel);
     if (el && el !== document.activeElement) apply(el);
   };
-  set('[data-set="name"]', (el) => { if (!el.dataset.dirty) el.value = s.name; });
-  set('[data-set="pin_mode"]', (el) => { if (!el.dataset.dirty) el.checked = s.pin_mode; });
-  set('[data-set="h265"]', (el) => { if (!el.dataset.dirty) el.checked = s.h265; });
+  set('[data-set="name"]', (el) => { el.value = s.name; });
+  set('[data-set="pin_mode"]', (el) => { el.checked = s.pin_mode; });
+  set('[data-set="h265"]', (el) => { el.checked = s.h265; });
   set('[data-pref="startAtLogin"]', (el) => { el.checked = prefs.startAtLogin; });
 }
 
@@ -191,8 +201,9 @@ function syncBusy() {
     el.classList.toggle("is-busy", busy && el.classList.contains("oai-btn"));
     el.disabled = busy;
   });
-  // The switch is only busy while the switch itself (or a start/stop) is in flight.
+  // The switch is only busy while turning receiving on or off.
   $("rx-switch").disabled = ui.busy.has("start") || ui.busy.has("stop");
+  document.querySelectorAll("[data-set]").forEach((el) => { el.disabled = ui.busy.has("save-settings"); });
 }
 
 function tick() {
@@ -208,10 +219,12 @@ function render() {
   if (phase === "mirroring") ui.mirrorSince = s.mirroring_since_ms || ui.mirrorSince || Date.now();
   else ui.mirrorSince = null;
 
-  const sub = ({ starting: "Starting…", ready: "Ready to receive", connecting: "Connecting…", mirroring: "Mirroring", pin: "Waiting for PIN", error: "Problem", stopped: "Off" })[phase];
+  const sub = phase === "mirroring" ? `Mirroring from ${deviceOf(s) || "an iPhone"}` : HEADER[phase];
   if ($("pop-sub").textContent !== sub) $("pop-sub").textContent = sub;
   const sw = $("rx-switch");
   if (sw.checked !== isOn(phase)) sw.checked = isOn(phase);
+  const tip = isOn(phase) ? "Turn off receiving" : "Turn on receiving";
+  if (sw.title !== tip) sw.title = tip;
   const switchError = ui.errors.start || ui.errors.stop || "";
   const swErr = $("r-switch-error");
   swErr.hidden = !switchError;
@@ -221,13 +234,13 @@ function render() {
   for (const page of ["home", "settings", "cast"]) $("page-" + page).hidden = ui.page !== page;
 
   if (ui.page === "home") {
+    patch("r-notice", noticeHtml());
     patch("r-status", statusHtml());
     patch("r-findings", findingsHtml());
     patch("r-devices", devicesHtml());
   } else if (ui.page === "settings") {
-    patch("r-apply", settingsApplyHtml());
-    const note = ui.settingsNote;
-    patch("r-settings-status", note ? `<span class="${note.ok ? "is-ok" : "is-bad"}">${esc(note.text)}</span>` : "");
+    const note = ui.settingsNote || (s.settings_pending && inSession(phase) ? { ok: true, text: "Applies when this session ends." } : null);
+    patch("r-settings-status", note ? `<span class="${note.ok ? "" : "is-bad"}">${esc(note.text)}</span>` : "");
     syncSettingsInputs();
   } else if (ui.page === "cast") {
     patch("r-cast-head", castHeadHtml());
@@ -249,7 +262,8 @@ let reportedHeight = 0;
 function reportHeight() {
   const body = $("pop-body"), cs = getComputedStyle(body);
   const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-  const h = Math.ceil($("panel-head").offsetHeight + $("pop-content").offsetHeight + pad + $("panel-foot").offsetHeight);
+  const height = (id) => $(id).getBoundingClientRect().height;   // fractional: the footer has a half-pixel border
+  const h = Math.ceil(height("panel-head") + height("pop-content") + pad + height("panel-foot"));
   if (Math.abs(h - reportedHeight) < 1) return;
   reportedHeight = h;
   invoke("panel_fit", { height: h }).catch(() => {});
@@ -351,8 +365,8 @@ document.addEventListener("click", (e) => {
   const name = action.dataset.action;
   if (name.startsWith("fix:")) return run(name, () => invoke("doctor_fix", { kind: name.slice(4) }));
   switch (name) {
-    case "start": return startReceiver(currentSettings());
-    case "stop": return stopReceiver();
+    case "disconnect": return run("disconnect", () => invoke("receiver_disconnect"));
+    case "dismiss-notice": return run("dismiss-notice", async () => { acceptStatus(await invoke("receiver_dismiss_notice")); });
     case "show-video": return run("show-video", () => invoke("show_video_window"));
     case "scan": return scan();
     case "home": return goTo("home");
@@ -374,12 +388,8 @@ document.addEventListener("keydown", (e) => {
   else invoke("panel_hide").catch(() => {});
 });
 
-// Edited settings fields keep their value until applied, even when a status update arrives.
-document.addEventListener("input", (e) => {
-  if (e.target.dataset.set) e.target.dataset.dirty = "1";
-});
-
 document.addEventListener("change", async (e) => {
+  if (e.target.dataset.set) return saveSettings(e.target);
   const key = e.target.dataset.pref;
   if (!key) return;
   const before = prefs[key];
@@ -395,19 +405,33 @@ document.addEventListener("change", async (e) => {
   render();
 });
 
-document.addEventListener("submit", async (e) => {
-  const form = e.target.closest(".settings-form");
-  if (!form) return;
-  e.preventDefault();
+/** Settings save as you go: the name when you press Enter or leave the field, switches at once. */
+async function saveSettings(field) {
+  const form = field.closest(".settings-form");
   const val = (k) => form.querySelector(`[data-set="${k}"]`);
   const settings = { name: val("name").value.trim(), pin_mode: val("pin_mode").checked, h265: val("h265").checked };
-  if (!settings.name) return;
-  await run("apply", async () => { acceptStatus(await invoke("receiver_start", { settings })); });
-  const failed = ui.errors.apply;
-  delete ui.errors.apply;
-  if (!failed) form.querySelectorAll("[data-set]").forEach((el) => delete el.dataset.dirty);
-  ui.settingsNote = failed ? { ok: false, text: `Couldn't restart: ${failed}` } : { ok: true, text: "Saved. The receiver restarted." };
+  const saved = currentSettings();
+  if (settings.name === saved.name && settings.pin_mode === saved.pin_mode && settings.h265 === saved.h265) return;
+  if (!settings.name) {
+    val("name").value = saved.name;
+    ui.settingsNote = { ok: false, text: "Enter a name. iPhones show it in Screen Mirroring." };
+    return render();
+  }
+  ui.settingsNote = null;
+  await run("save-settings", async () => { acceptStatus(await invoke("receiver_save_settings", { settings })); });
+  if (ui.errors["save-settings"]) {
+    ui.settingsNote = { ok: false, text: ui.errors["save-settings"] };
+    delete ui.errors["save-settings"];
+  }
   render();
+}
+
+// Enter in the name field saves it (there is no Apply button).
+document.addEventListener("submit", (e) => {
+  if (!e.target.closest(".settings-form")) return;
+  e.preventDefault();
+  const name = e.target.querySelector('[data-set="name"]');
+  if (document.activeElement === name) name.blur(); else saveSettings(name);
 });
 
 listen("receiver-status", (e) => {
