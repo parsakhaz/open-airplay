@@ -48,10 +48,12 @@ const ui = {
   mirrorSince: null,
   settingsNote: null,       // { ok, text } under the settings form
   art: { id: null, url: null }, // the cover art shown, by the status's art number
+  speakers: [],             // the PC's sound outputs: [{ id, name }]
 };
 
 // The header says the status once; the body never repeats it.
 const HEADER = { stopped: "Off", starting: "Starting…", ready: "Ready", connecting: "Connecting…", audio: "Playing audio", pin: "Enter the code", restarting: "Restarting…", error: "Needs attention" };
+const LIVE_HEADER = { mirroring: "Mirroring from", audio: "Playing audio from", video: "Playing video from" };
 
 // ---------- receiver phase ----------
 // The shell sends `phase`; otherwise derive it the same way from the raw fields.
@@ -67,7 +69,7 @@ function phaseOf(s) {
 const nameOf = (s) => (s.settings && s.settings.name) || "this PC";
 const deviceOf = (s) => (s.last_device ? s.last_device.replace(/ \(.*\)$/, "") : null);
 const isOn = (phase) => phase !== "stopped" && phase !== "error";
-const inSession = (phase) => phase === "connecting" || phase === "mirroring" || phase === "audio" || phase === "pin";
+const inSession = (phase) => phase === "connecting" || phase === "mirroring" || phase === "audio" || phase === "video" || phase === "pin";
 const capitalise = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** Takes a status snapshot unless it's older than the one shown (pushes and replies can cross). */
@@ -77,9 +79,19 @@ function acceptStatus(s) {
   return true;
 }
 
+/** The saved receiver settings, every field filled in. */
 function currentSettings() {
   const s = ui.status.settings || {};
-  return { name: s.name || "", pin_mode: !!s.pin_mode, h265: !!s.h265 };
+  return {
+    name: s.name || "",
+    pin_mode: !!s.pin_mode,
+    h265: !!s.h265,
+    remember_pin: !!s.remember_pin,
+    video_links: !!s.video_links,
+    switch_to_new: !!s.switch_to_new,
+    blocked: s.blocked || [],
+    speaker: s.speaker || null,
+  };
 }
 
 function elapsed(since) {
@@ -146,21 +158,30 @@ function audioHtml(s) {
 function statusHtml() {
   const s = ui.status, phase = phaseOf(s), name = nameOf(s), device = deviceOf(s) || "An iPhone";
   const disconnect = btn("disconnect", "Disconnect", "is-small");
+  // Only a device that said who it is can be blocked.
+  const block = s.device_id ? `<button class="oai-ghost block-link" data-action="block">Block this device</button>${errorLine("block")}` : "";
   switch (phase) {
     case "starting":
       return `<div class="pop-hero"><div class="oai-spinner"></div><p>Getting ${esc(name)} ready for iPhones.</p></div>`;
     case "ready":
       return `<div class="pop-status"><div class="line"><span class="oai-dot is-live"></span><div>On your iPhone, open Control Center → Screen Mirroring → <b>${esc(name)}</b>, or pick <b>${esc(name)}</b> as the speaker to play music here.</div></div></div>`;
     case "connecting":
-      return `<div class="pop-hero"><div class="dots" style="justify-content:center;margin:6px 0 10px"><i></i><i></i><i></i></div><p>${esc(device)} is connecting. The video window opens in a moment.</p><div class="oai-btn-row">${disconnect}</div>${errorLine("disconnect")}</div>`;
+      return `<div class="pop-hero"><div class="dots" style="justify-content:center;margin:6px 0 10px"><i></i><i></i><i></i></div><p>${esc(device)} is connecting. The video window opens in a moment.</p><div class="oai-btn-row">${disconnect}</div>${errorLine("disconnect")}</div>${block}`;
     case "mirroring":
       // The clock's text is filled in by tick(), outside the compared markup.
-      return `<div class="pop-hero is-live"><div class="who"><h3>${esc(device)}</h3><p data-elapsed></p></div><div class="acts">${btn("show-video", "Show video", "is-small")}${btn("disconnect", "Disconnect", "is-danger is-small")}</div></div>${errorLine("show-video")}${errorLine("disconnect")}`;
+      return `<div class="pop-hero is-live"><div class="who"><h3>${esc(device)}</h3><p data-elapsed></p></div><div class="acts">${btn("show-video", "Show video", "is-small")}${btn("disconnect", "Disconnect", "is-danger is-small")}</div></div>${errorLine("show-video")}${errorLine("disconnect")}${block}`;
     case "audio":
       return audioHtml(s);
+    case "video": {
+      // A YouTube video the phone sent: the same card as mirroring, once the first frame is in.
+      const playing = !!s.video;
+      const sub = playing ? "<p data-elapsed></p>" : "<p>Loading the video…</p>";
+      const show = playing ? btn("show-video", "Show video", "is-small") : "";
+      return `<div class="pop-hero is-live"><div class="who"><h3>${esc(device)}</h3>${sub}</div><div class="acts">${show}${btn("disconnect", "Disconnect", "is-danger is-small")}</div></div>${errorLine("show-video")}${errorLine("disconnect")}${block}`;
+    }
     case "pin": {
       const digits = String(s.pin).split("").map((d) => `<span>${esc(d)}</span>`).join("");
-      return `<div class="pop-hero"><p>${esc(device)} is asking for this code.</p><div class="pop-pin">${digits}</div><div class="oai-btn-row">${disconnect}</div>${errorLine("disconnect")}</div>`;
+      return `<div class="pop-hero"><p>${esc(device)} is asking for this code.</p><div class="pop-pin">${digits}</div><div class="oai-btn-row">${disconnect}</div>${errorLine("disconnect")}</div>${block}`;
     }
     case "restarting": {
       const why = s.restart_reason ? `${capitalise(s.restart_reason)}, so receiving is restarting. ` : "";
@@ -219,6 +240,20 @@ function sendHeadHtml() {
   return `<button class="send-back" data-action="home" aria-label="Back">${use("i-back")}</button><span class="dico">${use(deviceIcon(d))}</span><div class="tt"><div class="t">${esc(d.name)}</div><div class="s">${sub}</div></div>`;
 }
 
+function blockedHtml() {
+  const list = currentSettings().blocked;
+  if (!list.length) return "";
+  const rows = list.map((d) => `<div class="oai-list-row"><span class="oai-grow"><span>${esc(d.name || d.id)}</span></span><button type="button" class="oai-btn is-small" data-action="unblock" data-id="${esc(d.id)}">Unblock</button></div>`).join("");
+  return `<div class="oai-list-label">Blocked devices</div>${rows}`;
+}
+
+/** The Speaker choices: the Windows default, the PC's outputs, and a saved one that is unplugged. */
+function speakerOptions(saved) {
+  const options = [["", "Windows default"], ...ui.speakers.map((sp) => [sp.id, sp.name])];
+  if (saved && !ui.speakers.some((sp) => sp.id === saved)) options.push([saved, "A speaker that isn't connected"]);
+  return options.map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`).join("");
+}
+
 /** Copies saved values into the static settings inputs, except the one being edited. */
 function syncSettingsInputs() {
   const s = currentSettings();
@@ -228,8 +263,19 @@ function syncSettingsInputs() {
   };
   set('[data-set="name"]', (el) => { el.value = s.name; });
   set('[data-set="pin_mode"]', (el) => { el.checked = s.pin_mode; });
+  set('[data-set="remember_pin"]', (el) => { el.checked = s.remember_pin; });
   set('[data-set="h265"]', (el) => { el.checked = s.h265; });
+  set('[data-set="video_links"]', (el) => { el.checked = s.video_links; });
+  set('[data-set="switch_to_new"]', (el) => { el.value = s.switch_to_new ? "1" : ""; });
+  set('[data-set="speaker"]', (el) => {
+    const html = speakerOptions(s.speaker);
+    if (el.dataset.options !== html) { el.innerHTML = html; el.dataset.options = html; }
+    el.value = s.speaker || "";
+  });
   set('[data-pref="startAtLogin"]', (el) => { el.checked = prefs.startAtLogin; });
+  // The PIN's options show only with a PIN; "Forget" only while devices are remembered.
+  $("pin-options").hidden = !s.pin_mode;
+  document.querySelector('[data-action="forget-paired"]').hidden = !s.remember_pin;
 }
 
 function syncBusy() {
@@ -253,11 +299,10 @@ function tick() {
 
 function render() {
   const s = ui.status, phase = phaseOf(s);
-  if (phase === "mirroring") ui.mirrorSince = s.mirroring_since_ms || ui.mirrorSince || Date.now();
+  if (phase === "mirroring" || (phase === "video" && s.video)) ui.mirrorSince = s.mirroring_since_ms || ui.mirrorSince || Date.now();
   else ui.mirrorSince = null;
 
-  const sub = phase === "mirroring" ? `Mirroring from ${deviceOf(s) || "an iPhone"}`
-    : phase === "audio" ? `Playing audio from ${deviceOf(s) || "an iPhone"}` : HEADER[phase];
+  const sub = LIVE_HEADER[phase] ? `${LIVE_HEADER[phase]} ${deviceOf(s) || "an iPhone"}` : HEADER[phase];
   loadArt(s);
   if ($("pop-sub").textContent !== sub) $("pop-sub").textContent = sub;
   const sw = $("rx-switch");
@@ -285,6 +330,7 @@ function render() {
   } else if (ui.page === "settings") {
     const note = ui.settingsNote || (s.settings_pending && inSession(phase) ? { ok: true, text: "Applies when this session ends." } : null);
     patch("r-settings-status", note ? `<span class="${note.ok ? "" : "is-bad"}">${esc(note.text)}</span>` : "");
+    patch("r-blocked", blockedHtml());
     syncSettingsInputs();
   } else if (ui.page === "cast") {
     patch("send-head", sendHeadHtml());
@@ -407,7 +453,10 @@ document.addEventListener("click", (e) => {
     case "show-video": return run("show-video", () => invoke("show_video_window"));
     case "scan": return scan();
     case "home": return goTo("home");
-    case "settings": return goTo(ui.page === "settings" ? "home" : "settings");
+    case "settings": return ui.page === "settings" ? goTo("home") : openSettings();
+    case "block": return run("block", async () => { acceptStatus(await invoke("receiver_block_device")); });
+    case "unblock": return saveSettings({ blocked: currentSettings().blocked.filter((d) => d.id !== action.dataset.id) });
+    case "forget-paired": return forgetPaired();
     case "doctor-check": return run("doctor-check", () => invoke("doctor_check"));
   }
 });
@@ -423,7 +472,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 document.addEventListener("change", async (e) => {
-  if (e.target.dataset.set) return saveSettings(e.target);
+  if (e.target.dataset.set) return saveSettings();
   const key = e.target.dataset.pref;
   if (!key) return;
   const before = prefs[key];
@@ -439,15 +488,28 @@ document.addEventListener("change", async (e) => {
   render();
 });
 
-/** Settings save as you go: the name when you press Enter or leave the field, switches at once. */
-async function saveSettings(field) {
-  const form = field.closest(".settings-form");
-  const val = (k) => form.querySelector(`[data-set="${k}"]`);
-  const settings = { name: val("name").value.trim(), pin_mode: val("pin_mode").checked, h265: val("h265").checked };
+/** The form's values for the settings it holds. */
+function formSettings() {
+  const val = (k) => document.querySelector(`.settings-form [data-set="${k}"]`);
+  return {
+    name: val("name").value.trim(),
+    pin_mode: val("pin_mode").checked,
+    remember_pin: val("remember_pin").checked,
+    h265: val("h265").checked,
+    video_links: val("video_links").checked,
+    switch_to_new: val("switch_to_new").value === "1",
+    speaker: val("speaker").value || null,
+  };
+}
+
+/** Settings save as you go: the name when you press Enter or leave the field, the rest at once.
+ *  `change` sets what the form doesn't hold (the blocked list). */
+async function saveSettings(change = {}) {
   const saved = currentSettings();
-  if (settings.name === saved.name && settings.pin_mode === saved.pin_mode && settings.h265 === saved.h265) return;
+  const settings = { ...saved, ...formSettings(), ...change };
+  if (JSON.stringify(settings) === JSON.stringify(saved)) return;
   if (!settings.name) {
-    val("name").value = saved.name;
+    document.querySelector('[data-set="name"]').value = saved.name;
     ui.settingsNote = { ok: false, text: "Enter a name. iPhones show it in Screen Mirroring." };
     return render();
   }
@@ -460,12 +522,28 @@ async function saveSettings(field) {
   render();
 }
 
+async function forgetPaired() {
+  ui.settingsNote = null;
+  await run("forget-paired", async () => { acceptStatus(await invoke("receiver_forget_paired")); });
+  const err = ui.errors["forget-paired"];
+  delete ui.errors["forget-paired"];
+  ui.settingsNote = err ? { ok: false, text: err } : { ok: true, text: "Forgotten. Those devices will be asked for the code again." };
+  render();
+}
+
+/** Opens Settings with a fresh list of the PC's speakers (one may have been plugged in since). */
+async function openSettings() {
+  goTo("settings");
+  try { ui.speakers = await invoke("list_speakers"); } catch { ui.speakers = []; }
+  if (ui.page === "settings") render();
+}
+
 // Enter in the name field saves it (there is no Apply button).
 document.addEventListener("submit", (e) => {
   if (!e.target.closest(".settings-form")) return;
   e.preventDefault();
   const name = e.target.querySelector('[data-set="name"]');
-  if (document.activeElement === name) name.blur(); else saveSettings(name);
+  if (document.activeElement === name) name.blur(); else saveSettings();
 });
 
 listen("receiver-status", (e) => {

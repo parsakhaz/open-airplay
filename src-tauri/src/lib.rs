@@ -8,6 +8,7 @@ pub mod panel;
 pub mod prefs;
 pub mod process_guard;
 pub mod sender;
+pub mod speakers;
 pub mod status;
 pub mod supervisor;
 
@@ -22,10 +23,10 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent};
 
-use engine::{EngineEvent, ReceiverSettings};
+use engine::{BlockedDevice, EngineEvent, ReceiverSettings};
 use prefs::AppPrefs;
 use sender::SenderSidecar;
-use status::{apply_event, end_session, session_live, Phase, ReceiverStatus, StatusHub};
+use status::{apply_event, device_name, end_session, session_live, Phase, ReceiverStatus, StatusHub};
 use supervisor::{EngineCommand, Supervisor, SupervisorEvent};
 
 /// The processes the app owns. `shutdown` stops and reaps all of them; it runs on every exit path.
@@ -116,6 +117,11 @@ impl PanelState {
 }
 
 impl AppState {
+    /// The app's config folder, where the receiver keeps its files (None in tests).
+    fn data_dir(&self) -> Option<PathBuf> {
+        self.prefs_path.lock().unwrap().as_ref().and_then(|p| p.parent().map(PathBuf::from))
+    }
+
     fn update_prefs(&self, change: impl FnOnce(&mut AppPrefs)) -> AppPrefs {
         let mut prefs = self.prefs.lock().unwrap();
         change(&mut prefs);
@@ -187,6 +193,7 @@ fn tray_text(status: &ReceiverStatus) -> String {
     match status.phase {
         Phase::Mirroring => format!("open-airplay: mirroring on '{name}'"),
         Phase::Audio => format!("open-airplay: playing audio on '{name}'"),
+        Phase::Video => "open-airplay: playing a video".into(),
         Phase::Connecting => "open-airplay: connecting…".into(),
         Phase::Pin => "open-airplay: enter the code on your device".into(),
         Phase::Ready => format!("open-airplay: ready to receive as '{name}'"),
@@ -207,7 +214,7 @@ enum TrayLook {
 
 fn tray_look(phase: Phase) -> TrayLook {
     match phase {
-        Phase::Connecting | Phase::Mirroring | Phase::Audio | Phase::Pin => TrayLook::Receiving,
+        Phase::Connecting | Phase::Mirroring | Phase::Audio | Phase::Video | Phase::Pin => TrayLook::Receiving,
         Phase::Error => TrayLook::Problem,
         Phase::Stopped | Phase::Starting | Phase::Restarting | Phase::Ready => TrayLook::Normal,
     }
@@ -290,10 +297,12 @@ fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings, reason: Opt
             engine_path: Some(engine.display().to_string()),
             settings: Some(settings.clone()),
             restart_reason: reason.map(str::to_string),
+            // A note about what just happened ("Blocked …") outlives the restart it caused.
+            notice: st.notice.take(),
             ..Default::default()
         }
     });
-    let mut args = settings.engine_args();
+    let mut args = engine_settings(settings, &speakers::list()).engine_args(state.data_dir().as_deref());
     if let Some(dir) = audio_dir(app) {
         args.extend(engine::audio_args(&dir));
     }
@@ -328,6 +337,15 @@ fn audio_dir(app: &AppHandle) -> Option<PathBuf> {
     let dir = app.path().app_local_data_dir().ok()?;
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
+}
+
+/// The settings the engine runs with: a chosen speaker that isn't plugged in plays on the Windows
+/// default instead (the engine can't open it), and comes back when it is.
+fn engine_settings(mut settings: ReceiverSettings, available: &[speakers::Speaker]) -> ReceiverSettings {
+    if settings.speaker.as_ref().is_some_and(|id| !available.iter().any(|s| &s.id == id)) {
+        settings.speaker = None;
+    }
+    settings
 }
 
 fn stop_receiver_inner(app: &AppHandle) -> ReceiverStatus {
@@ -440,8 +458,13 @@ fn save_settings_inner(app: &AppHandle, mut settings: ReceiverSettings) -> Resul
     if settings.name.is_empty() {
         return Err("Enter a name. iPhones show it in Screen Mirroring.".into());
     }
+    app.state::<AppState>().update_prefs(|p| p.receiver = settings.clone());
+    apply_settings(app, settings)
+}
+
+/// Puts saved settings into effect: now, after the live session, or next time receiving is turned on.
+fn apply_settings(app: &AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
     let state = app.state::<AppState>();
-    state.update_prefs(|p| p.receiver = settings.clone());
     match settings_change(&state.status.snapshot()) {
         SettingsChange::RestartNow => start_receiver_inner(app, settings, None),
         SettingsChange::AfterSession => Ok(update_status(app, |st| st.settings_pending = true)),
@@ -452,6 +475,53 @@ fn save_settings_inner(app: &AppHandle, mut settings: ReceiverSettings) -> Resul
 #[tauri::command]
 async fn receiver_save_settings(app: AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
     tauri::async_runtime::spawn_blocking(move || save_settings_inner(&app, settings)).await.map_err(|e| e.to_string())?
+}
+
+/// "Block this device": adds the connected device to the blocked list and ends its session. The
+/// receiver restarts with the new list once the session has ended.
+fn block_device_inner(app: &AppHandle) -> Result<ReceiverStatus, String> {
+    let state = app.state::<AppState>();
+    let snapshot = state.status.snapshot();
+    let id = snapshot.device_id.clone().ok_or("No device is connected.")?;
+    let name = device_name(&snapshot).unwrap_or("This device").to_string();
+    let mut settings = state.prefs.lock().unwrap().receiver.clone();
+    if !settings.blocked.iter().any(|d| d.id == id) {
+        settings.blocked.push(BlockedDevice { id, name: name.clone() });
+    }
+    save_settings_inner(app, settings)?;
+    if let Err(e) = disconnect_inner(app) {
+        eprintln!("open-airplay: {e}");
+    }
+    Ok(update_status(app, |st| st.notice = Some(format!("Blocked {name}. You can unblock it in Settings."))))
+}
+
+#[tauri::command]
+async fn receiver_block_device(app: AppHandle) -> Result<ReceiverStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || block_device_inner(&app)).await.map_err(|e| e.to_string())?
+}
+
+/// Forgets the devices that entered the PIN: each is asked for the code again next time.
+fn forget_paired_devices_inner(app: &AppHandle) -> Result<ReceiverStatus, String> {
+    let state = app.state::<AppState>();
+    let dir = state.data_dir().ok_or("There are no remembered devices.")?;
+    match std::fs::remove_file(dir.join(engine::PAIRED_DEVICES_FILE)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Couldn't forget the devices: {e}")),
+    }
+    // The engine keeps the list in memory; restart it like a settings change.
+    let settings = state.prefs.lock().unwrap().receiver.clone();
+    apply_settings(app, settings)
+}
+
+#[tauri::command]
+async fn receiver_forget_paired(app: AppHandle) -> Result<ReceiverStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || forget_paired_devices_inner(&app)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn list_speakers() -> Vec<speakers::Speaker> {
+    speakers::list()
 }
 
 #[tauri::command]
@@ -1099,7 +1169,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
@@ -1118,7 +1188,7 @@ mod tests {
 
     #[test]
     fn a_network_change_restarts_only_a_receiver_that_is_on() {
-        let settings = Some(ReceiverSettings { name: "Den".into(), pin_mode: false, h265: false });
+        let settings = Some(ReceiverSettings { name: "Den".into(), ..Default::default() });
         let off = ReceiverStatus { settings: settings.clone(), ..Default::default() };
         assert_eq!(settings_to_restart(&off), None);
         assert_eq!(settings_to_restart(&ReceiverStatus::default()), None);
@@ -1152,6 +1222,15 @@ mod tests {
     }
 
     #[test]
+    fn a_chosen_speaker_that_is_unplugged_plays_on_the_windows_default() {
+        let id = "{0.0.0.00000000}.{597b88b2-8565-49a2-b30e-691eb83dd31a}";
+        let chosen = ReceiverSettings { speaker: Some(id.into()), ..Default::default() };
+        let plugged = [speakers::Speaker { id: id.into(), name: "Speakers".into() }];
+        assert_eq!(engine_settings(chosen.clone(), &plugged).speaker.as_deref(), Some(id));
+        assert_eq!(engine_settings(chosen, &[]).speaker, None);
+    }
+
+    #[test]
     fn the_tray_tooltip_says_when_receiving_is_off() {
         assert_eq!(tray_text(&ReceiverStatus::default()), "open-airplay: receiving is off");
     }
@@ -1178,6 +1257,7 @@ mod tests {
         assert_eq!(tray_look(Phase::Connecting), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Mirroring), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Audio), TrayLook::Receiving);
+        assert_eq!(tray_look(Phase::Video), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Pin), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Error), TrayLook::Problem);
     }

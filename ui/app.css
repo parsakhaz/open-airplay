@@ -135,3 +135,14 @@ body { overflow: hidden; }
 .pop-hero.is-audio .volume .bar { flex: 1; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.18); overflow: hidden; }
 .pop-hero.is-audio .volume .bar i { display: block; height: 100%; background: #f5f5f7; border-radius: 2px; }
 .pop-hero.is-audio .bottom > .oai-btn.is-danger { margin-left: auto; }
+/* settings: options that belong to the row above, stacked rows with a full-width picker, Advanced */
+.sub-rows { margin-left: 14px; padding-left: 4px; border-left: 2px solid var(--oai-fill-strong); }
+.sub-rows .forget { margin: 0 0 4px 4px; font-size: var(--oai-text-sm); color: var(--oai-accent); }
+.oai-list-row.is-stacked { flex-direction: column; align-items: stretch; gap: 6px; }
+.oai-list-row.is-stacked .oai-input { width: 100%; text-align: left; font: inherit; }
+.advanced summary { list-style: none; cursor: default; justify-content: flex-start; gap: 4px; padding-top: 10px; }
+.advanced summary::-webkit-details-marker { display: none; }
+.advanced summary svg { width: 11px; height: 11px; transition: transform var(--oai-dur-fast) var(--oai-ease); }
+.advanced[open] summary svg { transform: rotate(90deg); }
+.beta { font-size: 10px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--oai-accent); background: var(--oai-accent-soft); border-radius: 4px; padding: 1px 4px; margin-left: 4px; vertical-align: 1px; }
+.block-link { display: block; margin: -4px auto 6px; font-size: var(--oai-text-sm); }

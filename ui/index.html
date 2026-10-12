@@ -61,8 +61,19 @@
           <form class="settings-form" autocomplete="off">
             <label class="oai-list-row"><span class="oai-grow"><span>Name</span><small class="oai-sub" style="display:block">Shown in Screen Mirroring</small></span><input class="oai-input" data-set="name" required maxlength="63"></label>
             <label class="oai-list-row"><span class="oai-grow"><span>Require a PIN</span><small class="oai-sub" style="display:block">Every new connection enters a code</small></span><input type="checkbox" class="oai-switch" data-set="pin_mode"></label>
-            <label class="oai-list-row"><span class="oai-grow"><span>High-efficiency video</span><small class="oai-sub" style="display:block">Turn on if a newer iPhone can't connect</small></span><input type="checkbox" class="oai-switch" data-set="h265"></label>
+            <div class="sub-rows" id="pin-options">
+              <label class="oai-list-row"><span class="oai-grow"><span>Remember devices</span><small class="oai-sub" style="display:block">Ask each device for the code only once</small></span><input type="checkbox" class="oai-switch" data-set="remember_pin"></label>
+              <button type="button" class="oai-ghost forget" data-action="forget-paired">Forget remembered devices</button>
+            </div>
+            <label class="oai-list-row is-stacked"><span>Speaker</span><select class="oai-input" data-set="speaker" aria-label="Speaker"></select></label>
             <label class="oai-list-row"><span class="oai-grow"><span>Start at login</span><small class="oai-sub" style="display:block">Open quietly in the tray when you sign in</small></span><input type="checkbox" class="oai-switch" data-pref="startAtLogin"></label>
+            <div id="r-blocked"></div>
+            <details class="advanced" id="advanced">
+              <summary class="oai-list-label">Advanced <svg><use href="#i-chev"/></svg></summary>
+              <label class="oai-list-row"><span class="oai-grow"><span>YouTube videos <span class="beta">Beta</span></span><small class="oai-sub" style="display:block">Play videos sent from the YouTube app</small></span><input type="checkbox" class="oai-switch" data-set="video_links"></label>
+              <label class="oai-list-row is-stacked"><span>When another device connects</span><select class="oai-input" data-set="switch_to_new"><option value="">Keep the current one</option><option value="1">Switch to the new one</option></select></label>
+              <label class="oai-list-row"><span class="oai-grow"><span>High-efficiency video</span><small class="oai-sub" style="display:block">Turn on if a newer iPhone can't connect</small></span><input type="checkbox" class="oai-switch" data-set="h265"></label>
+            </details>
             <div class="status-line" id="r-settings-status"></div>
           </form>
         </div>
