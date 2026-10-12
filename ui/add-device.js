@@ -1,6 +1,6 @@
 // Devices added by IP address or hostname: joining them into Send to, and the Add device flow.
 // The Rust side checks addresses and remembers the list (src-tauri/src/added.rs); this file only
-// decides what the list shows and in what order the add steps run. Tests: ui/tests/add-device.test.js.
+// decides what the list shows and in what order the add steps run. Tests: tests/ui/add-device.test.js.
 const AddDevice = (() => {
   // Send to rows: discovered devices first, then added ones discovery can't see.
   // A row with `added` set came from (or matches) an added device; its page offers Remove.

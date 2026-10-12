@@ -62,7 +62,7 @@ jobs:
 
       - name: UI tests
         shell: bash
-        run: node --test ui/tests/*.test.js
+        run: node --test tests/ui/*.test.js
 
       - name: Sender tests
         shell: bash

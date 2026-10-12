@@ -1,7 +1,7 @@
-// Run: node --test ui/tests/*.test.js
+// Run: node --test tests/ui/*.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const AddDevice = require("../add-device.js");
+const AddDevice = require("../../ui/add-device.js");
 
 const den = { identifier: "AA", name: "Den", address: "192.168.1.20", model: "Apple TV 4K", services: ["AirPlay"] };
 const office = { identifier: "BB", name: "Office", address: "192.168.1.30", model: null, services: ["RAOP"] };
