@@ -63,3 +63,15 @@ body { overflow: hidden; }
 .doctor-list { display: grid; gap: 8px; margin: 4px 6px 8px; }
 .doctor p { font-size: var(--oai-text-sm); line-height: 1.45; }
 .recheck { justify-self: end; font-size: var(--oai-text-xs); color: var(--oai-ink-2); }
+
+/* settings: options that belong to the row above, stacked rows with a full-width picker, Advanced */
+.sub-rows { margin-left: 14px; padding-left: 4px; border-left: 2px solid var(--oai-fill-strong); }
+.sub-rows .forget { margin: 0 0 4px 4px; font-size: var(--oai-text-sm); color: var(--oai-accent); }
+.oai-list-row.is-stacked { flex-direction: column; align-items: stretch; gap: 6px; }
+.oai-list-row.is-stacked .oai-input { width: 100%; text-align: left; }
+.advanced summary { list-style: none; cursor: default; justify-content: flex-start; gap: 4px; padding-top: 10px; }
+.advanced summary::-webkit-details-marker { display: none; }
+.advanced summary svg { width: 11px; height: 11px; transition: transform var(--oai-dur-fast) var(--oai-ease); }
+.advanced[open] summary svg { transform: rotate(90deg); }
+.beta { font-size: 10px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--oai-accent); background: var(--oai-accent-soft); border-radius: 4px; padding: 1px 4px; margin-left: 4px; vertical-align: 1px; }
+.block-link { display: block; margin: -4px auto 6px; font-size: var(--oai-text-sm); }

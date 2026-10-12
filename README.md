@@ -38,7 +38,7 @@ flowchart LR
 
 | | Direction | Status |
 |---|---|---|
-| **Receive** | iPhone / iPad / Mac to your PC | Screen mirroring, audio, and video. Working, verified on-device. |
+| **Receive** | iPhone / iPad / Mac to your PC | Screen mirroring and audio. Working, verified on-device. Videos sent from the YouTube app are a beta setting; photos aren't supported. |
 | **Mirror (send)** | your Windows desktop to an Apple TV | Real FairPlay screen mirroring, near-instant latency. Working, verified on an Apple TV 4K. |
 | **Cast media** | your PC to an Apple TV | Send a video or audio URL via pyatv. Working. |
 

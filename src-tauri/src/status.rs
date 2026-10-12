@@ -18,6 +18,8 @@ pub enum Phase {
     Ready,
     Connecting,
     Mirroring,
+    /// Playing a video link (YouTube) a phone sent.
+    Video,
     Pin,
     /// Coming back after a crash, a network change or waking from sleep (`restart_reason` says which).
     Restarting,
@@ -40,6 +42,10 @@ pub struct ReceiverStatus {
     pub advertised: bool,
     pub connections: u32,
     pub last_device: Option<String>,
+    /// The connected device's id, for "Block this device".
+    pub device_id: Option<String>,
+    /// The session is a video link (YouTube), not Screen Mirroring.
+    pub video_link: bool,
     /// Size of the mirrored video once frames arrive (reported by engine patch 0002).
     pub video: Option<(u32, u32)>,
     /// Unix time in ms when the current mirroring session's video started.
@@ -69,6 +75,8 @@ pub fn phase(s: &ReceiverStatus) -> Phase {
     }
     if s.pin.is_some() {
         Phase::Pin
+    } else if s.video_link {
+        Phase::Video
     } else if s.video.is_some() {
         Phase::Mirroring
     } else if s.last_device.is_some() && s.connections > 0 {
@@ -82,13 +90,13 @@ pub fn phase(s: &ReceiverStatus) -> Phase {
     }
 }
 
-/// An incoming session is live: a phone is connecting, asking for the code, or mirroring.
+/// An incoming session is live: a phone is connecting, asking for the code, mirroring or playing a video.
 pub fn session_live(s: &ReceiverStatus) -> bool {
-    matches!(phase(s), Phase::Connecting | Phase::Mirroring | Phase::Pin)
+    matches!(phase(s), Phase::Connecting | Phase::Mirroring | Phase::Video | Phase::Pin)
 }
 
 /// The device name without its model: "Sam's iPhone (iPhone16,1)" -> "Sam's iPhone".
-fn device_name(s: &ReceiverStatus) -> Option<&str> {
+pub fn device_name(s: &ReceiverStatus) -> Option<&str> {
     let d = s.last_device.as_deref()?;
     Some(d.rsplit_once(" (").map_or(d, |(name, _)| name))
 }
@@ -111,6 +119,8 @@ fn now_ms() -> u64 {
 pub fn end_session(status: &mut ReceiverStatus) {
     status.connections = 0;
     status.last_device = None;
+    status.device_id = None;
+    status.video_link = false;
     status.video = None;
     status.mirroring_since_ms = None;
     status.pin = None;
@@ -142,8 +152,9 @@ pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
                 status.restart_reason = None;
                 status.failed_starts = 0;
             }
-            EngineEvent::ConnectionRequest { name, model, .. } => {
+            EngineEvent::ConnectionRequest { name, model, device_id } => {
                 status.last_device = Some(format!("{name} ({model})"));
+                status.device_id = Some(device_id.clone());
                 status.notice = None;
             }
             EngineEvent::OpenConnections { count } => {
@@ -159,10 +170,31 @@ pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
                 status.mirroring_since_ms.get_or_insert_with(now_ms);
             }
             EngineEvent::VideoStopped => {
+                // A video link that played and stopped is over; the phone may mirror next.
+                if status.video.is_some() {
+                    status.video_link = false;
+                }
                 status.video = None;
                 status.mirroring_since_ms = None;
             }
             EngineEvent::Disconnected => end_session(status),
+            EngineEvent::VideoLink => {
+                status.video_link = true;
+                status.mirroring_since_ms = None;
+            }
+            EngineEvent::UnsupportedVideoLink => {
+                status.notice = Some("That video can't play here: only the YouTube app can send videos to this PC. For other apps, use Screen Mirroring.".into());
+            }
+            EngineEvent::Rejected => {
+                let who = device_name(status).unwrap_or("another device");
+                status.notice = Some(format!("Another device tried to connect while {who} is connected. To let new devices take over, change it in Settings."));
+            }
+            EngineEvent::Blocked { device_id } => {
+                if status.device_id.as_deref() == Some(device_id.as_str()) {
+                    status.last_device = None;
+                    status.device_id = None;
+                }
+            }
             EngineEvent::Pin { code } => status.pin = Some(code.clone()),
             EngineEvent::ClientLost => {
                 let who = device_name(status).unwrap_or("the iPhone");
@@ -416,6 +448,73 @@ mod tests {
         apply_event(&mut s, &engine(EngineEvent::Disconnected));
         assert_eq!((s.phase, s.wanted, s.running), (Phase::Ready, true, true));
         assert_eq!((s.last_device.clone(), s.notice.clone()), (None, None));
+    }
+
+    fn request(name: &str, id: &str) -> SupervisorEvent {
+        engine(EngineEvent::ConnectionRequest { name: name.into(), model: "iPhone16,1".into(), device_id: id.into() })
+    }
+
+    #[test]
+    fn a_video_link_plays_as_its_own_state_until_the_session_ends() {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &request("Sam's iPhone", "1A:2B"));
+        apply_event(&mut s, &engine(EngineEvent::VideoLink));
+        assert_eq!(s.phase, Phase::Video, "loading the video");
+        assert!(session_live(&s));
+        apply_event(&mut s, &engine(EngineEvent::Video { width: 1920, height: 1080 }));
+        assert_eq!(s.phase, Phase::Video, "playing the video");
+        apply_event(&mut s, &engine(EngineEvent::Disconnected));
+        assert_eq!((s.phase, s.video_link), (Phase::Ready, false));
+    }
+
+    #[test]
+    fn mirroring_after_a_finished_video_link_is_mirroring() {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &request("Sam's iPhone", "1A:2B"));
+        apply_event(&mut s, &engine(EngineEvent::VideoLink));
+        apply_event(&mut s, &engine(EngineEvent::Video { width: 1920, height: 1080 }));
+        apply_event(&mut s, &engine(EngineEvent::VideoStopped));
+        assert_eq!(s.phase, Phase::Connecting);
+        apply_event(&mut s, &engine(EngineEvent::Video { width: 886, height: 1920 }));
+        assert_eq!(s.phase, Phase::Mirroring);
+    }
+
+    #[test]
+    fn a_video_link_from_another_app_says_so_plainly() {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::UnsupportedVideoLink));
+        let note = s.notice.clone().unwrap();
+        assert!(note.contains("YouTube") && !note.contains("HLS"), "{note}");
+    }
+
+    #[test]
+    fn a_turned_away_device_leaves_a_note_naming_the_connected_one() {
+        let mut s = mirroring();
+        apply_event(&mut s, &engine(EngineEvent::Rejected));
+        assert_eq!(s.phase, Phase::Mirroring, "the connected phone keeps going");
+        let note = s.notice.clone().unwrap();
+        assert!(note.starts_with("Another device tried to connect while Sam's iPhone is connected."), "{note}");
+    }
+
+    #[test]
+    fn the_connected_device_id_is_kept_for_blocking() {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &request("Sam's iPhone", "1A:2B"));
+        assert_eq!(s.device_id.as_deref(), Some("1A:2B"));
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 0 }));
+        assert_eq!(s.device_id, None);
+    }
+
+    #[test]
+    fn a_blocked_device_is_not_shown_as_connecting() {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &request("Old iPad", "AA:BB"));
+        apply_event(&mut s, &engine(EngineEvent::Blocked { device_id: "AA:BB".into() }));
+        assert_eq!((s.phase, s.last_device.clone(), s.device_id.clone()), (Phase::Ready, None, None));
     }
 
     #[test]

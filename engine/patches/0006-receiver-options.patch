@@ -1,0 +1,24 @@
+diff --git a/uxplay.cpp b/uxplay.cpp
+index ddc39f0..93cf2de 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -2474,6 +2474,11 @@ static int start_dnssd(std::vector<char> hw_addr, std::string name) {
+     dnssd_set_airplay_features(dnssd, 61, 0); // Supports RFC2198 redundancy
+     */
+ 
++    /* open-airplay: no photo (bit 1) or slideshow (bit 5) support: there is no /photo handler, so a
++     * phone that sends photos here would fail; with these off it offers mirroring instead */
++    dnssd_set_airplay_features(dnssd, 1, 0);
++    dnssd_set_airplay_features(dnssd, 5, 0);
++
+     /* needed for HLS video support */
+     dnssd_set_airplay_features(dnssd, 0, (int) hls_support);
+     dnssd_set_airplay_features(dnssd, 4, (int) hls_support);
+@@ -3051,6 +3056,7 @@ extern "C" void on_video_play(void *cls, const char* location, const float start
+     relaunch_video = true;
+     preserve_connections = true;
+     LOGI("********************on_video_play: location = %s*** start position %f ********************", url.c_str(), start_position);
++    printf("open-airplay: video link\n");   /* machine-readable: a video link (HLS) started playing */
+     video_reset(cls, RESET_TYPE_ON_VIDEO_PLAY);
+ }
+ 
