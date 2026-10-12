@@ -42,6 +42,25 @@ func waitForBlockedBroadcastProducer(t *testing.T, sink *BroadcastSink) {
 	}, "producer blocked on single-target handoff")
 }
 
+// waitForBroadcastSequence waits until Run has reserved the given source read,
+// so a sink attached afterward deterministically starts with the read after it.
+func waitForBroadcastSequence(t *testing.T, bc *BroadcastCapture, sequence uint64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		bc.mu.Lock()
+		reserved := bc.sequence >= sequence
+		bc.mu.Unlock()
+		if reserved {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for broadcast to reserve read %d", sequence)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func (r *channelVideoAccessUnitReader) ReadVideoAccessUnit() (VideoAccessUnit, error) {
 	frame, ok := <-r.frames
 	if !ok {
@@ -375,13 +394,17 @@ func TestTimestampedBroadcastDrainsCaptureBeforeLateSinkAttaches(t *testing.T) {
 		}
 	}
 
+	// Attach only once Run has reserved its fourth read. Sending the third frame
+	// returns before Run loops back to reserve it, and a sink attached in that
+	// gap would rightly start with the fourth read.
+	waitForBroadcastSequence(t, broadcast, 4)
 	sink, err := broadcast.AddBackpressuredSink()
 	if err != nil {
 		t.Fatalf("attach backpressured sink: %v", err)
 	}
 	defer sink.Close()
-	// Run may already have reserved the read which was pending at registration;
-	// a newly attached sink starts with the following source read.
+	// The read already reserved at registration belongs to setup; a newly
+	// attached sink starts with the following source read.
 	frames <- VideoAccessUnit{AnnexB: []byte("already-pending")}
 	want := VideoAccessUnit{AnnexB: []byte{4}, PTS: time.Now()}
 	frames <- want
