@@ -24,6 +24,15 @@
 //! - `exit <code>`               exit the process with that code
 //! - `say <text>`                print text verbatim
 //! - `disconnect`                end the session (if any) then `open-airplay: disconnected`
+//! - `audio [name] [model]`      a phone picks this PC as a speaker: `connect` + `open-airplay: audio start`
+//! - `audio-stop`                `open-airplay: audio stopped`
+//! - `track title|artist|album`  `open-airplay: track …` (fields may be empty)
+//! - `art <image file>`          copies the image to the `-ca` file, then `open-airplay: art <bytes>`
+//! - `volume <0-100>`            `open-airplay: volume <n>`
+//! - `progress`                  two progress lines ending in a carriage return, as UxPlay prints them
+//! - `dacp`                      starts a fake phone remote (mDNS `_dacp._tcp` + HTTP) and prints
+//!   `open-airplay: dacp <id> <token>`; each command it gets is printed
+//!   as `fake-engine: remote got <path> (Active-Remote <token>)`
 //!
 //! Example: `echo connect>> %TEMP%\oap-fake-engine.ctl`
 
@@ -48,6 +57,10 @@ struct Session {
 
 struct Ctx {
     pin_mode: bool,
+    /// The `-ca <file>` path the shell passed.
+    art_path: Option<PathBuf>,
+    /// The fake phone remote, once started (kept alive for the process).
+    remote: Mutex<Option<mdns_sd::ServiceDaemon>>,
     session: Mutex<Session>,
     storm_rate: AtomicU64,
 }
@@ -151,8 +164,78 @@ fn handle(ctx: &Ctx, raw: &str) {
             }
             emit("open-airplay: disconnected");
         }
+        "audio" => {
+            handle(ctx, &format!("connect {rest}"));
+            emit("open-airplay: audio start");
+        }
+        "audio-stop" => emit("open-airplay: audio stopped"),
+        "track" => {
+            let mut f = rest.splitn(3, '|');
+            let (t, a, al) = (f.next().unwrap_or(""), f.next().unwrap_or(""), f.next().unwrap_or(""));
+            emit(&format!("open-airplay: track {t}\t{a}\t{al}"));
+        }
+        "art" => match (&ctx.art_path, std::fs::read(rest)) {
+            (Some(dest), Ok(bytes)) if std::fs::write(dest, &bytes).is_ok() => emit(&format!("open-airplay: art {}", bytes.len())),
+            _ => emit(&format!("fake-engine: can't copy art {rest:?} (is -ca set?)")),
+        },
+        "volume" => emit(&format!("open-airplay: volume {rest}")),
+        "progress" => {
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(b"audio progress (min:sec):   0:41; remaining:   3:12; track length 3:53\r");
+            let _ = out.write_all(b"audio progress (min:sec):   0:42; remaining:   3:11; track length 3:53\r");
+            let _ = out.flush();
+        }
+        "dacp" => start_remote(ctx),
         _ => emit(&format!("fake-engine: unknown command {line:?}")),
     }
+}
+
+/// A stand-in for the phone's remote-control service: advertised like a phone advertises it, and it
+/// prints each command it receives.
+fn start_remote(ctx: &Ctx) {
+    const ID: &str = "FA4E00000000D0AC";
+    const TOKEN: &str = "1986535575";
+    let mut remote = ctx.remote.lock().unwrap_or_else(|e| e.into_inner());
+    if remote.is_none() {
+        let started = (|| -> Result<mdns_sd::ServiceDaemon, String> {
+            let listener = std::net::TcpListener::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+            let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+            thread::spawn(move || {
+                for conn in listener.incoming().flatten() {
+                    serve_remote(conn);
+                }
+            });
+            let ip = local_ip().ok_or("no network address")?;
+            let mdns = mdns_sd::ServiceDaemon::new().map_err(|e| e.to_string())?;
+            let info = mdns_sd::ServiceInfo::new("_dacp._tcp.local.", &format!("iTunes_Ctrl_{ID}"), "oap-fake-phone.local.", ip, port, None::<std::collections::HashMap<String, String>>)
+                .map_err(|e| e.to_string())?;
+            mdns.register(info).map_err(|e| e.to_string())?;
+            emit(&format!("fake-engine: remote listening on {ip}:{port}"));
+            Ok(mdns)
+        })();
+        match started {
+            Ok(mdns) => *remote = Some(mdns),
+            Err(e) => return emit(&format!("fake-engine: can't start the remote: {e}")),
+        }
+    }
+    emit(&format!("open-airplay: dacp {ID} {TOKEN}"));
+}
+
+fn serve_remote(mut conn: std::net::TcpStream) {
+    let mut buf = [0u8; 2048];
+    let n = conn.read(&mut buf).unwrap_or(0);
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let path = req.split_whitespace().nth(1).unwrap_or("?").to_string();
+    let token = req.lines().find_map(|l| l.strip_prefix("Active-Remote: ")).unwrap_or("none").to_string();
+    emit(&format!("fake-engine: remote got {path} (Active-Remote {token})"));
+    let _ = conn.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+}
+
+/// The address phones would reach this PC on (the interface with the default route).
+fn local_ip() -> Option<std::net::IpAddr> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("192.0.2.1:9").ok()?;
+    s.local_addr().ok().map(|a| a.ip())
 }
 
 fn control_path() -> PathBuf {
@@ -236,6 +319,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let ctx = Arc::new(Ctx {
         pin_mode: args.iter().any(|a| a == "-pin"),
+        art_path: args.iter().position(|a| a == "-ca").and_then(|i| args.get(i + 1)).map(PathBuf::from),
+        remote: Mutex::new(None),
         session: Mutex::new(Session::default()),
         storm_rate: AtomicU64::new(0),
     });
