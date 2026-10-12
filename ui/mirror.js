@@ -21,6 +21,7 @@ window.OapMirror = (() => {
     busy: new Set(),     // "start", "stop", "code"
     error: null,         // a failed command, in plain words
     codeKey: null,       // which prompt the code boxes belong to, so a new prompt starts empty
+    from: null,          // the address of the device the sheet was opened from
   };
   let root = null;
   let host = { changed: () => {}, devices: () => [], back: () => {} };
@@ -154,7 +155,8 @@ window.OapMirror = (() => {
   /** Opens the sheet from a device page: that device is ticked, unless a mirror is already running. */
   function open(device) {
     state.error = null;
-    if (!sending()) state.ticked = device && device.address ? [device.address] : [];
+    state.from = device && device.address ? device.address : null;
+    if (!sending()) state.ticked = state.from ? [state.from] : [];
     loadDisplays();
   }
 
@@ -328,7 +330,10 @@ window.OapMirror = (() => {
   setInterval(tick, 1000);
 
   listen("mirror-status", (e) => {
+    const wasSending = sending();
     state.snapshot = e.payload || { targets: [] };
+    // When mirroring ends, the sheet offers the device it was opened from again.
+    if (wasSending && !sending() && state.ticked.length === 0 && state.from) state.ticked = [state.from];
     host.changed();
   });
   invoke("mirror_status").then((s) => { state.snapshot = s || { targets: [] }; host.changed(); }).catch(() => {});
