@@ -15,6 +15,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub use crate::mirror_options::SenderCapabilities;
+
 /// What the device page shows for mirroring.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -316,6 +318,9 @@ struct Inner {
     published: Option<MirrorSnapshot>,
     /// The session's connect request (port, options), sent again after a wrong code.
     connect: Option<Value>,
+    /// From the running sender's hello line; None until it arrives.
+    capabilities: Option<SenderCapabilities>,
+    hello_waiters: Vec<mpsc::Sender<SenderCapabilities>>,
 }
 
 type OnStatus = Arc<dyn Fn(&MirrorSnapshot) + Send + Sync>;
@@ -339,8 +344,9 @@ impl Mirror {
         MirrorSnapshot::of(&self.inner.lock().unwrap().session)
     }
 
-    /// Starts mirroring to the TV at `target`. Only one session at a time.
-    pub fn start(&self, sender: &SenderCommand, target: &str, port: Option<u16>, name: &str, display: Option<i32>) -> Result<MirrorSnapshot, String> {
+    /// Starts mirroring to the TV at `target` with the connect `options` object
+    /// (docs/control-protocol.md). Only one session at a time.
+    pub fn start(&self, sender: &SenderCommand, target: &str, port: Option<u16>, name: &str, options: Value) -> Result<MirrorSnapshot, String> {
         let mut inner = self.inner.lock().unwrap();
         if inner.session.is_active() {
             let busy = inner.session.status().device.clone().unwrap_or_else(|| "another TV".into());
@@ -352,8 +358,8 @@ impl Mirror {
         if let Some(port) = port {
             request["port"] = json!(port);
         }
-        if let Some(display) = display {
-            request["options"] = json!({ "display": display });
+        if options.as_object().is_some_and(|o| !o.is_empty()) {
+            request["options"] = options.clone();
         }
         inner.connect = Some(request.clone());
         if let Err(e) = self.write(&mut inner, request, Pending::Connect, None) {
@@ -404,6 +410,21 @@ impl Mirror {
         inner.session.stopped();
         self.publish(&mut inner);
         Ok(MirrorSnapshot::of(&inner.session))
+    }
+
+    /// What the sender can do, from its hello line. Starts the sender if needed.
+    pub fn capabilities(&self, sender: &SenderCommand) -> Result<SenderCapabilities, String> {
+        let rx = {
+            let mut inner = self.inner.lock().unwrap();
+            self.ensure_running(&mut inner, sender)?;
+            if let Some(caps) = inner.capabilities {
+                return Ok(caps);
+            }
+            let (tx, rx) = mpsc::channel();
+            inner.hello_waiters.push(tx);
+            rx
+        };
+        rx.recv_timeout(REPLY_TIMEOUT).map_err(|_| "Mirroring didn't start. Try again.".into())
     }
 
     /// The displays this PC can mirror.
@@ -498,6 +519,7 @@ impl Mirror {
         inner.generation += 1;
         let generation = inner.generation;
         inner.proc = Some(Proc { child, stdin, generation });
+        inner.capabilities = None;
         let this = self.clone();
         thread::spawn(move || this.read_lines(stdout, generation));
         Ok(())
@@ -525,6 +547,15 @@ impl Mirror {
 
     fn handle(&self, inner: &mut Inner, message: Value) {
         let state_line = match message["type"].as_str() {
+            Some("hello") => {
+                // Older senders announce no capabilities: nothing optional.
+                let caps: SenderCapabilities = serde_json::from_value(message["capabilities"].clone()).unwrap_or_default();
+                inner.capabilities = Some(caps);
+                for waiter in inner.hello_waiters.drain(..) {
+                    let _ = waiter.send(caps);
+                }
+                false
+            }
             Some("state") => true,
             Some("response") => {
                 let id = message["id"].as_u64().unwrap_or(0);
@@ -694,8 +725,8 @@ def errors(err):
     return [dict(target=tv, kind=err, message="detail")] if err else []
 def state(st, err="", streams=()):
     out(dict(type="state", ok=True, state=st, errors=errors(err), streams=list(streams)))
-tv = None; err = ""; st = "idle"
-out(dict(type="hello", protocol=1))
+tv = None; err = ""; st = "idle"; options = []
+out(dict(type="hello", protocol=1, capabilities=dict(audio=True)))
 state("idle")
 for raw in sys.stdin:
     req = json.loads(raw); rid = req.get("id"); cmd = req["cmd"]
@@ -706,9 +737,9 @@ for raw in sys.stdin:
         else:
             st = "idle"; err = "wrong_code"; state("idle", err)
     elif cmd == "connect":
-        tv = req["target"]; err = ""
+        tv = req["target"]; err = ""; options.append(req.get("options"))
         out(dict(type="response", id=rid, ok=True, state="connecting"))
-        if req.get("port") != 7000 or req.get("options") != dict(display=1):
+        if req.get("port") != 7000 or (req.get("options") or {}).get("display") != 1:
             # Like a real sender: the wrong port or display reaches nothing useful.
             st = "idle"; err = "unreachable"; state("idle", err)
             continue
@@ -722,6 +753,8 @@ for raw in sys.stdin:
         out(dict(type="response", id=rid, ok=True, state=st, displays=[
             dict(index=0, name="\\\\.\\DISPLAY1", x=0, y=0, width=2560, height=1440, primary=True),
             dict(index=1, name="\\\\.\\DISPLAY2", x=2560, y=0, width=1920, height=1080, primary=False)]))
+    elif cmd == "sent_options":
+        out(dict(type="response", id=rid, ok=True, options=options))
     elif cmd == "crash":
         sys.exit(3)
 "#;
@@ -760,7 +793,7 @@ for raw in sys.stdin:
     fn pairs_with_a_code_retries_a_wrong_one_and_stops() {
         let sender = fake_sender("pair");
         let (mirror, rx) = watched();
-        mirror.start(&sender, "127.0.0.1", Some(7000), "Den TV", Some(1)).unwrap();
+        mirror.start(&sender, "127.0.0.1", Some(7000), "Den TV", json!({"display": 1})).unwrap();
         wait_for(&rx, "code prompt", |s| s.phase == MirrorPhase::Code);
         mirror.submit_code("0000").unwrap();
         let retry = wait_for(&rx, "second prompt", |s| s.phase == MirrorPhase::Code && s.message.is_some());
@@ -768,8 +801,32 @@ for raw in sys.stdin:
         mirror.submit_code("1111").unwrap();
         let live = wait_for(&rx, "mirroring", |s| s.phase == MirrorPhase::Mirroring);
         assert_eq!((live.target.as_deref(), live.since_ms), (Some("127.0.0.1"), Some(7)));
-        assert!(mirror.start(&sender, "10.0.0.2", None, "Other", None).is_err(), "one session at a time");
+        assert!(mirror.start(&sender, "10.0.0.2", None, "Other", json!({})).is_err(), "one session at a time");
         assert_eq!(mirror.stop().unwrap(), MirrorSnapshot::default());
+        mirror.shutdown();
+    }
+
+    #[test]
+    fn the_options_go_with_the_connect_and_its_retry_for_a_new_code() {
+        let sender = fake_sender("options");
+        let (mirror, rx) = watched();
+        let options = json!({"display": 1, "fps": 30, "audio": false});
+        mirror.start(&sender, "127.0.0.1", Some(7000), "Den TV", options.clone()).unwrap();
+        wait_for(&rx, "code prompt", |s| s.phase == MirrorPhase::Code);
+        mirror.submit_code("0000").unwrap();
+        wait_for(&rx, "second prompt", |s| s.phase == MirrorPhase::Code && s.message.is_some());
+        let (tx, reply) = mpsc::channel();
+        let mut inner = mirror.inner.lock().unwrap();
+        mirror.write(&mut inner, json!({ "cmd": "sent_options" }), Pending::Reply, Some(tx)).unwrap();
+        drop(inner);
+        assert_eq!(reply.recv_timeout(REPLY_TIMEOUT).unwrap()["options"], json!([options, options]));
+        mirror.shutdown();
+    }
+
+    #[test]
+    fn reads_what_the_sender_can_do_from_its_hello() {
+        let (mirror, _rx) = watched();
+        assert_eq!(mirror.capabilities(&fake_sender("caps")).unwrap(), SenderCapabilities { audio: true });
         mirror.shutdown();
     }
 
@@ -786,7 +843,7 @@ for raw in sys.stdin:
     fn a_sender_crash_mid_session_is_reported() {
         let sender = fake_sender("crash");
         let (mirror, rx) = watched();
-        mirror.start(&sender, "127.0.0.1", Some(7000), "Den TV", Some(1)).unwrap();
+        mirror.start(&sender, "127.0.0.1", Some(7000), "Den TV", json!({"display": 1})).unwrap();
         wait_for(&rx, "code prompt", |s| s.phase == MirrorPhase::Code);
         let mut inner = mirror.inner.lock().unwrap();
         mirror.write(&mut inner, json!({ "cmd": "crash" }), Pending::Reply, None).unwrap();
@@ -799,7 +856,7 @@ for raw in sys.stdin:
     fn a_missing_sender_says_to_reinstall() {
         let (mirror, _rx) = watched();
         let missing = SenderCommand { program: "Z:/nope/open-airplay-sender.exe".into(), args: vec![], path_prepend: vec![], log: None };
-        assert_eq!(mirror.start(&missing, TV, None, "Den", None).unwrap_err(), "Mirroring isn't installed. Reinstall open-airplay.");
+        assert_eq!(mirror.start(&missing, TV, None, "Den", json!({})).unwrap_err(), "Mirroring isn't installed. Reinstall open-airplay.");
         assert_eq!(mirror.snapshot(), MirrorSnapshot::default());
     }
 }

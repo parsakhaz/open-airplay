@@ -22,10 +22,19 @@ const StdioProtocolVersion = 1
 // "state" is pushed whenever the daemon's status changes, so a parent process
 // never has to poll. See docs/control-protocol.md.
 type StdioMessage struct {
-	Type     string `json:"type"`
-	ID       uint64 `json:"id,omitempty"`
-	Protocol int    `json:"protocol,omitempty"`
+	Type         string        `json:"type"`
+	ID           uint64        `json:"id,omitempty"`
+	Protocol     int           `json:"protocol,omitempty"`
+	Capabilities *Capabilities `json:"capabilities,omitempty"` // hello only
 	Response
+}
+
+// Capabilities, announced in hello, say which optional features this build
+// supports, so a client can hide controls before trying them.
+type Capabilities struct {
+	// Audio is true when connect honours options.audio: true (this build can
+	// capture the computer's own sound).
+	Audio bool `json:"audio"`
 }
 
 // stdioStatePoll bounds how stale a pushed state line can be. Stream state is
@@ -45,7 +54,11 @@ func (d *Daemon) RunStdio(ctx context.Context, in io.Reader, out io.Writer) erro
 	defer cancel()
 
 	w := &stdioWriter{enc: json.NewEncoder(out)}
-	w.write(StdioMessage{Type: "hello", Protocol: StdioProtocolVersion})
+	w.write(StdioMessage{
+		Type:         "hello",
+		Protocol:     StdioProtocolVersion,
+		Capabilities: &Capabilities{Audio: airplay.SystemAudioCaptureAvailable()},
+	})
 
 	if !d.skipDiscovery {
 		d.mu.Lock()

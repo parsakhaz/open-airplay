@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -359,7 +360,7 @@ func TestStdioConnectRemembersTheChosenDisplay(t *testing.T) {
 	d.mu.Lock()
 	entry := d.streams[host]
 	d.mu.Unlock()
-	if entry == nil || entry.displayIndex != 1 {
+	if entry == nil || entry.settings.display != 1 {
 		t.Fatalf("stream entry = %+v, want display 1", entry)
 	}
 }
@@ -410,16 +411,109 @@ func TestStdioUnreachableTargetReportsItsOwnErrorKind(t *testing.T) {
 	}
 }
 
+func TestStdioConnectAppliesTuningOptionsToThatTargetOnly(t *testing.T) {
+	host, port, _, _ := silentReceiver(t)
+	d := newStdioTestDaemon(t)
+	h := newStdioHarness(t, d)
+
+	h.send(fmt.Sprintf(`{"id":1,"cmd":"connect","target":%q,"port":%d,"options":{"display":1,"fps":30,"bitrate_kbps":8000,"latency_ms":250,"video_codec":"h264","hwaccel":"none","show_cursor":false,"audio":false}}`, host, port))
+	if resp := h.response(1); !resp.OK {
+		t.Fatalf("connect rejected: %+v", resp)
+	}
+	d.mu.Lock()
+	entry := d.streams[host]
+	d.mu.Unlock()
+	want := mirrorSettings{
+		display:    1,
+		fps:        30,
+		bitrate:    8000,
+		latency:    250 * time.Millisecond,
+		videoCodec: airplay.VideoCodecH264,
+		hwaccel:    "none",
+		showCursor: false,
+		noAudio:    true,
+	}
+	if entry == nil || entry.settings != want {
+		t.Fatalf("stream settings = %+v, want %+v", entry, want)
+	}
+}
+
+func TestOmittedOptionsKeepTheSendersDefaults(t *testing.T) {
+	d, err := New(Config{
+		CredBackend: "file",
+		CredFile:    filepath.Join(t.TempDir(), "credentials.json"),
+		FPS:         60,
+		Bitrate:     6000,
+		HWAccel:     "nvenc",
+		ShowCursor:  true,
+		NoAudio:     true,
+	})
+	if err != nil {
+		t.Fatalf("create daemon: %v", err)
+	}
+	want := mirrorSettings{fps: 60, bitrate: 6000, videoCodec: airplay.VideoCodecAuto, hwaccel: "nvenc", showCursor: true, noAudio: true}
+	if got := d.mirrorSettingsFor(nil); got != want {
+		t.Fatalf("settings without options = %+v, want %+v", got, want)
+	}
+	if got := d.mirrorSettingsFor(&MirrorOptions{VideoCodec: "auto", HWAccel: "auto"}); got.videoCodec != airplay.VideoCodecAuto || got.hwaccel != "auto" {
+		t.Fatalf("explicit auto = %+v, want codec and encoder auto", got)
+	}
+}
+
+func TestStdioRejectsOutOfRangeOptions(t *testing.T) {
+	h := newStdioHarness(t, newStdioTestDaemon(t))
+	for i, options := range []string{
+		`{"fps":-1}`,
+		`{"fps":500}`,
+		`{"bitrate_kbps":-5}`,
+		`{"latency_ms":2}`,
+		`{"latency_ms":5000}`,
+		`{"video_codec":"vp9"}`,
+		`{"hwaccel":"quantum"}`,
+	} {
+		id := i + 1
+		h.send(fmt.Sprintf(`{"id":%d,"cmd":"connect","target":"127.0.0.1","options":%s}`, id, options))
+		if resp := h.response(uint64(id)); resp.OK || resp.ErrorKind != ErrorKindInvalidRequest {
+			t.Errorf("options %s: response = %+v, want invalid_request", options, resp)
+		}
+	}
+}
+
+func TestStdioHelloAnnouncesWhetherSoundCanBeSent(t *testing.T) {
+	h := newStdioHarness(t, newStdioTestDaemon(t))
+	hello := h.next("hello", func(m StdioMessage) bool { return m.Type == "hello" })
+	if hello.Capabilities == nil || hello.Capabilities.Audio != airplay.SystemAudioCaptureAvailable() {
+		t.Fatalf("hello capabilities = %+v, want audio = %v", hello.Capabilities, airplay.SystemAudioCaptureAvailable())
+	}
+}
+
+func TestStdioRefusesSoundWithoutAudioCapture(t *testing.T) {
+	if airplay.SystemAudioCaptureAvailable() {
+		t.Skip("this build can capture system audio")
+	}
+	h := newStdioHarness(t, newStdioTestDaemon(t))
+	h.send(`{"id":1,"cmd":"connect","target":"127.0.0.1","options":{"audio":true}}`)
+	if resp := h.response(1); resp.OK || resp.ErrorKind != ErrorKindUnsupportedOption || !strings.Contains(resp.Error, "audio") {
+		t.Fatalf("response = %+v, want unsupported_option naming audio", resp)
+	}
+}
+
 func TestStdioRejectsOptionsItCannotHonourYet(t *testing.T) {
 	h := newStdioHarness(t, newStdioTestDaemon(t))
-	h.send(`{"id":1,"cmd":"connect","target":"127.0.0.1","options":{"fps":60}}`)
-	resp := h.response(1)
-	if resp.OK || resp.ErrorKind != ErrorKindUnsupportedOption || !strings.Contains(resp.Error, "fps") {
-		t.Fatalf("response = %+v, want unsupported_option naming fps", resp)
-	}
-	h.send(`{"id":2,"cmd":"connect","target":"127.0.0.1","options":{"display":-3}}`)
-	if resp := h.response(2); resp.OK || resp.ErrorKind != ErrorKindInvalidRequest {
+	h.send(`{"id":1,"cmd":"connect","target":"127.0.0.1","options":{"display":-3}}`)
+	if resp := h.response(1); resp.OK || resp.ErrorKind != ErrorKindInvalidRequest {
 		t.Fatalf("negative display response = %+v, want invalid_request", resp)
+	}
+	if runtime.GOOS != "windows" {
+		return
+	}
+	// Windows Desktop Duplication encodes H.264 only, with nvenc or libx264.
+	for i, options := range []string{`{"video_codec":"hevc"}`, `{"hwaccel":"vaapi"}`} {
+		id := i + 2
+		h.send(fmt.Sprintf(`{"id":%d,"cmd":"connect","target":"127.0.0.1","options":%s}`, id, options))
+		if resp := h.response(uint64(id)); resp.OK || resp.ErrorKind != ErrorKindUnsupportedOption {
+			t.Errorf("options %s: response = %+v, want unsupported_option", options, resp)
+		}
 	}
 }
 

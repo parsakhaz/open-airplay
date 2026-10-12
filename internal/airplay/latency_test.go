@@ -157,3 +157,25 @@ func TestConnectionLatencyHintName(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionLatencyOverrideBeatsTheProcessWideOne(t *testing.T) {
+	SetTargetLatency(120 * time.Millisecond)
+	t.Cleanup(func() { SetTargetLatency(0) })
+
+	got, explicit := sessionScreenLatencies(connectionLatencyNormal, 250*time.Millisecond)
+	if got.video != 250*time.Millisecond || got.audio != 250*time.Millisecond || !explicit {
+		t.Fatalf("session override = %+v explicit=%v, want 250ms/250ms explicit", got, explicit)
+	}
+	got, explicit = sessionScreenLatencies(connectionLatencyNormal, 0)
+	if got.video != 120*time.Millisecond || !explicit {
+		t.Fatalf("no session override = %+v explicit=%v, want the process-wide 120ms", got, explicit)
+	}
+	SetTargetLatency(0)
+	got, explicit = sessionScreenLatencies(connectionLatencyNormal, 0)
+	if got.video != 75*time.Millisecond || got.audio != 85*time.Millisecond || explicit {
+		t.Fatalf("automatic = %+v explicit=%v, want 75ms/85ms automatic", got, explicit)
+	}
+	if got, _ := sessionScreenLatencies(connectionLatencyNormal, time.Millisecond); got.video != 5*time.Millisecond {
+		t.Fatalf("tiny session override = %v, want clamped to 5ms", got.video)
+	}
+}

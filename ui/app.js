@@ -611,6 +611,7 @@ listen("network-changed", () => { ui.lastScan = 0; scan(); });
 
 OapCast.mount($("cast-media"), render);
 OapMirror.mount($("mirror-sheet"), { changed: mirrorChanged, devices: mirrorTargets, back });
+MirrorAdvanced.mount($("mirror-sheet").querySelector('[data-slot="mirror-advanced"]'));
 
 (async () => {
   await loadPrefs();

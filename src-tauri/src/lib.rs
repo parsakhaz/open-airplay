@@ -4,6 +4,7 @@ pub mod engine;
 pub mod engine_log;
 pub mod launch;
 pub mod mirror;
+pub mod mirror_options;
 pub mod netwatch;
 pub mod panel;
 pub mod prefs;
@@ -594,6 +595,12 @@ fn set_prefs(app: AppHandle, start_at_login: bool) -> Result<AppPrefs, String> {
     Ok(prefs)
 }
 
+/// Saves the Advanced choices in the Mirror sheet: the defaults for every mirror.
+#[tauri::command]
+fn set_mirror_options(app: AppHandle, options: mirror_options::MirrorOptions) -> AppPrefs {
+    app.state::<AppState>().update_prefs(|p| p.mirror = options)
+}
+
 fn apply_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
     // Dev builds share the installed app's Run entry name; registering target\debug would hijack it.
@@ -859,11 +866,35 @@ fn mirror_status(app: AppHandle) -> mirror::MirrorSnapshot {
 
 /// Mirrors this PC to the TV at `target` (its address from the device list). Progress arrives as
 /// "mirror-status" events: connecting, code (enter the TV's PIN or password), mirroring, error.
+/// The options are the saved Advanced choices, plus the `display` picked in the sheet (sent only when
+/// this PC has more than one).
 #[tauri::command]
-async fn mirror_start(app: AppHandle, target: String, port: Option<u16>, name: String, display: Option<i32>) -> Result<mirror::MirrorSnapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.start(&mirror_sender(&app), &target, port, &name, display))
-        .await
-        .map_err(|e| e.to_string())?
+async fn mirror_start(
+    app: AppHandle,
+    target: String,
+    port: Option<u16>,
+    name: String,
+    display: Option<i32>,
+) -> Result<mirror::MirrorSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mirror = the_mirror(&app)?;
+        let sender = mirror_sender(&app);
+        let caps = mirror.capabilities(&sender).unwrap_or_default();
+        let mut options = app.state::<AppState>().prefs.lock().unwrap().mirror.connect_options(caps);
+        if let Some(display) = display {
+            options["display"] = display.into();
+        }
+        mirror.start(&sender, &target, port, &name, options)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// What the sender can do (today: whether it can send this PC's sound), so the Sound toggle shows
+/// only when it would take effect.
+#[tauri::command]
+async fn mirror_capabilities(app: AppHandle) -> Result<mirror::SenderCapabilities, String> {
+    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.capabilities(&mirror_sender(&app))).await.map_err(|e| e.to_string())?
 }
 
 /// The code shown on the TV, or the password set on it.
@@ -1236,7 +1267,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays, set_mirror_options, mirror_capabilities])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 

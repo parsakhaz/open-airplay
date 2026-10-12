@@ -16,9 +16,17 @@ Source of truth: `internal/daemon/daemon.go` (types) and `internal/daemon/daemon
 
 | `type` | When | Carries |
 |---|---|---|
-| `hello` | First line, once | `protocol`: `1` |
+| `hello` | First line, once | `protocol`: `1`, `capabilities` (below) |
 | `state` | Right after `hello`, then whenever the status changes (checked at most every 100 ms and after every request) | A status (below) |
 | `response` | One per request, in request order | `id` of the request, then a status or a command result |
+
+`capabilities` says which optional features this build has, so a client can hide a control instead of trying it:
+
+| Field | Meaning |
+|---|---|
+| `audio` | `true` when `connect` honours `options.audio: true`, that is, this build can capture the computer's own sound. While it is `false`, hide the Sound control; `audio: true` is refused with `unsupported_option`. |
+
+Example: `{"type":"hello","protocol":1,"capabilities":{"audio":false}}`. Clients must ignore capability fields they don't know. Go: `airplay.SystemAudioCaptureAvailable()`.
 
 A `state` line written after a `response` always reflects that request. For example, after the reply to `connect`, no stale `idle` line for that target follows. A `state` line written before the reply may or may not include the request's effect.
 
@@ -66,18 +74,20 @@ After `wrong_code`, the attempt is over: the TV drops it. Send `connect` again (
 
 ### `options` (per target, all optional)
 
-| Field | Meaning | Today |
-|---|---|---|
-| `display` | Display index from `displays` | Honoured. The video is fitted to that display's size. |
-| `fps` | Frames per second | Rejected with `unsupported_option` until implemented |
-| `bitrate_kbps` | Video bitrate | Rejected until implemented |
-| `latency_ms` | Joint audio/video playout latency | Rejected until implemented |
-| `video_codec` | `auto`, `h264`, `hevc` | Only `auto` accepted until implemented |
-| `hwaccel` | `auto`, `nvenc`, `none`, ... | Only `auto` accepted until implemented |
-| `show_cursor` | Draw the pointer | Rejected until implemented |
-| `audio` | Send this PC's sound | Rejected until implemented (no Windows audio capture yet) |
+Each option applies to that target only. Targets with different encoder choices (display, bitrate, encoder, cursor, latency) get their own encoder; targets with the same ones share one.
 
-An omitted field (or `0` or `auto`) means automatic, or the sender's command-line default. A field this build cannot honour is refused rather than ignored, so a client never shows a setting that didn't take effect. Builders who add an option accept it in `validateMirrorOptions` and apply it per target.
+| Field | Meaning | Values |
+|---|---|---|
+| `display` | Display index from `displays` | `0` or more. The video is fitted to that display's size. |
+| `fps` | Frames per second | `0` (automatic: the TV's recommended rate) to `120`. A rate above the TV's maximum fails the connect with `rejected`. |
+| `bitrate_kbps` | Video bitrate | `0` (automatic: tuned for resolution and frame rate) to `100000` |
+| `latency_ms` | Joint audio/video playout latency | `0` (automatic, by network) or `5` to `2000` |
+| `video_codec` | Screen codec | `auto`, `h264`, `hevc`. Windows: `auto` or `h264` only; `hevc` is `unsupported_option`. |
+| `hwaccel` | Encoder | `auto`, `nvenc`, `vaapi`, `openh264`, `none` (software). Windows: `auto`, `nvenc` or `none`; others are `unsupported_option`. |
+| `show_cursor` | Draw the pointer | `true` or `false` |
+| `audio` | Send this PC's sound | `true` or `false`. `true` is `unsupported_option` unless `hello.capabilities.audio` is `true`. |
+
+An omitted field (or `0` or `auto`) means automatic, or the sender's command-line default. A value out of range is `invalid_request`. A value this build cannot honour is refused with `unsupported_option` rather than ignored, so a client never shows a setting that didn't take effect.
 
 ## Error kinds
 
