@@ -89,7 +89,9 @@ function elapsed(since) {
 }
 
 function deviceIcon(d) {
-  if (!d.services.includes("AirPlay") || /speaker|homepod|five/i.test(d.model || "")) return "i-speaker";
+  // No services at all: added by address and never answered a cast scan, so it's offered for mirroring.
+  const audioOnly = d.services.length > 0 && !d.services.includes("AirPlay");
+  if (audioOnly || /speaker|homepod|five/i.test(d.model || "")) return "i-speaker";
   if (/mac/i.test(d.model || "")) return "i-laptop";
   return "i-tv";
 }
