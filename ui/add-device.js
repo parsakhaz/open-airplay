@@ -31,7 +31,9 @@ const AddDevice = (() => {
     const addr = await invoke("added_device_check", { input: form.input, port: String(form.port ?? "").trim() || null });
     let found = null;
     try {
-      found = (await scanHosts(addr.host))[0] || null;
+      // The device at that address; a hostname resolves elsewhere, so then only a lone answer counts.
+      const devices = await scanHosts(addr.host);
+      found = devices.find((d) => d.address === addr.host) || (devices.length === 1 ? devices[0] : null);
     } catch { /* not a cast device, or no sidecar: it can still be mirrored to */ }
     const name = String(form.name ?? "").trim() || (found && found.name) || null;
     return invoke("added_device_save", { device: { host: addr.host, port: addr.port, name, cast_id: (found && found.identifier) || null } });

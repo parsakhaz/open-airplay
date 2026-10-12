@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="tokens.css">
   <link rel="stylesheet" href="components.css">
   <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="add-device.css">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -67,7 +68,11 @@
             <div class="row"><input class="oai-input" data-cast="file" placeholder="C:\Music\song.mp3"><button class="oai-btn is-small" data-action="stream-file">Stream</button></div>
             <div class="msg" id="r-cast-msg"></div>
           </div>
+          <div id="device-extra"></div>
         </div>
+
+        <!-- Add device by address: filled by add-device.js -->
+        <div class="pop-page" id="page-add-device" hidden></div>
       </div>
     </div>
     <footer class="oai-popover-foot" id="panel-foot">
@@ -75,6 +80,7 @@
     </footer>
   </section>
 
+  <script src="add-device.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

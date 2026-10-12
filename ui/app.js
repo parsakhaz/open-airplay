@@ -11,13 +11,20 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const use = (id) => `<svg><use href="#${id}"/></svg>`;
 
 // ---------- app preferences (saved by the Rust side in the app's config folder) ----------
-const prefs = { startAtLogin: false };
+const prefs = { startAtLogin: false, addedDevices: [] };
 
 async function loadPrefs() {
   try {
     const p = await invoke("get_prefs");
     prefs.startAtLogin = !!p.start_at_login;
+    prefs.addedDevices = p.added_devices || [];
   } catch { /* keep defaults */ }
+}
+
+/** After an added device is saved or removed: reload the list and redraw Send to. */
+async function refreshAddedDevices() {
+  await loadPrefs();
+  render();
 }
 
 async function savePrefs() {
@@ -28,7 +35,7 @@ async function savePrefs() {
 // ---------- state ----------
 const ui = {
   status: { seq: 0, running: false },
-  page: "home",             // "home" | "settings" | "cast"
+  page: "home",             // "home" | "settings" | "cast" | "add-device"
   target: null,
   devices: [],
   scanned: false,
@@ -163,11 +170,15 @@ function devicesEmptyText() {
   return ui.scanned ? "No AirPlay devices found on this network." : "Press ↻ to find Apple TVs and speakers.";
 }
 
+// Send to: discovered devices, then devices added by address (add-device.js).
+const sendRows = () => AddDevice.merge(ui.devices, prefs.addedDevices);
+
 function devicesHtml() {
   // Rows carry the device's identifier, never its list position, so a click during a scan opens the right one.
-  const rows = ui.devices.map((d) => `<button class="oai-list-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block">${esc(d.name)}</span></span><span class="oai-meta">${deviceKind(d)}</span></button>`).join("");
-  const empty = ui.devices.length && !ui.scanning ? "" : `<div class="oai-list-row oai-sub" style="color:var(--oai-ink-2)">${devicesEmptyText()}</div>`;
-  return `<div class="oai-list-label">Send to <button class="oai-ghost scan-btn ${ui.scanning ? "is-spinning" : ""}" data-action="scan" style="height:22px;padding:0 6px" aria-label="Find AirPlay devices">${use("i-refresh")}</button></div>${rows}${empty}`;
+  const list = sendRows();
+  const rows = list.map((d) => `<button class="oai-list-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block">${esc(d.name)}</span></span><span class="oai-meta">${d.added ? AddDevice.SUBTITLE : deviceKind(d)}</span></button>`).join("");
+  const empty = list.length && !ui.scanning ? "" : `<div class="oai-list-row oai-sub" style="color:var(--oai-ink-2)">${devicesEmptyText()}</div>`;
+  return `<div class="oai-list-label">Send to <button class="oai-ghost scan-btn ${ui.scanning ? "is-spinning" : ""}" data-action="scan" style="height:22px;padding:0 6px" aria-label="Find AirPlay devices">${use("i-refresh")}</button></div>${rows}${empty}${AddDevice.addRowHtml()}`;
 }
 
 function castHeadHtml() {
@@ -231,7 +242,9 @@ function render() {
   if (swErr.textContent !== switchError) swErr.textContent = switchError;
 
   if (ui.page === "cast" && !ui.target) ui.page = "home";
-  for (const page of ["home", "settings", "cast"]) $("page-" + page).hidden = ui.page !== page;
+  for (const page of ["home", "settings", "cast", "add-device"]) $("page-" + page).hidden = ui.page !== page;
+  // Send pages have their own header and no footer.
+  $("panel").classList.toggle("is-send-page", ui.page === "add-device");
 
   if (ui.page === "home") {
     patch("r-notice", noticeHtml());
@@ -248,6 +261,7 @@ function render() {
     const msg = $("r-cast-msg");
     msg.className = "msg " + (ui.cast.state === "error" ? "is-bad" : ui.cast.state === "ok" ? "is-ok" : "");
     patch("r-cast-msg", castMsgHtml());
+    patch("device-extra", AddDevice.removeHtml(ui.target));
   }
   syncBusy();
   tick();
@@ -336,7 +350,7 @@ async function cast(cmd) {
   ui.cast = { state: "working", message: `Connecting to ${target.name}…` };
   render();
   try {
-    await request({ ...cmd, identifier: target.identifier });
+    await request({ ...cmd, identifier: target.identifier, address: target.address });
     ui.cast = { state: "ok", message: (cmd.cmd === "play_url" ? "Playing on " : "Streaming to ") + target.name };
   } catch (err) {
     ui.cast = { state: "error", message: `Couldn't cast: ${err}` };
@@ -349,12 +363,22 @@ const castUrl = () => document.querySelector('[data-cast="url"]').value.trim();
 const castFile = () => document.querySelector('[data-cast="file"]').value.trim();
 
 function selectDevice(identifier) {
-  const d = ui.devices.find((x) => x.identifier === identifier);
+  const d = sendRows().find((x) => x.identifier === identifier);
   if (!d) return;
   ui.target = d;
   ui.cast = { state: "idle", message: "" };
   goTo("cast");
 }
+
+// ---------- add device by address (add-device.js) ----------
+$("page-add-device").innerHTML = AddDevice.pageHtml();
+AddDevice.mount($("page-add-device"), {
+  invoke,
+  scanHosts: async (host) => (await request({ cmd: "scan", hosts: [host], timeout: 3 })).devices,
+  open: () => goTo("add-device"),
+  done: () => goTo("home"),
+  refresh: refreshAddedDevices,
+});
 
 // ---------- events ----------
 document.addEventListener("click", (e) => {

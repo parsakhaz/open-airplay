@@ -84,3 +84,12 @@ test("Remove shows only on the page of a device that was added by address", () =
   assert.match(html, /data-host="192\.168\.1\.20"/);
   assert.match(AddDevice.removeHtml({ added: `a"><b>` }), /data-host="a&quot;&gt;&lt;b&gt;"/, "escaped");
 });
+
+test("a scan that answers with other devices too only names the one at that address", async () => {
+  const f = fakes({ check: { host: "192.168.1.30", port: null }, scan: [den, office] });
+  const [saved] = await AddDevice.add({ input: "192.168.1.30", name: "", port: "" }, f);
+  assert.deepEqual([saved.name, saved.cast_id], ["Office", "BB"]);
+  const g = fakes({ check: { host: "192.168.1.99", port: null }, scan: [den, office] });
+  const [none] = await AddDevice.add({ input: "192.168.1.99", name: "", port: "" }, g);
+  assert.deepEqual([none.name, none.cast_id], [null, null], "several answers and none at that address: none of them");
+});
