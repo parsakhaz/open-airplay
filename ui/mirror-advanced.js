@@ -42,8 +42,14 @@
     </div>`;
   }
 
+  let current = null;   // the mounted state, for sendsSound()
+
+  // True when the next mirror sends this PC's sound: the sender can capture it and Sound is on.
+  const sendsSound = () => !!current && current.caps.audio && current.options.audio !== false;
+
   async function mount(container) {
     const state = { options: {}, caps: { audio: false }, open: false };
+    current = state;
     try {
       state.options = (await invoke("get_prefs")).mirror || {};
     } catch (_) {}
@@ -86,5 +92,5 @@
     });
   }
 
-  window.MirrorAdvanced = { mount };
+  window.MirrorAdvanced = { mount, sendsSound };
 })();

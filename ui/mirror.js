@@ -206,7 +206,9 @@ window.OapMirror = (() => {
       const live = m.live.since_ms != null;
       const tv = (offered().find((d) => d.ip === (m.rows[0] || {}).target) || { icon: "i-tv" }).icon;
       region("hero", `<div class="m-hero"><div class="m-flow"><span class="end">${use("i-pc")}</span><span class="dots3"><i></i><i></i><i></i></span><span class="end ${live ? "is-live" : ""}">${use(tv)}</span></div><div class="mini">${live ? `<b>Mirroring this screen</b> · ${clock(m.live.since_ms)}` : "<b>Connecting…</b>"}</div></div>`);
-      region("note", live ? `<div class="m-note">${use("i-sound")}Sound stays on this PC.</div>` : "");
+      // With Sound on (Advanced), the TV plays this PC's sound, so the note would be wrong.
+      const soundStays = !(window.MirrorAdvanced && MirrorAdvanced.sendsSound());
+      region("note", live && soundStays ? `<div class="m-note">${use("i-sound")}Sound stays on this PC.</div>` : "");
     } else {
       region("hero", "");
       region("note", "");
