@@ -18,7 +18,7 @@ use serde_json::Value;
 pub enum SenderSource {
     /// The frozen exe installed with the app (resources/sender/oap-sender.exe): needs no Python.
     Bundled,
-    /// OAP_SENDER: a frozen exe somewhere else (sender/dist from freeze.py, for testing).
+    /// OAP_SENDER: a frozen exe somewhere else (sender/dist from freeze.py), or a .py stand-in, for testing.
     Override,
     /// A development checkout: Python runs sender/oap_sender.py.
     Dev,
@@ -46,6 +46,10 @@ pub fn find_sender(
         return Some(frozen(p, SenderSource::Bundled));
     }
     if let Some(p) = override_exe.filter(|p| p.is_file()) {
+        // A .py override (a test stand-in such as sender/tests/fake_sender.py) runs under Python.
+        if p.extension().is_some_and(|e| e == "py") {
+            return Some(SenderProgram { program: python, args: vec!["-u".into(), p.into_os_string()], source: SenderSource::Override });
+        }
         return Some(frozen(p, SenderSource::Override));
     }
     let script = repo.join("sender").join("oap_sender.py");
@@ -280,6 +284,12 @@ mod tests {
         std::fs::write(&exe, "").unwrap();
         let bundled = find_sender(Some(&res), Some(other), python.clone(), &repo).unwrap();
         assert_eq!((bundled.source, bundled.program, bundled.args.len()), (SenderSource::Bundled, exe, 0));
+
+        // A .py override runs under Python.
+        let script = root.join("fake_sender.py");
+        std::fs::write(&script, "").unwrap();
+        let fake = find_sender(None, Some(script.clone()), python.clone(), &repo).unwrap();
+        assert_eq!((fake.source, &fake.program, fake.args.last().unwrap().as_os_str()), (SenderSource::Override, &python, script.as_os_str()));
 
         // An installed app on a PC without the checkout and without the exe has no sidecar.
         assert_eq!(find_sender(Some(&root.join("nowhere")), None, python, &root.join("no-repo")), None);

@@ -62,11 +62,8 @@
         <div class="pop-page" id="page-cast" hidden>
           <button class="oai-ghost oai-back" data-action="home">‹ Back</button>
           <div id="r-cast-head"></div>
-          <div class="pop-cast">
-            <div class="row" id="cast-url-row"><input class="oai-input" data-cast="url" type="url" placeholder="Video or audio link"><button class="oai-btn is-primary is-small" data-action="play-url">Play</button></div>
-            <div class="row"><input class="oai-input" data-cast="file" placeholder="C:\Music\song.mp3"><button class="oai-btn is-small" data-action="stream-file">Stream</button></div>
-            <div class="msg" id="r-cast-msg"></div>
-          </div>
+          <!-- Cast media: built and driven by cast.js, a self-contained piece the device page hosts. -->
+          <div id="cast-media"></div>
         </div>
       </div>
     </div>
@@ -75,6 +72,7 @@
     </footer>
   </section>
 
+  <script src="cast.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

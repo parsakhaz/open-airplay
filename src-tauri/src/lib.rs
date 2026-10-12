@@ -805,6 +805,8 @@ fn spawn_network_watcher(app: AppHandle) {
                 ip = sample.primary_ip;
             }
             let Some(reason) = decision else { continue };
+            // The panel refreshes its device list (devices on the old network are gone).
+            let _ = app.emit("network-changed", ());
             let settings = settings_to_restart(&app.state::<AppState>().status.snapshot());
             if let Some(settings) = settings {
                 eprintln!("open-airplay: restarting the receiver ({reason:?})");
@@ -967,6 +969,7 @@ pub fn run() {
                 show_panel(app);
             }
         }))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec![launch::AUTOSTART_ARG])))
         .manage(AppState::default())
         .setup(|app| {

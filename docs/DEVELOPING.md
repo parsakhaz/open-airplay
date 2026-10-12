@@ -44,7 +44,7 @@ Start at login is on by default. Sign-in launches pass `--autostart`: the app st
 
 Engine output is logged to `%LOCALAPPDATA%\org.openairplay.app\logs\engine.log`; the cast sidecar's log goes to `sender.log` in the same folder.
 
-Overrides: `OAP_ENGINE` (path to uxplay.exe), `OAP_MSYS2_ROOT` (default `C:\msys64`), `OAP_PYTHON` (sender interpreter), `OAP_SENDER` (path to a frozen `oap-sender.exe`, used instead of Python and the script).
+Overrides: `OAP_ENGINE` (path to uxplay.exe), `OAP_MSYS2_ROOT` (default `C:\msys64`), `OAP_PYTHON` (sender interpreter), `OAP_SENDER` (path to a frozen `oap-sender.exe`, used instead of Python and the script; a `.py` path runs under Python, for example `sender/tests/fake_sender.py`, a stand-in with three made-up devices for driving the cast page without hardware).
 
 ## Design system
 

@@ -34,11 +34,11 @@ const ui = {
   scanned: false,
   scanning: false,
   scanError: null,
+  lastScan: 0,              // when the device list was last refreshed (ms)
   busy: new Set(),          // actions in flight; only their own controls show busy
   errors: {},               // action -> plain message shown next to its control
   findings: [],
   mirrorSince: null,
-  cast: { state: "idle", message: "" },
   settingsNote: null,       // { ok, text } under the settings form
 };
 
@@ -87,6 +87,7 @@ function deviceIcon(d) {
   return "i-tv";
 }
 const deviceKind = (d) => ({ "i-tv": "Apple TV", "i-laptop": "Mac", "i-speaker": "Speaker" })[deviceIcon(d)];
+const isSpeaker = (d) => deviceIcon(d) === "i-speaker";
 
 // Busy and disabled states are applied by syncBusy(), not baked into region markup.
 const btn = (name, label, cls = "") => `<button class="oai-btn ${cls}" data-action="${name}">${esc(label)}</button>`;
@@ -159,13 +160,13 @@ function findingsHtml() {
 
 function devicesEmptyText() {
   if (ui.scanning) return '<span class="oai-spinner is-small" style="display:inline-block;vertical-align:-2px;margin-right:6px"></span>Searching…';
-  if (ui.scanError) return `Couldn't search: ${esc(ui.scanError)}`;
-  return ui.scanned ? "No AirPlay devices found on this network." : "Press ↻ to find Apple TVs and speakers.";
+  if (ui.scanError) return esc(ui.scanError);
+  return ui.scanned ? "No AirPlay devices found on this network." : "Looking for Apple TVs and speakers…";
 }
 
 function devicesHtml() {
   // Rows carry the device's identifier, never its list position, so a click during a scan opens the right one.
-  const rows = ui.devices.map((d) => `<button class="oai-list-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block">${esc(d.name)}</span></span><span class="oai-meta">${deviceKind(d)}</span></button>`).join("");
+  const rows = ui.devices.map((d) => `<button class="oai-list-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block">${esc(d.name)}</span></span><span class="oai-meta">${esc(OapCast.rowStatus(d.identifier) || deviceKind(d))}</span></button>`).join("");
   const empty = ui.devices.length && !ui.scanning ? "" : `<div class="oai-list-row oai-sub" style="color:var(--oai-ink-2)">${devicesEmptyText()}</div>`;
   return `<div class="oai-list-label">Send to <button class="oai-ghost scan-btn ${ui.scanning ? "is-spinning" : ""}" data-action="scan" style="height:22px;padding:0 6px" aria-label="Find AirPlay devices">${use("i-refresh")}</button></div>${rows}${empty}`;
 }
@@ -173,13 +174,6 @@ function devicesHtml() {
 function castHeadHtml() {
   const d = ui.target;
   return `<div class="oai-list-row"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block;font-weight:600">${esc(d.name)}</span><span class="oai-sub" style="display:block">${esc(d.model || deviceKind(d))}</span></span></div>`;
-}
-
-function castMsgHtml() {
-  const c = ui.cast;
-  if (c.state === "working") return `<span class="oai-spinner is-small"></span>${esc(c.message)}`;
-  if (c.state === "error") return `${esc(c.message)} ${btn("retry-cast", "Retry", "is-small")}`;
-  return esc(c.message);
 }
 
 /** Copies saved values into the static settings inputs, except the one being edited. */
@@ -244,10 +238,6 @@ function render() {
     syncSettingsInputs();
   } else if (ui.page === "cast") {
     patch("r-cast-head", castHeadHtml());
-    $("cast-url-row").hidden = !ui.target.services.includes("AirPlay");
-    const msg = $("r-cast-msg");
-    msg.className = "msg " + (ui.cast.state === "error" ? "is-bad" : ui.cast.state === "ok" ? "is-ok" : "");
-    patch("r-cast-msg", castMsgHtml());
   }
   syncBusy();
   tick();
@@ -295,20 +285,8 @@ async function run(action, fn) {
 const startReceiver = (settings) => run("start", async () => { acceptStatus(await invoke("receiver_start", { settings })); });
 const stopReceiver = () => run("stop", async () => { acceptStatus(await invoke("receiver_stop")); });
 
-// ---------- sender ----------
-let nextId = 1;
-const pending = new Map();
-
-function request(cmd) {
-  const id = nextId++;
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    invoke("sender_send", { command: { id, ...cmd } }).catch((err) => {
-      pending.delete(id);
-      reject(err);
-    });
-  });
-}
+// ---------- devices (casting itself lives in cast.js) ----------
+const RESCAN_AFTER_MS = 60000;
 
 async function scan() {
   if (ui.scanning) return;
@@ -316,43 +294,29 @@ async function scan() {
   ui.scanError = null;
   render();
   try {
-    const { devices } = await request({ cmd: "scan", timeout: 5 });
-    ui.devices = devices.filter((d) => d.services.includes("AirPlay") || d.services.includes("RAOP"));
+    ui.devices = await OapCast.scan();
     ui.scanned = true;
+    // Keep the open device page pointing at the fresh entry for the same device.
+    if (ui.target) ui.target = ui.devices.find((d) => d.identifier === ui.target.identifier) || ui.target;
   } catch (err) {
     ui.scanError = String(err);
   } finally {
     ui.scanning = false;
+    ui.lastScan = Date.now();
     render();
   }
 }
 
-let lastCast = null;
-async function cast(cmd) {
-  if (!ui.target || ui.busy.has("cast")) return;
-  lastCast = cmd;
-  const target = ui.target;
-  ui.busy.add("cast");
-  ui.cast = { state: "working", message: `Connecting to ${target.name}…` };
-  render();
-  try {
-    await request({ ...cmd, identifier: target.identifier });
-    ui.cast = { state: "ok", message: (cmd.cmd === "play_url" ? "Playing on " : "Streaming to ") + target.name };
-  } catch (err) {
-    ui.cast = { state: "error", message: `Couldn't cast: ${err}` };
-  } finally {
-    ui.busy.delete("cast");
-  }
-  render();
+/** Devices appear by themselves: on start, when the panel opens (if the list is old), after a network change. */
+function scanIfStale() {
+  if (Date.now() - ui.lastScan > RESCAN_AFTER_MS) scan();
 }
-const castUrl = () => document.querySelector('[data-cast="url"]').value.trim();
-const castFile = () => document.querySelector('[data-cast="file"]').value.trim();
 
 function selectDevice(identifier) {
   const d = ui.devices.find((x) => x.identifier === identifier);
   if (!d) return;
   ui.target = d;
-  ui.cast = { state: "idle", message: "" };
+  OapCast.show(d, isSpeaker(d));
   goTo("cast");
 }
 
@@ -372,9 +336,6 @@ document.addEventListener("click", (e) => {
     case "home": return goTo("home");
     case "settings": return goTo(ui.page === "settings" ? "home" : "settings");
     case "doctor-check": return run("doctor-check", () => invoke("doctor_check"));
-    case "play-url": return castUrl() && cast({ cmd: "play_url", url: castUrl() });
-    case "stream-file": return castFile() && cast({ cmd: "stream_file", path: castFile() });
-    case "retry-cast": return lastCast && cast(lastCast);
   }
 });
 
@@ -438,22 +399,12 @@ listen("receiver-status", (e) => {
   if (acceptStatus(e.payload)) render();
 });
 
-listen("sender-event", (e) => {
-  const msg = e.payload;
-  const p = pending.get(msg.id);
-  if (!p) return;
-  pending.delete(msg.id);
-  msg.event === "error" ? p.reject(msg.message) : p.resolve(msg);
-});
-
 listen("doctor-findings", (e) => { ui.findings = e.payload || []; render(); });
 
-// The sender sidecar died: fail everything in flight; the next request starts a fresh one.
-listen("sender-exit", (e) => {
-  const message = (e.payload && e.payload.message) || "The sender stopped unexpectedly.";
-  for (const p of pending.values()) p.reject(message);
-  pending.clear();
-});
+listen("panel-shown", scanIfStale);
+listen("network-changed", () => { ui.lastScan = 0; scan(); });
+
+OapCast.mount($("cast-media"), render);
 
 (async () => {
   await loadPrefs();
@@ -466,4 +417,5 @@ listen("sender-exit", (e) => {
     ui.errors.start = String(err);
   }
   render();
+  scan();
 })();
