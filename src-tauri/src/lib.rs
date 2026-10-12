@@ -2,134 +2,28 @@ pub mod doctor;
 pub mod engine;
 pub mod launch;
 pub mod netwatch;
+pub mod panel;
 pub mod prefs;
 pub mod process_guard;
 pub mod sender;
+pub mod status;
 pub mod supervisor;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
-use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, RunEvent, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent};
 
 use engine::{EngineEvent, ReceiverSettings};
 use prefs::AppPrefs;
 use sender::SenderSidecar;
+use status::{apply_event, end_session, Phase, ReceiverStatus, StatusHub};
 use supervisor::{EngineCommand, Supervisor, SupervisorEvent};
-
-/// What the receiver is doing, as the UI shows it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Phase {
-    #[default]
-    Stopped,
-    Starting,
-    Ready,
-    Connecting,
-    Mirroring,
-    Pin,
-    Error,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct ReceiverStatus {
-    pub phase: Phase,
-    /// The user wants the receiver on (Start/Apply pressed, or auto-start); false after Stop.
-    pub wanted: bool,
-    pub running: bool,
-    pub engine_path: Option<String>,
-    pub settings: Option<ReceiverSettings>,
-    pub advertised: bool,
-    pub connections: u32,
-    pub last_device: Option<String>,
-    /// Size of the mirrored video once frames arrive (reported by engine patch 0002).
-    pub video: Option<(u32, u32)>,
-    /// Unix time in ms when the current mirroring session's video started.
-    pub mirroring_since_ms: Option<u64>,
-    pub pin: Option<String>,
-    pub last_error: Option<String>,
-}
-
-pub fn phase(s: &ReceiverStatus) -> Phase {
-    if !s.running {
-        return match (s.wanted, s.last_error.is_some()) {
-            (false, _) => Phase::Stopped,
-            (true, true) => Phase::Error,
-            (true, false) => Phase::Starting,
-        };
-    }
-    if s.pin.is_some() {
-        Phase::Pin
-    } else if s.video.is_some() {
-        Phase::Mirroring
-    } else if s.last_device.is_some() && s.connections > 0 {
-        Phase::Connecting
-    } else if s.advertised {
-        Phase::Ready
-    } else {
-        Phase::Starting
-    }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
-}
-
-fn end_session(status: &mut ReceiverStatus) {
-    status.connections = 0;
-    status.last_device = None;
-    status.video = None;
-    status.mirroring_since_ms = None;
-    status.pin = None;
-}
-
-pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
-    match event {
-        SupervisorEvent::Started { .. } => {
-            status.running = true;
-            status.last_error = None;
-        }
-        SupervisorEvent::Exited { code } => {
-            status.running = false;
-            status.advertised = false;
-            end_session(status);
-            if status.wanted {
-                status.last_error = Some(format!("The receiver stopped unexpectedly (exit code {code:?}). Restarting…"));
-            }
-        }
-        SupervisorEvent::SpawnFailed { message } => {
-            status.running = false;
-            status.last_error = Some(format!("Could not start the receiver: {message}"));
-        }
-        SupervisorEvent::Engine { event } => match event {
-            EngineEvent::Advertised => status.advertised = true,
-            EngineEvent::ConnectionRequest { name, model, .. } => status.last_device = Some(format!("{name} ({model})")),
-            EngineEvent::OpenConnections { count } => {
-                if *count == 0 {
-                    end_session(status);
-                } else {
-                    status.connections = *count;
-                }
-            }
-            EngineEvent::Video { width, height } => {
-                status.video = Some((*width, *height));
-                status.pin = None;
-                status.mirroring_since_ms.get_or_insert_with(now_ms);
-            }
-            EngineEvent::Pin { code } => status.pin = Some(code.clone()),
-            EngineEvent::ClientLost => status.last_error = Some("Lost the connection to the sender.".into()),
-            EngineEvent::Error { message } => status.last_error = Some(message.clone()),
-        },
-        SupervisorEvent::Log { .. } => {}
-    }
-    status.phase = phase(status);
-}
 
 /// The processes the app owns. `shutdown` stops and reaps all of them; it runs on every exit path.
 #[derive(Default)]
@@ -167,10 +61,38 @@ struct AppState {
     /// Latest network-doctor findings, shown as cards in the UI.
     findings: Mutex<Vec<doctor::Finding>>,
     sidecars: Sidecars,
-    status: Arc<Mutex<ReceiverStatus>>,
+    status: StatusHub,
+    /// Held while a status change is made and published, so pushes leave in sequence order.
+    publish_order: Mutex<()>,
     prefs: Mutex<AppPrefs>,
     /// Where prefs are saved; set during setup (None in tests or if there's no config folder).
     prefs_path: Mutex<Option<PathBuf>>,
+    panel: PanelState,
+}
+
+/// The tray panel's placement and dismissal bookkeeping (see panel.rs for the rules).
+#[derive(Default)]
+struct PanelState {
+    visible: AtomicBool,
+    /// The tray icon's rectangle the last time it was clicked (physical px).
+    anchor: Mutex<Option<panel::Rect>>,
+    /// The content's height in logical px, as the UI last reported it.
+    content_height: Mutex<Option<f64>>,
+    last_dismissed: Mutex<Option<Instant>>,
+    /// Until when a window the app opened may take the focus without closing the panel.
+    grace_until: Mutex<Option<Instant>>,
+    /// Actions in progress that bring up their own windows (the firewall fix's UAC prompt).
+    holds: AtomicUsize,
+}
+
+impl PanelState {
+    fn in_grace(&self) -> bool {
+        self.holds.load(Ordering::SeqCst) > 0 || self.grace_until.lock().unwrap().is_some_and(|t| Instant::now() < t)
+    }
+
+    fn allow_own_window(&self) {
+        *self.grace_until.lock().unwrap() = Some(Instant::now() + panel::OWN_WINDOW_GRACE);
+    }
 }
 
 impl AppState {
@@ -291,6 +213,20 @@ fn publish(app: &AppHandle, snapshot: &ReceiverStatus) {
     let _ = app.emit("receiver-status", snapshot);
 }
 
+/// Changes the receiver status and publishes it if anything the UI shows changed. Returns the
+/// current snapshot. Never call this on the main thread: updating the tray waits for it.
+fn update_status(app: &AppHandle, change: impl FnOnce(&mut ReceiverStatus)) -> ReceiverStatus {
+    let state = app.state::<AppState>();
+    let _order = state.publish_order.lock().unwrap();
+    match state.status.update(change) {
+        Some(snapshot) => {
+            publish(app, &snapshot);
+            snapshot
+        }
+        None => state.status.snapshot(),
+    }
+}
+
 fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
     let state = app.state::<AppState>();
     state.update_prefs(|p| p.receiver = settings.clone());
@@ -301,26 +237,23 @@ fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings) -> Result<R
         EngineSource::Bundled => (vec![], vec![]),
     };
     env.extend(settings.engine_env(find_window_icon(app).as_deref()));
-    let snapshot = {
-        let mut st = state.status.lock().unwrap();
+    update_status(app, |st| {
         *st = ReceiverStatus {
             wanted: true,
             engine_path: Some(engine.display().to_string()),
             settings: Some(settings.clone()),
             ..Default::default()
-        };
-        st.phase = phase(&st);
-        st.clone()
-    };
-    publish(app, &snapshot);
+        }
+    });
     let cmd = EngineCommand { program: engine, args: settings.engine_args(), path_prepend, env, restart_delay: Duration::from_secs(2) };
-    let (status, handle) = (state.status.clone(), app.clone());
+    let handle = app.clone();
     // Every engine line and lifecycle event goes to <app log dir>/engine.log for diagnosis.
     let log = app.path().app_log_dir().ok().and_then(|dir| {
         std::fs::create_dir_all(&dir).ok()?;
         std::fs::OpenOptions::new().create(true).append(true).open(dir.join("engine.log")).ok()
     });
     // Runs on the supervisor's delivery thread, never on a thread that waits for the supervisor.
+    // Every line goes to the log; only real status changes reach the UI.
     let sup = Supervisor::start(cmd, move |event| {
         if let Some(mut f) = log.as_ref() {
             use std::io::Write;
@@ -330,42 +263,33 @@ fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings) -> Result<R
             };
             let _ = writeln!(f, "{line}");
         }
-        let snapshot = {
-            let mut st = status.lock().unwrap();
-            apply_event(&mut st, &event);
-            st.clone()
-        };
-        let _ = handle.emit("receiver-event", &event);
-        publish(&handle, &snapshot);
+        if matches!(event, SupervisorEvent::Log { .. }) {
+            return;
+        }
+        update_status(&handle, |st| apply_event(st, &event));
         if matches!(event, SupervisorEvent::Engine { event: EngineEvent::Advertised }) {
             run_doctor(&handle);
         }
     });
     state.sidecars.replace_supervisor(Some(sup));
-    let snapshot = state.status.lock().unwrap().clone();
-    Ok(snapshot)
+    Ok(state.status.snapshot())
 }
 
 fn stop_receiver_inner(app: &AppHandle) -> ReceiverStatus {
     let state = app.state::<AppState>();
     state.sidecars.replace_supervisor(None);
-    let snapshot = {
-        let mut st = state.status.lock().unwrap();
+    update_status(app, |st| {
         st.wanted = false;
         st.running = false;
         st.advertised = false;
         st.last_error = None;
-        end_session(&mut st);
-        st.phase = phase(&st);
-        st.clone()
-    };
-    publish(app, &snapshot);
-    snapshot
+        end_session(st);
+    })
 }
 
 #[tauri::command]
 fn receiver_status(app: AppHandle) -> ReceiverStatus {
-    app.state::<AppState>().status.lock().unwrap().clone()
+    app.state::<AppState>().status.snapshot()
 }
 
 #[tauri::command]
@@ -373,11 +297,12 @@ fn default_settings(app: AppHandle) -> ReceiverSettings {
     app.state::<AppState>().prefs.lock().unwrap().receiver.clone()
 }
 
-/// Brings the engine's mirror window to the front (it belongs to the uxplay process).
+/// Brings the engine's mirror window to the front (it belongs to the uxplay process). The panel stays open.
 #[tauri::command]
-fn show_video_window() -> Result<(), String> {
+fn show_video_window(app: AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
+        app.state::<AppState>().panel.allow_own_window();
         use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW};
         let class: Vec<u16> = "OpenAirplayMirrorWindow".encode_utf16().chain(Some(0)).collect();
         unsafe {
@@ -391,7 +316,10 @@ fn show_video_window() -> Result<(), String> {
         Ok(())
     }
     #[cfg(not(windows))]
-    Err("Not supported on this platform yet.".into())
+    {
+        let _ = app;
+        Err("Not supported on this platform yet.".into())
+    }
 }
 
 #[tauri::command]
@@ -401,11 +329,8 @@ fn get_prefs(app: AppHandle) -> AppPrefs {
 
 /// Saves the app-level prefs (receiver settings are saved by receiver_start) and applies start-at-login.
 #[tauri::command]
-fn set_prefs(app: AppHandle, open_full_view_on_mirror: bool, start_at_login: bool) -> Result<AppPrefs, String> {
-    let prefs = app.state::<AppState>().update_prefs(|p| {
-        p.open_full_view_on_mirror = open_full_view_on_mirror;
-        p.start_at_login = start_at_login;
-    });
+fn set_prefs(app: AppHandle, start_at_login: bool) -> Result<AppPrefs, String> {
+    let prefs = app.state::<AppState>().update_prefs(|p| p.start_at_login = start_at_login);
     apply_start_at_login(&app, prefs.start_at_login)?;
     Ok(prefs)
 }
@@ -540,7 +465,7 @@ fn run_doctor(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
-        let Some(engine) = engine_path_for_doctor(&state.status.lock().unwrap()) else { return };
+        let Some(engine) = engine_path_for_doctor(&state.status.snapshot()) else { return };
         let ip = netwatch::primary_ip().map(|i| i.to_string());
         let own = state.sidecars.engine_pid();
         let Some(snapshot) = doctor::probe(&engine, ip.as_deref(), own) else { return };
@@ -567,19 +492,24 @@ async fn doctor_fix(app: AppHandle, kind: String) -> Result<(), String> {
         match kind.as_str() {
             // Changing the network type is a Windows setting the user makes; open the right page.
             "public_network" => {
+                app.state::<AppState>().panel.allow_own_window();
                 std::process::Command::new("explorer.exe").arg("ms-settings:network-status").spawn().map_err(|e| e.to_string())?;
             }
             "firewall_blocks" => {
                 let state = app.state::<AppState>();
-                let engine = engine_path_for_doctor(&state.status.lock().unwrap()).ok_or("The receiver isn't set up yet.")?;
+                let engine = engine_path_for_doctor(&state.status.snapshot()).ok_or("The receiver isn't set up yet.")?;
                 let inner = doctor::firewall_fix_script(&engine).replace('\'', "''");
                 let launcher = format!(
                     "Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-NonInteractive','-Command','{inner}'"
                 );
+                // The UAC prompt and the elevated PowerShell must not close the panel.
+                state.panel.holds.fetch_add(1, Ordering::SeqCst);
                 let status = std::process::Command::new("powershell")
                     .args(["-NoProfile", "-NonInteractive", "-Command", &launcher])
-                    .status()
-                    .map_err(|e| e.to_string())?;
+                    .status();
+                state.panel.allow_own_window();
+                state.panel.holds.fetch_sub(1, Ordering::SeqCst);
+                let status = status.map_err(|e| e.to_string())?;
                 if !status.success() {
                     return Err("Windows didn't allow the change (the admin prompt was declined).".into());
                 }
@@ -617,7 +547,7 @@ fn spawn_network_watcher(app: AppHandle) {
                 ip = sample.primary_ip;
             }
             let Some(reason) = decision else { continue };
-            let settings = settings_to_restart(&app.state::<AppState>().status.lock().unwrap());
+            let settings = settings_to_restart(&app.state::<AppState>().status.snapshot());
             if let Some(settings) = settings {
                 eprintln!("open-airplay: restarting the receiver ({reason:?})");
                 let _ = start_receiver_inner(&app, settings);
@@ -626,51 +556,133 @@ fn spawn_network_watcher(app: AppHandle) {
     });
 }
 
-/// Tray left-click: toggle the compact popover just above (or below) the tray icon.
-fn toggle_popover(window: &WebviewWindow, icon_rect: tauri::Rect) {
-    if window.is_visible().unwrap_or(false) {
+/// The work area (screen minus taskbar) the panel opens on: the monitor with the tray icon, else the primary one.
+fn panel_work_area(window: &tauri::WebviewWindow, icon: Option<panel::Rect>) -> Option<(panel::Rect, f64)> {
+    let monitor = icon
+        .and_then(|r| window.monitor_from_point(r.x + r.w / 2.0, r.y + r.h / 2.0).ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten())?;
+    let area = monitor.work_area();
+    let work = panel::Rect { x: area.position.x as f64, y: area.position.y as f64, w: area.size.width as f64, h: area.size.height as f64 };
+    Some((work, monitor.scale_factor()))
+}
+
+/// Sizes the panel to its content (capped to the screen) and anchors it to the tray icon.
+fn place_panel(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    let state = app.state::<AppState>();
+    let icon = *state.panel.anchor.lock().unwrap();
+    let Some((work, scale)) = panel_work_area(&window, icon) else { return };
+    let gap = panel::GAP * scale;
+    let width = (panel::WIDTH * scale).round();
+    let content = state.panel.content_height.lock().unwrap().map(|h| h * scale);
+    let height = content.or_else(|| window.inner_size().ok().map(|s| s.height as f64)).unwrap_or(400.0 * scale);
+    let height = height.min(panel::max_height(work, gap)).round();
+    let (x, y) = panel::position(icon, width, height, work, gap);
+    let _ = window.set_size(PhysicalSize::new(width, height));
+    let _ = window.set_position(PhysicalPosition::new(x.round(), y.round()));
+}
+
+/// Opens the panel above the tray icon (the last clicked position, else wherever the icon is now).
+fn show_panel(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if state.panel.anchor.lock().unwrap().is_none() {
+        let rect = app.tray_by_id("main").and_then(|t| t.rect().ok().flatten());
+        *state.panel.anchor.lock().unwrap() = rect.map(|r| to_panel_rect(&r, 1.0));
+    }
+    place_panel(app);
+    if let Some(window) = app.get_webview_window("main") {
+        state.panel.visible.store(true, Ordering::SeqCst);
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("panel-shown", ());
+    }
+}
+
+/// Closes the panel. `dismissed`: it closed itself because something else took the focus.
+fn hide_panel(app: &AppHandle, dismissed: bool) {
+    let state = app.state::<AppState>();
+    state.panel.visible.store(false, Ordering::SeqCst);
+    if dismissed {
+        *state.panel.last_dismissed.lock().unwrap() = Some(Instant::now());
+    }
+    if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
+    }
+}
+
+fn to_panel_rect(rect: &tauri::Rect, scale: f64) -> panel::Rect {
+    let pos: PhysicalPosition<f64> = rect.position.to_physical(scale);
+    let size: PhysicalSize<f64> = rect.size.to_physical(scale);
+    panel::Rect { x: pos.x, y: pos.y, w: size.width, h: size.height }
+}
+
+/// The UI reports its content height (logical px) whenever it changes; the panel follows it.
+#[tauri::command]
+fn panel_fit(app: AppHandle, height: f64) {
+    if !(height.is_finite() && height > 0.0) {
         return;
     }
-    show_popover_at(window, icon_rect);
+    *app.state::<AppState>().panel.content_height.lock().unwrap() = Some(height);
+    place_panel(&app);
 }
 
-/// Opens the popover by the tray icon, or at the bottom-right of the work area if the icon can't be found.
-fn show_popover(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else { return };
-    match app.tray_by_id("main").and_then(|t| t.rect().ok().flatten()) {
-        Some(rect) => show_popover_at(&window, rect),
-        None => {
-            if let (Ok(size), Ok(Some(monitor))) = (window.outer_size(), window.primary_monitor()) {
-                let area = monitor.work_area();
-                let gap = (12.0 * window.scale_factor().unwrap_or(1.0)) as i32;
-                let x = area.position.x + area.size.width as i32 - size.width as i32 - gap;
-                let y = area.position.y + area.size.height as i32 - size.height as i32 - gap;
-                let _ = window.set_position(PhysicalPosition::new(x, y));
-            }
-            let _ = window.show();
-            let _ = window.set_focus();
+/// Esc on the home page.
+#[tauri::command]
+fn panel_hide(app: AppHandle) {
+    hide_panel(&app, false);
+}
+
+/// Closes the panel when another window takes the foreground, like Windows quick settings.
+#[cfg(windows)]
+fn spawn_foreground_watch(app: AppHandle) {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetClassNameW, GetMessageW, GetWindowThreadProcessId, TranslateMessage, EVENT_SYSTEM_FOREGROUND, MSG,
+        WINEVENT_OUTOFCONTEXT,
+    };
+
+    static APP: OnceLock<AppHandle> = OnceLock::new();
+
+    unsafe extern "system" fn on_foreground(_: HWINEVENTHOOK, _: u32, hwnd: HWND, _: i32, _: i32, _: u32, _: u32) {
+        let Some(app) = APP.get() else { return };
+        let state = app.state::<AppState>();
+        if !state.panel.visible.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut fg = panel::Foreground { none: hwnd.is_null(), ..Default::default() };
+        if !hwnd.is_null() {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            fg.own_process = pid == std::process::id();
+            let mut class = [0u16; 256];
+            let n = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
+            fg.class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
+        }
+        if panel::should_dismiss(&fg, state.panel.in_grace()) {
+            hide_panel(app, true);
         }
     }
+
+    let _ = APP.set(app);
+    std::thread::spawn(|| unsafe {
+        // Out-of-context hooks call back on this thread, which must pump messages.
+        let hook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, std::ptr::null_mut(), Some(on_foreground), 0, 0, WINEVENT_OUTOFCONTEXT);
+        if hook.is_null() {
+            eprintln!("open-airplay: could not watch the foreground window; the panel won't close by itself");
+            return;
+        }
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    });
 }
 
-fn show_popover_at(window: &WebviewWindow, icon_rect: tauri::Rect) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let icon_pos: PhysicalPosition<f64> = icon_rect.position.to_physical(scale);
-    let icon_size: tauri::PhysicalSize<f64> = icon_rect.size.to_physical(scale);
-    if let (Ok(size), Ok(Some(monitor))) = (window.outer_size(), window.current_monitor().or_else(|_| window.primary_monitor())) {
-        let (mw, mh) = (monitor.size().width as f64, monitor.size().height as f64);
-        let (mx, my) = (monitor.position().x as f64, monitor.position().y as f64);
-        let (w, h) = (size.width as f64, size.height as f64);
-        let gap = 8.0 * scale;
-        let x = (icon_pos.x + icon_size.width / 2.0 - w / 2.0).clamp(mx + gap, mx + mw - w - gap);
-        // Taskbar at the bottom (usual): open above the icon; otherwise below it.
-        let y = if icon_pos.y > my + mh / 2.0 { icon_pos.y - h - gap } else { icon_pos.y + icon_size.height + gap };
-        let _ = window.set_position(PhysicalPosition::new(x, y));
-    }
-    let _ = window.show();
-    let _ = window.set_focus();
-}
+#[cfg(not(windows))]
+fn spawn_foreground_watch(_app: AppHandle) {}
 
 pub fn run() {
     let app = tauri::Builder::default()
@@ -678,7 +690,7 @@ pub fn run() {
         // It never changes receiving; a stray boot launch while running does nothing.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if !launch::is_autostart(&args) {
-                show_popover(app);
+                show_panel(app);
             }
         }))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec![launch::AUTOSTART_ARG])))
@@ -719,53 +731,51 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
-                        if let Some(w) = tray.app_handle().get_webview_window("main") {
-                            toggle_popover(&w, rect);
+                        let app = tray.app_handle();
+                        let state = app.state::<AppState>();
+                        *state.panel.anchor.lock().unwrap() = Some(to_panel_rect(&rect, 1.0));
+                        let visible = state.panel.visible.load(Ordering::SeqCst);
+                        let last = *state.panel.last_dismissed.lock().unwrap();
+                        match panel::tray_click(visible, last, Instant::now()) {
+                            panel::TrayClick::Open => show_panel(app),
+                            panel::TrayClick::Close => hide_panel(app, false),
+                            panel::TrayClick::Nothing => {}
                         }
                     }
                 })
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "show" => show_panel(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
                 .build(app)?;
 
             spawn_network_watcher(app.handle().clone());
+            spawn_foreground_watch(app.handle().clone());
 
             // A boot launch shows the off state in the tray and nothing else. A manual launch opens the
             // panel and, if the switch was left on, starts receiving so the PC shows up without a click.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                let off = receiver_status(handle.clone());
-                publish(&handle, &off);
+                // The first update always publishes: the tray shows the off look and tooltip.
+                update_status(&handle, |_| {});
                 if launch.show_panel {
-                    show_popover(&handle);
+                    show_panel(&handle);
                 }
                 if !launch.start_receiving {
                     return;
                 }
                 let saved = handle.state::<AppState>().prefs.lock().unwrap().receiver.clone();
                 if let Err(e) = start_receiver_inner(&handle, saved) {
-                    let state = handle.state::<AppState>();
-                    let snapshot = {
-                        let mut st = state.status.lock().unwrap();
+                    update_status(&handle, |st| {
                         st.wanted = true;
                         st.last_error = Some(e);
-                        st.phase = phase(&st);
-                        st.clone()
-                    };
-                    publish(&handle, &snapshot);
+                    });
                 }
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, panel_fit, panel_hide])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
@@ -781,10 +791,6 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn running(advertised: bool) -> ReceiverStatus {
-        ReceiverStatus { wanted: true, running: true, advertised, ..Default::default() }
-    }
 
     #[test]
     fn a_network_change_restarts_only_a_receiver_that_is_on() {
@@ -817,61 +823,6 @@ mod tests {
         assert_eq!(tray_look(Phase::Mirroring), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Pin), TrayLook::Receiving);
         assert_eq!(tray_look(Phase::Error), TrayLook::Problem);
-    }
-
-    #[test]
-    fn phase_follows_the_receiver_lifecycle() {
-        assert_eq!(phase(&ReceiverStatus::default()), Phase::Stopped);
-        assert_eq!(phase(&ReceiverStatus { wanted: true, ..Default::default() }), Phase::Starting);
-        assert_eq!(phase(&running(false)), Phase::Starting);
-        assert_eq!(phase(&running(true)), Phase::Ready);
-        let error = ReceiverStatus { wanted: true, last_error: Some("boom".into()), ..Default::default() };
-        assert_eq!(phase(&error), Phase::Error);
-    }
-
-    #[test]
-    fn a_probe_connection_is_not_a_session() {
-        // Other Apple devices open short connections to query the receiver; that's still "ready".
-        let mut s = running(true);
-        apply_event(&mut s, &SupervisorEvent::Engine { event: EngineEvent::OpenConnections { count: 1 } });
-        assert_eq!(s.phase, Phase::Ready);
-    }
-
-    #[test]
-    fn a_session_goes_connecting_then_mirroring_then_back_to_ready() {
-        let mut s = running(true);
-        let engine = |event| SupervisorEvent::Engine { event };
-        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
-        apply_event(
-            &mut s,
-            &engine(EngineEvent::ConnectionRequest { name: "Parsa's iPhone".into(), model: "iPhone16,1".into(), device_id: "x".into() }),
-        );
-        assert_eq!(s.phase, Phase::Connecting);
-        apply_event(&mut s, &engine(EngineEvent::Video { width: 886, height: 1920 }));
-        assert_eq!(s.phase, Phase::Mirroring);
-        assert!(s.mirroring_since_ms.is_some());
-        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 0 }));
-        assert_eq!(s.phase, Phase::Ready);
-        assert_eq!((s.last_device.clone(), s.video), (None, None));
-    }
-
-    #[test]
-    fn pin_shows_until_video_starts() {
-        let mut s = running(true);
-        apply_event(&mut s, &SupervisorEvent::Engine { event: EngineEvent::Pin { code: "4821".into() } });
-        assert_eq!(s.phase, Phase::Pin);
-        apply_event(&mut s, &SupervisorEvent::Engine { event: EngineEvent::Video { width: 1920, height: 886 } });
-        assert_eq!(s.phase, Phase::Mirroring);
-    }
-
-    #[test]
-    fn an_unexpected_exit_is_an_error_but_a_requested_stop_is_not() {
-        let mut s = running(true);
-        apply_event(&mut s, &SupervisorEvent::Exited { code: Some(1) });
-        assert_eq!(s.phase, Phase::Error);
-        let mut stopped = ReceiverStatus { wanted: false, running: true, ..Default::default() };
-        apply_event(&mut stopped, &SupervisorEvent::Exited { code: Some(1) });
-        assert_eq!(stopped.phase, Phase::Stopped);
     }
 
     fn pid_alive(pid: u32) -> bool {
