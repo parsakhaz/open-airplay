@@ -61,9 +61,11 @@ window.OapCast = (() => {
     for (const [id, onEvent] of all) onEvent({ id, event: "error", code: "exited", message });
   });
 
-  /** Finds Apple TVs and speakers. Never spins longer than SCAN_TIMEOUT_MS. */
-  async function scan() {
-    const { devices } = await request({ cmd: "scan", timeout: 5 }, SCAN_TIMEOUT_MS, "Searching took too long. Try ↻ again.");
+  /** Finds Apple TVs and speakers. Never spins longer than SCAN_TIMEOUT_MS. With `hosts`, asks only
+   *  those addresses (Add device by address, for networks that block discovery). */
+  async function scan(hosts) {
+    const cmd = hosts ? { cmd: "scan", timeout: 5, hosts } : { cmd: "scan", timeout: 5 };
+    const { devices } = await request(cmd, SCAN_TIMEOUT_MS, "Searching took too long. Try ↻ again.");
     return devices.filter((d) => d.services.includes("AirPlay") || d.services.includes("RAOP"));
   }
 
