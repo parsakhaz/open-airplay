@@ -31,6 +31,7 @@
 .ad-disclose .ad-sp { flex: 1; }
 .ad-disclose em { font-style: normal; font-size: var(--oai-text-sm); color: var(--oai-ink-3); }
 .ad-advanced { display: grid; gap: 10px; }
+.ad-advanced[hidden], .ad-error[hidden], .ad-disclose em[hidden] { display: none; }
 .ad-error { font-size: var(--oai-text-sm); color: var(--oai-bad); line-height: 1.4; }
 .ad-btns { display: flex; gap: 8px; }
 .ad-btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 14px; border: 0; border-radius: var(--oai-radius-md); background: var(--oai-fill-strong); color: var(--oai-ink); font: inherit; font-size: var(--oai-text-md); font-weight: 500; white-space: nowrap; }
