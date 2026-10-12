@@ -93,3 +93,11 @@ test("a scan that answers with other devices too only names the one at that addr
   const [none] = await AddDevice.add({ input: "192.168.1.99", name: "", port: "" }, g);
   assert.deepEqual([none.name, none.cast_id], [null, null], "several answers and none at that address: none of them");
 });
+
+test("in the panel it is on window, where the list's sendRows() looks for it", () => {
+  const vm = require("node:vm");
+  const fs = require("node:fs");
+  const sandbox = { window: {} };
+  vm.runInNewContext(fs.readFileSync(require.resolve("../../ui/add-device.js"), "utf8"), sandbox);
+  assert.equal(typeof sandbox.window.AddDevice?.merge, "function");
+});

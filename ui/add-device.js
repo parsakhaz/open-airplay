@@ -156,4 +156,6 @@ const AddDevice = (() => {
   return { merge, add, addRowHtml, pageHtml, removeHtml, mount, SUBTITLE };
 })();
 
+// A top-level const isn't a window property; the panel's list looks for window.AddDevice.
+if (typeof window !== "undefined") window.AddDevice = AddDevice;
 if (typeof module !== "undefined") module.exports = AddDevice;
