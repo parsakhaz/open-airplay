@@ -48,11 +48,11 @@ jobs:
           npm ci
           npm run sync-tokens
 
-      # The Windows bundle config lists engine/runtime as a resource and Tauri's build script requires
-      # it to exist. The engine job builds the real runtime; tests only need the folder.
-      - name: Placeholder engine runtime
+      # The Windows bundle config lists engine/runtime and the frozen cast sidecar as resources and
+      # Tauri's build script requires them to exist. Tests only need the folders.
+      - name: Placeholder engine runtime and cast sidecar
         shell: bash
-        run: mkdir -p engine/runtime/bin
+        run: mkdir -p engine/runtime/bin sender/dist/oap-sender
 
       - name: cargo test
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
@@ -69,6 +69,15 @@ jobs:
           python -m venv sender/.venv
           sender/.venv/Scripts/python -m pip install -r sender/requirements.txt
           sender/.venv/Scripts/python -m unittest discover -s sender/tests -v
+
+      # The installed app casts through a frozen sidecar (no Python on the user's PC): build it and run
+      # the protocol tests against the exe.
+      - name: Freeze the cast sidecar and test it
+        shell: bash
+        run: |
+          sender/.venv/Scripts/python -m pip install -r sender/requirements-build.txt
+          sender/.venv/Scripts/python sender/freeze.py
+          OAP_SENDER_EXE="$PWD/sender/dist/oap-sender/oap-sender.exe" sender/.venv/Scripts/python -m unittest sender.tests.test_sender -v
 
   # Receiver engine: pinned UxPlay fork built with MSYS2 UCRT64, plus its C tests.
   engine:
