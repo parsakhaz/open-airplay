@@ -2,7 +2,7 @@
 //! as `engine.1.log` (newest) to `engine.<keep>.log` (oldest).
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -39,6 +39,7 @@ impl RotatingLog {
     pub fn open(path: &Path, max_bytes: u64, keep: usize) -> io::Result<Self> {
         if fs::metadata(path).is_ok_and(|m| m.len() > 0) {
             shift(path, keep);
+            let _ = trim_to_tail(&numbered(path, 1), max_bytes);
         }
         let file = append(path)?;
         let len = file.metadata()?.len();
@@ -80,6 +81,22 @@ fn numbered(path: &Path, n: usize) -> PathBuf {
         Some(ext) => path.with_file_name(format!("{stem}.{n}.{}", ext.to_string_lossy())),
         None => path.with_file_name(format!("{stem}.{n}")),
     }
+}
+
+/// Cuts `path` down to its last whole lines within `max_bytes`, if it is larger.
+fn trim_to_tail(path: &Path, max_bytes: u64) -> io::Result<()> {
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    if len <= max_bytes {
+        return Ok(());
+    }
+    // One byte more than the tail, so a cut that lands on a line start keeps that line.
+    file.seek(SeekFrom::Start(len - max_bytes - 1))?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail)?;
+    drop(file);
+    let start = tail.iter().position(|&b| b == b'\n').map_or(tail.len(), |i| i + 1);
+    fs::write(path, &tail[start..])
 }
 
 /// Moves `path` to `<stem>.1`, each older file up one number, and drops the one past `keep`.
@@ -128,11 +145,8 @@ mod tests {
         log.write_line("first 123"); // 10 bytes
         log.write_line("second 12"); // 20 bytes: exactly at the cap, still one file
         log.write_line("third 123"); // would make 30
-        assert_eq!(read(&dir, "engine.1.log").as_deref(), Some("first 123
-second 12
-"));
-        assert_eq!(read(&dir, "engine.log").as_deref(), Some("third 123
-"));
+        assert_eq!(read(&dir, "engine.1.log").as_deref(), Some("first 123\nsecond 12\n"));
+        assert_eq!(read(&dir, "engine.log").as_deref(), Some("third 123\n"));
     }
 
     #[test]
@@ -142,12 +156,24 @@ second 12
         for line in ["log1", "log2", "log3", "log4"] {
             log.write_line(line); // 5 bytes each: every line after the first rotates
         }
-        assert_eq!(read(&dir, "engine.log").as_deref(), Some("log4
-"));
-        assert_eq!(read(&dir, "engine.1.log").as_deref(), Some("log3
-"));
-        assert_eq!(read(&dir, "engine.2.log").as_deref(), Some("log2
-"));
+        assert_eq!(read(&dir, "engine.log").as_deref(), Some("log4\n"));
+        assert_eq!(read(&dir, "engine.1.log").as_deref(), Some("log3\n"));
+        assert_eq!(read(&dir, "engine.2.log").as_deref(), Some("log2\n"));
         assert_eq!(read(&dir, "engine.3.log"), None);
+    }
+
+    /// A log left by a build without rotation can be any size; only its last lines are kept.
+    #[test]
+    fn startup_trims_an_oversized_previous_log_to_its_last_whole_lines() {
+        let dir = dir("trim");
+        fs::write(dir.join("engine.log"), "line1\nline2\nline3\n").unwrap();
+        RotatingLog::open(&dir.join("engine.log"), 10, 3).unwrap();
+        assert_eq!(read(&dir, "engine.1.log").as_deref(), Some("line3\n"));
+
+        // A cut that lands exactly on a line start keeps that line.
+        let dir = self::dir("trim-aligned");
+        fs::write(dir.join("engine.log"), "line1\nline2\nline3\n").unwrap();
+        RotatingLog::open(&dir.join("engine.log"), 12, 3).unwrap();
+        assert_eq!(read(&dir, "engine.1.log").as_deref(), Some("line2\nline3\n"));
     }
 }
