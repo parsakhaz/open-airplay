@@ -63,3 +63,21 @@ body { overflow: hidden; }
 .doctor-list { display: grid; gap: 8px; margin: 4px 6px 8px; }
 .doctor p { font-size: var(--oai-text-sm); line-height: 1.45; }
 .recheck { justify-self: end; font-size: var(--oai-text-xs); color: var(--oai-ink-2); }
+
+/* playing audio: art and track on top; controls, the phone's volume and Disconnect below */
+.pop-hero.is-audio { flex-direction: column; align-items: stretch; gap: 12px; }
+.pop-hero.is-audio .top { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.pop-hero.is-audio .art { flex: none; width: 56px; height: 56px; border-radius: 10px; overflow: hidden; display: grid; place-items: center; background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.6); }
+.pop-hero.is-audio .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pop-hero.is-audio .art svg { width: 24px; height: 24px; }
+.pop-hero.is-audio .who { min-width: 0; }
+.pop-hero.is-audio h3, .pop-hero.is-audio .who p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pop-hero.is-audio .bottom { display: flex; align-items: center; gap: 10px; }
+.pop-hero.is-audio .controls { display: flex; gap: 2px; }
+.pop-hero.is-audio .controls .oai-btn { background: transparent; color: #f5f5f7; }
+.pop-hero.is-audio .controls .oai-btn:hover { background: rgba(255, 255, 255, 0.12); filter: none; }
+.pop-hero.is-audio .volume { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; color: rgba(255, 255, 255, 0.7); }
+.pop-hero.is-audio .volume svg { width: 14px; height: 14px; flex: none; }
+.pop-hero.is-audio .volume .bar { flex: 1; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.18); overflow: hidden; }
+.pop-hero.is-audio .volume .bar i { display: block; height: 100%; background: #f5f5f7; border-radius: 2px; }
+.pop-hero.is-audio .bottom > .oai-btn.is-danger { margin-left: auto; }

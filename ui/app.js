@@ -40,10 +40,11 @@ const ui = {
   mirrorSince: null,
   cast: { state: "idle", message: "" },
   settingsNote: null,       // { ok, text } under the settings form
+  art: { id: null, url: null }, // the cover art shown, by the status's art number
 };
 
 // The header says the status once; the body never repeats it.
-const HEADER = { stopped: "Off", starting: "Starting…", ready: "Ready", connecting: "Connecting…", pin: "Enter the code", restarting: "Restarting…", error: "Needs attention" };
+const HEADER = { stopped: "Off", starting: "Starting…", ready: "Ready", connecting: "Connecting…", audio: "Playing audio", pin: "Enter the code", restarting: "Restarting…", error: "Needs attention" };
 
 // ---------- receiver phase ----------
 // The shell sends `phase`; otherwise derive it the same way from the raw fields.
@@ -59,7 +60,7 @@ function phaseOf(s) {
 const nameOf = (s) => (s.settings && s.settings.name) || "this PC";
 const deviceOf = (s) => (s.last_device ? s.last_device.replace(/ \(.*\)$/, "") : null);
 const isOn = (phase) => phase !== "stopped" && phase !== "error";
-const inSession = (phase) => phase === "connecting" || phase === "mirroring" || phase === "pin";
+const inSession = (phase) => phase === "connecting" || phase === "mirroring" || phase === "audio" || phase === "pin";
 const capitalise = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** Takes a status snapshot unless it's older than the one shown (pushes and replies can cross). */
@@ -108,6 +109,19 @@ function noticeHtml() {
   return `<div class="oai-banner notice"><p class="oai-grow" style="margin:0">${esc(n)}</p><button class="oai-ghost" data-action="dismiss-notice" aria-label="Dismiss">✕</button></div>${errorLine("dismiss-notice")}`;
 }
 
+/** The "Playing audio" card: what's playing, the phone's volume, its controls and Disconnect. */
+function audioHtml(s) {
+  const a = s.audio || {};
+  const art = ui.art.url && ui.art.id === a.art ? `<img src="${esc(ui.art.url)}" alt="">` : use("i-music");
+  const title = a.title || (a.playing ? "Playing" : "Nothing playing");
+  const detail = [a.artist, a.album].filter(Boolean).join(" — ");
+  const ctl = (cmd, icon, label) => `<button class="oai-btn is-icon" data-action="control:${cmd}" aria-label="${label}" title="${label}">${use(icon)}</button>`;
+  const controls = s.can_control ? `<div class="controls">${ctl("previous", "i-prev", "Previous")}${ctl("play_pause", "i-playpause", "Play or pause")}${ctl("next", "i-next", "Next")}</div>` : "";
+  const volume = s.volume == null ? "" : `<div class="volume" role="meter" aria-label="Volume on the phone" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${s.volume}" title="Volume: ${s.volume}% (change it on the phone)">${use("i-volume")}<span class="bar"><i style="width:${s.volume}%"></i></span></div>`;
+  const controlError = ["previous", "play_pause", "next"].map((c) => errorLine("control:" + c)).join("");
+  return `<div class="pop-hero is-live is-audio"><div class="top"><div class="art">${art}</div><div class="who"><h3>${esc(title)}</h3>${detail ? `<p>${esc(detail)}</p>` : ""}</div></div><div class="bottom">${controls}${volume}${btn("disconnect", "Disconnect", "is-danger is-small")}</div></div>${controlError}${errorLine("disconnect")}`;
+}
+
 function statusHtml() {
   const s = ui.status, phase = phaseOf(s), name = nameOf(s), device = deviceOf(s) || "An iPhone";
   const disconnect = btn("disconnect", "Disconnect", "is-small");
@@ -115,12 +129,14 @@ function statusHtml() {
     case "starting":
       return `<div class="pop-hero"><div class="oai-spinner"></div><p>Getting ${esc(name)} ready for iPhones.</p></div>`;
     case "ready":
-      return `<div class="pop-status"><div class="line"><span class="oai-dot is-live"></span><div>On your iPhone, open Control Center → Screen Mirroring → <b>${esc(name)}</b>.</div></div></div>`;
+      return `<div class="pop-status"><div class="line"><span class="oai-dot is-live"></span><div>On your iPhone, open Control Center → Screen Mirroring → <b>${esc(name)}</b>, or pick <b>${esc(name)}</b> as the speaker to play music here.</div></div></div>`;
     case "connecting":
       return `<div class="pop-hero"><div class="dots" style="justify-content:center;margin:6px 0 10px"><i></i><i></i><i></i></div><p>${esc(device)} is connecting. The video window opens in a moment.</p><div class="oai-btn-row">${disconnect}</div>${errorLine("disconnect")}</div>`;
     case "mirroring":
       // The clock's text is filled in by tick(), outside the compared markup.
       return `<div class="pop-hero is-live"><div class="who"><h3>${esc(device)}</h3><p data-elapsed></p></div><div class="acts">${btn("show-video", "Show video", "is-small")}${btn("disconnect", "Disconnect", "is-danger is-small")}</div></div>${errorLine("show-video")}${errorLine("disconnect")}`;
+    case "audio":
+      return audioHtml(s);
     case "pin": {
       const digits = String(s.pin).split("").map((d) => `<span>${esc(d)}</span>`).join("");
       return `<div class="pop-hero"><p>${esc(device)} is asking for this code.</p><div class="pop-pin">${digits}</div><div class="oai-btn-row">${disconnect}</div>${errorLine("disconnect")}</div>`;
@@ -132,7 +148,7 @@ function statusHtml() {
     case "error":
       return `<div class="pop-hero is-bad"><p>${esc(s.last_error || `iPhones can't see ${name} right now.`)}</p><p>Turn receiving back on to retry.</p></div>`;
     default:
-      return `<div class="pop-hero"><p>Turn on receiving to let iPhones mirror to <b>${esc(name)}</b>.</p></div>`;
+      return `<div class="pop-hero"><p>Turn on receiving to let iPhones mirror or play music to <b>${esc(name)}</b>.</p></div>`;
   }
 }
 
@@ -219,7 +235,9 @@ function render() {
   if (phase === "mirroring") ui.mirrorSince = s.mirroring_since_ms || ui.mirrorSince || Date.now();
   else ui.mirrorSince = null;
 
-  const sub = phase === "mirroring" ? `Mirroring from ${deviceOf(s) || "an iPhone"}` : HEADER[phase];
+  const sub = phase === "mirroring" ? `Mirroring from ${deviceOf(s) || "an iPhone"}`
+    : phase === "audio" ? `Playing audio from ${deviceOf(s) || "an iPhone"}` : HEADER[phase];
+  loadArt(s);
   if ($("pop-sub").textContent !== sub) $("pop-sub").textContent = sub;
   const sw = $("rx-switch");
   if (sw.checked !== isOn(phase)) sw.checked = isOn(phase);
@@ -252,6 +270,19 @@ function render() {
   syncBusy();
   tick();
   reportHeight();
+}
+
+/** Fetches the cover art when the status names a new picture; the card shows it once it's here. */
+async function loadArt(s) {
+  const id = (s.audio && s.audio.art) || null;
+  if (id === ui.art.id) return;
+  ui.art = { id, url: null };
+  if (!id) return;
+  let url = null;
+  try { url = await invoke("receiver_art"); } catch { /* no picture */ }
+  if (ui.art.id !== id) return;   // a newer picture arrived meanwhile
+  ui.art = { id, url };
+  render();
 }
 
 // Keep the mirroring clock ticking without re-rendering.
@@ -364,6 +395,7 @@ document.addEventListener("click", (e) => {
   if (!action || action.disabled) return;
   const name = action.dataset.action;
   if (name.startsWith("fix:")) return run(name, () => invoke("doctor_fix", { kind: name.slice(4) }));
+  if (name.startsWith("control:")) return run(name, () => invoke("receiver_control", { command: name.slice(8) }));
   switch (name) {
     case "disconnect": return run("disconnect", () => invoke("receiver_disconnect"));
     case "dismiss-notice": return run("dismiss-notice", async () => { acceptStatus(await invoke("receiver_dismiss_notice")); });
