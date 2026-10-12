@@ -50,6 +50,10 @@ gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_window_fit.c" -o "$SRC/build/tes
 gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_control.c" -o "$SRC/build/test_control.exe"
 "$SRC/build/test_control.exe"
 
+# Unit test for the now-playing line helpers (patch 0005).
+gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_audio.c" -o "$SRC/build/test_audio.exe"
+"$SRC/build/test_audio.exe"
+
 # Regression test: a maximized mirror window reappears for the next stream, shows without taking
 # focus, and its close button runs the close handler (runs on a private desktop).
 gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_window_reshow.c" "$SRC/renderers/oap_window.c"   $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-video-1.0) -luser32 -lgdi32 -o "$SRC/build/test_window_reshow.exe"
