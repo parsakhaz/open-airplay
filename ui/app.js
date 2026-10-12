@@ -102,6 +102,8 @@ const canCast = (d) => d.services.includes("AirPlay") || d.services.includes("RA
 const sendRows = () => (window.AddDevice ? AddDevice.merge(ui.devices, prefs.addedDevices) : ui.devices);
 /** A row's state line: what's being sent to it, else how it was added, else its type. */
 function rowSub(d) {
+  const mirror = OapMirror.rowStatus(d.address);
+  if (mirror) return { html: mirror.html, cls: mirror.cls };
   const live = OapCast.rowStatus(d.identifier);
   if (live) return { html: live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.text)}`, cls: live.kind === "busy" ? "s-busy" : "s-live" };
   return { html: esc(d.added ? "Added by address" : friendlyType(d)), cls: "" };
@@ -196,10 +198,20 @@ function devicesHtml() {
 
 /** The neutral header of a device page: back, the device, its type or what's being sent to it. */
 function sendHeadHtml() {
-  const d = ui.target, live = OapCast.rowStatus(d.identifier);
-  const sub = live ? (live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.short || live.text)}`) : esc(friendlyType(d));
+  const d = ui.target, live = OapCast.rowStatus(d.identifier), mirror = OapMirror.rowStatus(d.address);
+  const sub = mirror ? mirror.short : live ? (live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.short || live.text)}`) : esc(friendlyType(d));
   return `<button class="send-back" data-action="home" aria-label="Back">${use("i-back")}</button><span class="dico">${use(deviceIcon(d))}</span><div class="tt"><div class="t">${esc(d.name)}</div><div class="s">${sub}</div></div>`;
 }
+
+/** The Mirror sheet's header: back to where it was opened from, and what mirroring is doing. */
+function mirrorHeadHtml() {
+  const h = OapMirror.head();
+  return `<button class="send-back" data-action="back" aria-label="Back">${use("i-back")}</button><span class="dico is-accent">${use("i-mirror")}</span><div class="tt"><div class="t">${esc(h.title)}</div><div class="s">${h.sub}</div></div>`;
+}
+
+/** TVs the Mirror sheet offers: everything in Send to except speakers, joined by address. */
+const mirrorTargets = () => sendRows().filter((d) => !isSpeaker(d) && d.address)
+  .map((d) => ({ ip: d.address, port: d.port ?? null, name: d.name, type: friendlyType(d), icon: deviceIcon(d) }));
 
 /** Copies saved values into the static settings inputs, except the one being edited. */
 function syncSettingsInputs() {
@@ -250,9 +262,9 @@ function render() {
   if (swErr.textContent !== switchError) swErr.textContent = switchError;
 
   if (ui.page === "cast" && !ui.target) ui.page = "home";
-  for (const page of ["home", "settings", "cast"]) $("page-" + page).hidden = ui.page !== page;
+  for (const page of ["home", "settings", "cast", "mirror"]) $("page-" + page).hidden = ui.page !== page;
   // Send pages have their own header and no footer.
-  const sendPage = ui.page === "cast";
+  const sendPage = ui.page === "cast" || ui.page === "mirror";
   $("panel-head").hidden = sendPage;
   $("panel-foot").hidden = sendPage;
   $("send-head").hidden = !sendPage;
@@ -268,9 +280,13 @@ function render() {
     syncSettingsInputs();
   } else if (ui.page === "cast") {
     patch("send-head", sendHeadHtml());
+  } else if (ui.page === "mirror") {
+    patch("send-head", mirrorHeadHtml());
+    OapMirror.render();
   }
   syncBusy();
   tick();
+  OapMirror.tick();
   reportHeight();
 }
 
@@ -359,6 +375,24 @@ function showDevicePage() {
   $("cast-media").hidden = !canCast(d);
 }
 
+/** Opens the Mirror sheet from the open device page. */
+function openMirror() {
+  ui.mirrorFrom = ui.page;
+  OapMirror.open(ui.target);
+  goTo("mirror");
+}
+
+/** Back goes up one level: the Mirror sheet returns to the page it was opened from. */
+function back() {
+  goTo(ui.page === "mirror" && ui.mirrorFrom === "cast" && ui.target ? "cast" : "home");
+}
+
+/** A mirror status change: refresh the device page's tile (it carries the live state), then render. */
+function mirrorChanged() {
+  if (ui.page === "cast" && ui.target) showDevicePage();
+  render();
+}
+
 // ---------- events ----------
 document.addEventListener("click", (e) => {
   const dev = e.target.closest("[data-device]");
@@ -373,6 +407,8 @@ document.addEventListener("click", (e) => {
     case "show-video": return run("show-video", () => invoke("show_video_window"));
     case "scan": return scan();
     case "home": return goTo("home");
+    case "back": return back();
+    case "mirror": return openMirror();
     case "settings": return goTo(ui.page === "settings" ? "home" : "settings");
     case "doctor-check": return run("doctor-check", () => invoke("doctor_check"));
   }
@@ -384,7 +420,7 @@ $("rx-switch").addEventListener("change", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (ui.page !== "home") goTo("home");
+  if (ui.page !== "home") back();
   else invoke("panel_hide").catch(() => {});
 });
 
@@ -444,6 +480,7 @@ listen("panel-shown", scanIfStale);
 listen("network-changed", () => { ui.lastScan = 0; scan(); });
 
 OapCast.mount($("cast-media"), render);
+OapMirror.mount($("mirror-sheet"), { changed: mirrorChanged, devices: mirrorTargets, back });
 
 (async () => {
   await loadPrefs();

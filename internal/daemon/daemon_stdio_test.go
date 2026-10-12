@@ -27,6 +27,9 @@ type stdioHarness struct {
 	in       *io.PipeWriter
 	messages chan StdioMessage
 	done     chan error
+	// latest is the last state line read, even one skipped while waiting for
+	// something else: a status that is already current gets no second line.
+	latest *StdioMessage
 }
 
 func newStdioHarness(t *testing.T, d *Daemon) *stdioHarness {
@@ -86,6 +89,10 @@ func (h *stdioHarness) next(what string, match func(StdioMessage) bool) StdioMes
 			if !ok {
 				h.t.Fatalf("stdout closed while waiting for %s", what)
 			}
+			if msg.Type == "state" {
+				latest := msg
+				h.latest = &latest
+			}
 			if match(msg) {
 				return msg
 			}
@@ -102,8 +109,13 @@ func (h *stdioHarness) response(id uint64) StdioMessage {
 	})
 }
 
+// state returns the current state line if it matches (it may have been read
+// already, before a reply), else waits for the next state line that does.
 func (h *stdioHarness) state(what string, match func(StdioMessage) bool) StdioMessage {
 	h.t.Helper()
+	if h.latest != nil && match(*h.latest) {
+		return *h.latest
+	}
 	return h.next("state line: "+what, func(m StdioMessage) bool {
 		return m.Type == "state" && match(m)
 	})
