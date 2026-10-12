@@ -56,6 +56,11 @@ impl MirrorSnapshot {
     fn of(targets: &MirrorTargets) -> Self {
         MirrorSnapshot { targets: targets.statuses() }
     }
+
+    /// Some TV is connecting, asking for a code, or mirroring: the tray offers Stop sending.
+    pub fn is_sending(&self) -> bool {
+        self.targets.iter().any(|t| matches!(t.phase, MirrorPhase::Connecting | MirrorPhase::Code | MirrorPhase::Mirroring))
+    }
 }
 
 /// The parts of the sender's status line the app uses (docs/control-protocol.md).
@@ -661,6 +666,16 @@ mod tests {
         s.on_state(&line("connecting", None, &[(TV, "connecting", "")]), 1);
         s.on_state(&line("idle", Some(("10.0.0.9", "unreachable")), &[(TV, "connecting", "")]), 2);
         assert_eq!(s.status().phase, MirrorPhase::Connecting);
+    }
+
+    #[test]
+    fn sending_means_some_tv_is_connecting_asking_or_mirroring() {
+        let with = |phases: &[MirrorPhase]| MirrorSnapshot { targets: phases.iter().map(|&phase| MirrorStatus { phase, ..Default::default() }).collect() };
+        assert!(!with(&[]).is_sending());
+        assert!(!with(&[MirrorPhase::Error, MirrorPhase::Idle]).is_sending(), "only notes left");
+        assert!(with(&[MirrorPhase::Error, MirrorPhase::Code]).is_sending());
+        assert!(with(&[MirrorPhase::Connecting]).is_sending());
+        assert!(with(&[MirrorPhase::Idle, MirrorPhase::Mirroring]).is_sending());
     }
 
     #[test]

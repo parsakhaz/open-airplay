@@ -219,32 +219,71 @@ fn set_tray_look(app: &AppHandle, tray: &tauri::tray::TrayIcon, look: TrayLook) 
     }
 }
 
-/// The tray menu: Disconnect while a phone is connected to this PC, and Quit.
-fn tray_menu(app: &AppHandle, session: bool) -> tauri::Result<Menu<tauri::Wry>> {
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    if session {
-        let disconnect = MenuItem::with_id(app, "disconnect", "Disconnect", true, None::<&str>)?;
-        Menu::with_items(app, &[&disconnect, &quit])
-    } else {
-        Menu::with_items(app, &[&quit])
+/// What the tray menu offers besides Quit: Disconnect while a phone is connected to this PC, and
+/// Stop sending while this PC mirrors to any TV (it stops them all).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TrayItems {
+    disconnect: bool,
+    stop_sending: bool,
+}
+
+impl TrayItems {
+    fn ids(self) -> Vec<(&'static str, &'static str)> {
+        let mut items = Vec::new();
+        if self.disconnect {
+            items.push(("disconnect", "Disconnect"));
+        }
+        if self.stop_sending {
+            items.push(("stop_sending", "Stop sending"));
+        }
+        items.push(("quit", "Quit"));
+        items
     }
 }
 
-fn set_tray_menu(app: &AppHandle, tray: &tauri::tray::TrayIcon, session: bool) {
-    static CURRENT: AtomicBool = AtomicBool::new(false);
-    if CURRENT.swap(session, Ordering::SeqCst) == session {
+fn tray_menu(app: &AppHandle, items: TrayItems) -> tauri::Result<Menu<tauri::Wry>> {
+    let items = items.ids().into_iter().map(|(id, text)| MenuItem::with_id(app, id, text, true, None::<&str>)).collect::<tauri::Result<Vec<_>>>()?;
+    let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
+    Menu::with_items(app, &refs)
+}
+
+static TRAY_DISCONNECT: AtomicBool = AtomicBool::new(false);
+static TRAY_SENDING: AtomicBool = AtomicBool::new(false);
+
+/// Rebuilds the tray menu when what it offers changed. Waits for the main thread, so never call it there.
+fn set_tray_menu(app: &AppHandle, tray: &tauri::tray::TrayIcon) {
+    static SHOWN: Mutex<TrayItems> = Mutex::new(TrayItems { disconnect: false, stop_sending: false });
+    let mut shown = SHOWN.lock().unwrap();
+    let want = TrayItems { disconnect: TRAY_DISCONNECT.load(Ordering::SeqCst), stop_sending: TRAY_SENDING.load(Ordering::SeqCst) };
+    if *shown == want {
         return;
     }
-    if let Ok(menu) = tray_menu(app, session) {
+    if let Ok(menu) = tray_menu(app, want) {
         let _ = tray.set_menu(Some(menu));
+        *shown = want;
     }
+}
+
+/// The mirror changed: offer Stop sending while it sends. The caller holds the mirror's lock, so the
+/// menu is rebuilt on its own thread.
+fn set_tray_sending(app: &AppHandle, sending: bool) {
+    if TRAY_SENDING.swap(sending, Ordering::SeqCst) == sending {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Some(tray) = app.tray_by_id("main") {
+            set_tray_menu(&app, &tray);
+        }
+    });
 }
 
 fn publish(app: &AppHandle, snapshot: &ReceiverStatus) {
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(tray_text(snapshot)));
         set_tray_look(app, &tray, tray_look(snapshot.phase));
-        set_tray_menu(app, &tray, session_live(snapshot));
+        TRAY_DISCONNECT.store(session_live(snapshot), Ordering::SeqCst);
+        set_tray_menu(app, &tray);
     }
     let _ = app.emit("receiver-status", snapshot);
 }
@@ -934,13 +973,19 @@ pub fn run() {
             }
             {
                 let events = app.handle().clone();
-                let mirror = mirror::Mirror::new(move |snapshot| drop(events.emit("mirror-status", snapshot)), || {
-                    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
-                });
+                let mirror = mirror::Mirror::new(
+                    move |snapshot| {
+                        let _ = events.emit("mirror-status", snapshot);
+                        set_tray_sending(&events, snapshot.is_sending());
+                    },
+                    || {
+                        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+                    },
+                );
                 let _ = app.state::<AppState>().mirror.set(mirror);
             }
             let launch = launch::plan(&std::env::args().collect::<Vec<_>>(), &app.state::<AppState>().prefs.lock().unwrap());
-            let menu = tray_menu(app.handle(), false)?;
+            let menu = tray_menu(app.handle(), TrayItems::default())?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().expect("bundle icon"))
                 .tooltip("open-airplay")
@@ -965,6 +1010,14 @@ pub fn run() {
                         let app = app.clone();
                         std::thread::spawn(move || {
                             if let Err(e) = disconnect_inner(&app) {
+                                eprintln!("open-airplay: {e}");
+                            }
+                        });
+                    }
+                    "stop_sending" => {
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            if let Err(e) = the_mirror(&app).and_then(|m| m.stop(None)) {
                                 eprintln!("open-airplay: {e}");
                             }
                         });
@@ -1035,6 +1088,15 @@ mod tests {
         assert_eq!(engine_path_for_doctor(&s(r"\\?\C:\Program Files\open-airplay\engine\bin\uxplay.exe")).unwrap(), r"C:\Program Files\open-airplay\engine\bin\uxplay.exe");
         assert_eq!(engine_path_for_doctor(&s(r"C:\dev\uxplay.exe")).unwrap(), r"C:\dev\uxplay.exe");
         assert_eq!(engine_path_for_doctor(&ReceiverStatus::default()), None);
+    }
+
+    #[test]
+    fn the_tray_offers_disconnect_and_stop_sending_only_when_they_apply() {
+        let ids = |disconnect, stop_sending| TrayItems { disconnect, stop_sending }.ids().into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(ids(false, false), ["quit"]);
+        assert_eq!(ids(false, true), ["stop_sending", "quit"]);
+        assert_eq!(ids(true, true), ["disconnect", "stop_sending", "quit"]);
+        assert_eq!(TrayItems { disconnect: false, stop_sending: true }.ids()[0].1, "Stop sending");
     }
 
     #[test]

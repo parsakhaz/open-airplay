@@ -24,7 +24,7 @@ fn main() {
         if let Some(since) = mirroring_since {
             if Instant::now().duration_since(since) > Duration::from_secs(5) {
                 let t = Instant::now();
-                let after = mirror.stop().expect("stop");
+                let after = mirror.stop(None).expect("stop");
                 println!("{:6.2}s stop took {:.2}s -> {after:?}", started.elapsed().as_secs_f32(), t.elapsed().as_secs_f32());
                 break;
             }
@@ -36,7 +36,7 @@ fn main() {
             MirrorPhase::Code => {
                 let code = codes.next().expect("the TV asked for more codes than given");
                 println!("        sending code {code}");
-                mirror.submit_code(&code).expect("code");
+                mirror.submit_code(None, &code).expect("code");
             }
             MirrorPhase::Mirroring => {
                 mirroring_since.get_or_insert_with(Instant::now);
