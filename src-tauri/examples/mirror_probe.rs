@@ -18,7 +18,7 @@ fn main() {
     let (tx, rx) = mpsc::channel::<MirrorSnapshot>();
     let tx = std::sync::Mutex::new(tx);
     let mirror = Mirror::new(move |s| drop(tx.lock().unwrap().send(s.clone())), || 0);
-    mirror.start(&sender, &target, port, "Test TV", Some(0)).expect("start");
+    mirror.start(&sender, &target, port, "Test TV", serde_json::json!({ "display": 0 })).expect("start");
     let mut mirroring_since = None;
     loop {
         if let Some(since) = mirroring_since {
