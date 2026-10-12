@@ -42,7 +42,7 @@ On a network set to **Public**, Windows allows the app only if you tick Public i
 
 Start at login is on by default. Sign-in launches pass `--autostart`: the app stays in the tray, opens no window and leaves receiving off until you flip the switch. Dev builds never touch the Run entry (it has the same name as the installed app's) unless `OAP_DEV_AUTOSTART=1` is set; to try a boot launch in development, run `npm run tauri dev -- -- --autostart`.
 
-Engine output is logged to `%LOCALAPPDATA%\org.openairplay.app\logs\engine.log`.
+Engine output is logged to `%LOCALAPPDATA%\org.openairplay.app\logs\engine.log`. Each app start moves the previous run's log to `engine.1.log`, and the log also rotates when it reaches 5 MB. Three older files are kept, from `engine.1.log` (newest) to `engine.3.log`. The app runs the engine without UxPlay's `-d`, so the log has no debug output. For that, turn receiving off and run the engine yourself, for example `engine\dist\uxplay.exe -n test-receiver -nh -d` (with `C:\msys64\ucrt64\bin` on `PATH`).
 
 Overrides: `OAP_ENGINE` (path to uxplay.exe), `OAP_MSYS2_ROOT` (default `C:\msys64`), `OAP_PYTHON` (sender interpreter).
 

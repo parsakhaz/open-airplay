@@ -38,8 +38,9 @@ pub enum EngineEvent {
 
 impl ReceiverSettings {
     pub fn engine_args(&self) -> Vec<String> {
-        // -nh: don't append "@hostname" to the name. -d: debug output carries the connection events.
-        let mut args = vec!["-n".to_string(), self.name.clone(), "-nh".into(), "-d".into()];
+        // -nh: don't append "@hostname" to the name. No -d: engine patch 0004 prints the lines
+        // `parse_line` needs at normal level.
+        let mut args = vec!["-n".to_string(), self.name.clone(), "-nh".into()];
         if self.pin_mode {
             args.push("-pin".into());
         }
@@ -108,14 +109,14 @@ mod tests {
     }
 
     #[test]
-    fn args_advertise_the_exact_name_with_debug_events() {
-        assert_eq!(settings().engine_args(), vec!["-n", "Parsa's ZBook", "-nh", "-d"]);
+    fn args_advertise_the_exact_name_without_debug_output() {
+        assert_eq!(settings().engine_args(), vec!["-n", "Parsa's ZBook", "-nh"]);
     }
 
     #[test]
     fn args_add_pin_and_h265_when_enabled() {
         let s = ReceiverSettings { pin_mode: true, h265: true, ..settings() };
-        assert_eq!(s.engine_args(), vec!["-n", "Parsa's ZBook", "-nh", "-d", "-pin", "-h265"]);
+        assert_eq!(s.engine_args(), vec!["-n", "Parsa's ZBook", "-nh", "-pin", "-h265"]);
     }
 
     #[test]
@@ -184,6 +185,41 @@ mod tests {
     #[test]
     fn parses_pin_from_patched_engine() {
         assert_eq!(parse_line("open-airplay: pin = 4821"), Some(EngineEvent::Pin { code: "4821".into() }));
+    }
+
+    /// Output of the patched engine run without -d (as the shell runs it), captured from a real
+    /// loopback mirror session with the repo's sender; names and addresses replaced.
+    #[test]
+    fn sees_every_event_in_a_real_session_without_debug_output() {
+        let events: Vec<_> = include_str!("testdata/engine-session-no-debug.txt").lines().filter_map(parse_line).collect();
+        let open = |count| EngineEvent::OpenConnections { count };
+        let error = |message: &str| EngineEvent::Error { message: message.into() };
+        assert_eq!(
+            events,
+            vec![
+                EngineEvent::Advertised,
+                open(1),
+                open(2),
+                open(1),
+                EngineEvent::ConnectionRequest {
+                    name: "Test Sender".into(),
+                    model: "Linux".into(),
+                    device_id: "02:00:00:00:00:02".into(),
+                },
+                open(2),
+                open(1),
+                error("  3 seconds since last client feedback request (expected every two seconds); client may be offline"),
+                EngineEvent::Video { width: 1920, height: 1080 },
+                open(2),
+                open(1),
+                open(2),
+                open(1),
+                error("httpd: recv error 10054 on socket 7744: An existing connection was forcibly closed by the remote host."),
+                open(0),
+                error("raop_rtp_mirror error  in header recv: 10054 An existing connection was forcibly closed by the remote host."),
+                EngineEvent::ClientLost,
+            ]
+        );
     }
 
     #[test]

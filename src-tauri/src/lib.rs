@@ -1,5 +1,6 @@
 pub mod doctor;
 pub mod engine;
+pub mod engine_log;
 pub mod launch;
 pub mod netwatch;
 pub mod panel;
@@ -282,21 +283,16 @@ fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings, reason: Opt
     });
     let cmd = EngineCommand { program: engine, args: settings.engine_args(), path_prepend, env, restart_delay: Duration::from_secs(2) };
     let handle = app.clone();
-    // Every engine line and lifecycle event goes to <app log dir>/engine.log for diagnosis.
-    let log = app.path().app_log_dir().ok().and_then(|dir| {
-        std::fs::create_dir_all(&dir).ok()?;
-        std::fs::OpenOptions::new().create(true).append(true).open(dir.join("engine.log")).ok()
-    });
+    // Every engine line and lifecycle event goes to <app log dir>/engine.log (rotated, see engine_log) for diagnosis.
+    let log = app.path().app_log_dir().ok().and_then(|dir| engine_log::shared(&dir));
     // Runs on the supervisor's delivery thread, never on a thread that waits for the supervisor.
     // Every line goes to the log; only real status changes reach the UI.
     let sup = Supervisor::start(cmd, move |event| {
-        if let Some(mut f) = log.as_ref() {
-            use std::io::Write;
-            let line = match &event {
+        if let Some(log) = log.as_ref() {
+            log.write_line(&match &event {
                 SupervisorEvent::Log { line } => line.clone(),
                 other => serde_json::to_string(other).unwrap_or_default(),
-            };
-            let _ = writeln!(f, "{line}");
+            });
         }
         if matches!(event, SupervisorEvent::Log { .. }) {
             return;
