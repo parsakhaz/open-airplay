@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -419,5 +420,41 @@ func TestStdioRejectsOptionsItCannotHonourYet(t *testing.T) {
 	h.send(`{"id":2,"cmd":"connect","target":"127.0.0.1","options":{"display":-3}}`)
 	if resp := h.response(2); resp.OK || resp.ErrorKind != ErrorKindInvalidRequest {
 		t.Fatalf("negative display response = %+v, want invalid_request", resp)
+	}
+}
+
+// "Require Password" on a modern receiver is HTTP Digest: a wrong password is
+// refused with a second 401, which must read as a wrong code so the app asks again.
+func TestStdioWrongDigestPasswordIsAWrongCode(t *testing.T) {
+	server, err := airplay.NewReceiverServer(airplay.ReceiverConfig{
+		ListenAddress: "127.0.0.1:0",
+		Profile:       airplay.ReceiverProfileModern,
+		Auth:          airplay.ReceiverAuthDigest,
+		Code:          "hunter2",
+		Logger:        log.New(io.Discard, "", 0),
+	})
+	if err != nil {
+		t.Fatalf("create receiver: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	t.Cleanup(func() { cancel(); _ = server.Close(); <-done })
+	host, port := splitTestAddr(t, server.Addr())
+
+	h := newStdioHarness(t, newStdioTestDaemon(t))
+	h.send(fmt.Sprintf(`{"id":1,"cmd":"connect","target":%q,"port":%d}`, host, port))
+	if resp := h.response(1); !resp.OK {
+		t.Fatalf("connect rejected: %+v", resp)
+	}
+	prompt := h.state("password prompt", func(m StdioMessage) bool { return m.State == StatePINRequired })
+	if prompt.CredentialKind != CredentialKindPassword {
+		t.Fatalf("prompt = %+v, want a password prompt", prompt)
+	}
+	h.send(fmt.Sprintf(`{"id":2,"cmd":"connect","target":%q,"pin":"wrong"}`, host))
+	h.response(2)
+	failed := h.state("failure", func(m StdioMessage) bool { return len(m.Errors) > 0 })
+	if failed.Errors[0].Kind != ErrorKindWrongCode {
+		t.Fatalf("errors = %+v, want wrong_code", failed.Errors)
 	}
 }
