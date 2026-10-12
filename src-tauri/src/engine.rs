@@ -34,7 +34,7 @@ pub enum EngineEvent {
 
 impl ReceiverSettings {
     pub fn engine_args(&self) -> Vec<String> {
-        // -nh: don't append "@hostname" to the name. No -d: engine patch 0003 prints the lines
+        // -nh: don't append "@hostname" to the name. No -d: engine patch 0004 prints the lines
         // `parse_line` needs at normal level.
         let mut args = vec!["-n".to_string(), self.name.clone(), "-nh".into()];
         if self.pin_mode {
