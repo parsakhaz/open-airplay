@@ -196,6 +196,9 @@ button.m-row:focus-visible, .m-row .x:focus-visible, .m-disp:focus-visible { out
 .settings-form { background: var(--oai-panel); border-radius: var(--oai-radius-lg); box-shadow: 0 0 0 0.5px var(--oai-hairline); overflow: hidden; }
 .settings-form > .oai-list-row { min-height: var(--oai-row-h); padding: var(--oai-space-1-5) var(--oai-space-2-5) var(--oai-space-1-5) var(--oai-space-3); border-radius: 0; border-top: 0.5px solid var(--oai-hairline); }
 .settings-form > .oai-list-row:first-child { border-top: 0; }
+/* The rows Settings nests under Blocked devices and Advanced line up with the rows above. */
+.settings-form #r-blocked > .oai-list-row, .settings-form .advanced > .oai-list-row { min-height: var(--oai-row-h); padding: var(--oai-space-1-5) var(--oai-space-2-5) var(--oai-space-1-5) var(--oai-space-3); border-radius: 0; border-top: 0.5px solid var(--oai-hairline); }
+.settings-form #r-blocked > .oai-list-label, .settings-form .advanced > summary { padding-left: var(--oai-space-3); border-top: 0.5px solid var(--oai-hairline); }
 .settings-form .oai-sub { font-size: var(--oai-text-xs); line-height: 1.3; }
 .settings-form .status-line { padding: var(--oai-space-2) var(--oai-space-3); border-top: 0.5px solid var(--oai-hairline); font-size: var(--oai-text-sm); color: var(--oai-ink-2); }
 .settings-form .status-line:empty { display: none; }
