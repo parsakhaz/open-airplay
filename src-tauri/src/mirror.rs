@@ -41,6 +41,8 @@ pub struct MirrorStatus {
     pub credential: Option<String>,
     /// One plain sentence: a wrong code, an unreachable TV, a session that ended. Never raw errors.
     pub message: Option<String>,
+    /// While phase is Error: why, in a few words for the TV's row ("Didn't answer").
+    pub reason: Option<String>,
     /// Unix time in ms when video started flowing.
     pub since_ms: Option<u64>,
 }
@@ -158,7 +160,7 @@ impl MirrorSession {
         self.awaiting_reply = false;
         if !ok && self.status.target.is_some() {
             let message = words_for(error_kind, &self.name());
-            self.fail(message);
+            self.fail(message, reason_for(error_kind));
         }
     }
 
@@ -224,7 +226,7 @@ impl MirrorSession {
                 FollowUp::None
             }
             Some(kind) => {
-                self.fail(words_for(kind, &name));
+                self.fail(words_for(kind, &name), reason_for(kind));
                 FollowUp::None
             }
             None if self.status.phase == MirrorPhase::Mirroring => {
@@ -232,7 +234,7 @@ impl MirrorSession {
                 FollowUp::None
             }
             None => {
-                self.fail(format!("Couldn't mirror to {name}."));
+                self.fail(format!("Couldn't mirror to {name}."), reason_for("failed"));
                 FollowUp::None
             }
         }
@@ -259,12 +261,13 @@ impl MirrorSession {
     /// The sender process ended without being asked to.
     pub fn sender_exited(&mut self) {
         if self.is_active() {
-            self.fail("Mirroring stopped unexpectedly. Try again.".into());
+            self.fail("Mirroring stopped unexpectedly. Try again.".into(), "Stopped unexpectedly");
         }
     }
 
-    fn fail(&mut self, message: String) {
+    fn fail(&mut self, message: String, reason: &str) {
         self.status.phase = MirrorPhase::Error;
+        self.status.reason = Some(reason.into());
         self.status.credential = None;
         self.status.since_ms = None;
         self.status.message = Some(message);
@@ -282,6 +285,18 @@ pub fn words_for(kind: &str, name: &str) -> String {
         "rejected" => format!("{name} didn't accept this PC. Try again."),
         "capture_failed" => "Couldn't capture this PC's screen. Try again, or pick another display.".into(),
         _ => format!("Couldn't mirror to {name}."),
+    }
+}
+
+/// A few words for a failed TV's row; the sentence from `words_for` goes above the list.
+pub fn reason_for(kind: &str) -> &'static str {
+    match kind {
+        "busy" => "Already mirroring",
+        "unreachable" => "Didn't answer",
+        "wrong_code" => "Code didn't work",
+        "rejected" => "Didn't accept this PC",
+        "capture_failed" => "Couldn't capture the screen",
+        _ => "Couldn't mirror",
     }
 }
 
@@ -666,6 +681,25 @@ mod tests {
         s.on_state(&line("connecting", None, &[(TV, "connecting", "")]), 1);
         s.on_state(&line("idle", Some(("10.0.0.9", "unreachable")), &[(TV, "connecting", "")]), 2);
         assert_eq!(s.status().phase, MirrorPhase::Connecting);
+    }
+
+    #[test]
+    fn a_failed_tv_says_why_in_a_few_words_for_its_row() {
+        let mut s = started();
+        s.on_state(&line("idle", Some((TV, "unreachable")), &[]), 1);
+        assert_eq!(s.status().reason.as_deref(), Some("Didn't answer"));
+        let mut s = started();
+        s.connect_replied(false, "rejected");
+        assert_eq!(s.status().reason.as_deref(), Some("Didn't accept this PC"));
+        let mut s = started();
+        s.sender_exited();
+        assert_eq!(s.status().reason.as_deref(), Some("Stopped unexpectedly"));
+        s.begin(TV, "Living Room");
+        assert_eq!(s.status().reason, None, "a retry clears it");
+        for kind in ["busy", "unreachable", "wrong_code", "rejected", "capture_failed", "failed", "something_new"] {
+            let words = reason_for(kind);
+            assert!(!words.is_empty() && !words.ends_with('.') && !words.contains('_'), "{kind}: {words}");
+        }
     }
 
     #[test]
