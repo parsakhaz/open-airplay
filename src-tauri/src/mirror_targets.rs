@@ -1,7 +1,7 @@
 //! Mirroring to several TVs at once: one `MirrorSession` per target, keyed by the target string the
 //! sender echoes back as `device_ip` (docs/control-protocol.md). Pure: no process, no clock.
 
-use crate::mirror::{FollowUp, MirrorSession, MirrorStatus, SenderState};
+use crate::mirror::{FollowUp, MirrorPhase, MirrorSession, MirrorStatus, SenderState};
 
 #[derive(Debug, Default)]
 pub struct MirrorTargets {
@@ -48,6 +48,13 @@ impl MirrorTargets {
         reconnect
     }
 
+    /// The TV a code goes to: `target` if it is asking, or without one, the only TV asking.
+    pub fn asking_for_code(&self, target: Option<&str>) -> Option<String> {
+        let mut asking = self.sessions.iter().filter(|(t, s)| s.status().phase == MirrorPhase::Code && target.is_none_or(|want| want == t));
+        let (first, _) = asking.next()?;
+        asking.next().is_none().then(|| first.clone())
+    }
+
     /// Connecting, waiting for a code, or mirroring.
     pub fn is_active(&self, target: &str) -> bool {
         self.sessions.iter().any(|(t, s)| t == target && s.is_active())
@@ -91,7 +98,7 @@ impl MirrorTargets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mirror::{MirrorPhase, SenderStream};
+    use crate::mirror::SenderStream;
 
     const A: &str = "192.168.1.20";
     const B: &str = "192.168.1.21";
@@ -168,6 +175,19 @@ mod tests {
         t.begin(A, "Living Room").unwrap();
         assert_eq!(phases(&t)[0], (A.into(), MirrorPhase::Connecting));
         assert_eq!(t.statuses()[0].message, None);
+    }
+
+    #[test]
+    fn a_code_goes_to_the_named_tv_or_to_the_only_one_asking() {
+        let mut t = two_live();
+        assert_eq!(t.asking_for_code(None), None);
+        t.on_state(&line(&[(A, "pin_required"), (B, "streaming")], &[]), 6);
+        assert_eq!(t.asking_for_code(None).as_deref(), Some(A));
+        assert_eq!(t.asking_for_code(Some(A)).as_deref(), Some(A));
+        assert_eq!(t.asking_for_code(Some(B)), None, "B isn't asking");
+        t.on_state(&line(&[(A, "pin_required"), (B, "pin_required")], &[]), 7);
+        assert_eq!(t.asking_for_code(None), None, "two are asking: the code must name one");
+        assert_eq!(t.asking_for_code(Some(B)).as_deref(), Some(B));
     }
 
     #[test]

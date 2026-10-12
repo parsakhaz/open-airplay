@@ -15,6 +15,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::mirror_targets::MirrorTargets;
+
 /// What the device page shows for mirroring.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,9 +53,8 @@ pub struct MirrorSnapshot {
 }
 
 impl MirrorSnapshot {
-    fn of(session: &MirrorSession) -> Self {
-        let status = session.status();
-        MirrorSnapshot { targets: status.target.is_some().then(|| status.clone()).into_iter().collect() }
+    fn of(targets: &MirrorTargets) -> Self {
+        MirrorSnapshot { targets: targets.statuses() }
     }
 }
 
@@ -290,10 +291,10 @@ pub struct SenderCommand {
     pub log: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Pending {
-    /// A connect: its reply settles whether the session started.
-    Connect,
+    /// A connect to this target: its reply settles whether that target's session started.
+    Connect(String),
     /// A status request: its reply is handled like a pushed state line.
     State,
     /// Anything else: the reply goes back to the caller.
@@ -310,17 +311,15 @@ struct Proc {
 struct Inner {
     proc: Option<Proc>,
     generation: u64,
-    session: MirrorSession,
+    targets: MirrorTargets,
     next_id: u64,
     pending: HashMap<u64, (Pending, Option<mpsc::Sender<Value>>)>,
     published: Option<MirrorSnapshot>,
-    /// The session's connect request (port, options), sent again after a wrong code.
-    connect: Option<Value>,
 }
 
 type OnStatus = Arc<dyn Fn(&MirrorSnapshot) + Send + Sync>;
 
-/// Owns the sender process and the one mirroring session. Every status change goes to `on_status`.
+/// Owns the sender process and one mirroring session per TV. Every status change goes to `on_status`.
 #[derive(Clone)]
 pub struct Mirror {
     inner: Arc<Mutex<Inner>>,
@@ -336,18 +335,18 @@ impl Mirror {
     }
 
     pub fn snapshot(&self) -> MirrorSnapshot {
-        MirrorSnapshot::of(&self.inner.lock().unwrap().session)
+        MirrorSnapshot::of(&self.inner.lock().unwrap().targets)
     }
 
-    /// Starts mirroring to the TV at `target`. Only one session at a time.
+    /// Starts mirroring to the TV at `target`, alongside any TVs already mirroring.
     pub fn start(&self, sender: &SenderCommand, target: &str, port: Option<u16>, name: &str, display: Option<i32>) -> Result<MirrorSnapshot, String> {
         let mut inner = self.inner.lock().unwrap();
-        if inner.session.is_active() {
-            let busy = inner.session.status().device.clone().unwrap_or_else(|| "another TV".into());
-            return Err(format!("This PC is already mirroring to {busy}. Stop it first."));
+        if inner.targets.is_active(target) {
+            // Refused with "Already mirroring to <TV>."
+            inner.targets.begin(target, name)?;
         }
         self.ensure_running(&mut inner, sender)?;
-        inner.session.begin(target, name);
+        inner.targets.begin(target, name)?;
         let mut request = json!({ "cmd": "connect", "target": target });
         if let Some(port) = port {
             request["port"] = json!(port);
@@ -355,44 +354,53 @@ impl Mirror {
         if let Some(display) = display {
             request["options"] = json!({ "display": display });
         }
-        inner.connect = Some(request.clone());
-        if let Err(e) = self.write(&mut inner, request, Pending::Connect, None) {
-            inner.session.sender_exited();
+        if let Err(e) = self.write(&mut inner, request, Pending::Connect(target.to_string()), None) {
+            inner.targets.sender_exited();
             self.publish(&mut inner);
             return Err(e);
         }
         self.publish(&mut inner);
-        Ok(MirrorSnapshot::of(&inner.session))
+        Ok(MirrorSnapshot::of(&inner.targets))
     }
 
-    /// Sends the code the TV shows (or its password).
-    pub fn submit_code(&self, code: &str) -> Result<MirrorSnapshot, String> {
+    /// Sends the code a TV shows (or its password). Without `target`, to the one TV asking.
+    pub fn submit_code(&self, target: Option<&str>, code: &str) -> Result<MirrorSnapshot, String> {
         let mut inner = self.inner.lock().unwrap();
-        let status = inner.session.status().clone();
-        let (MirrorPhase::Code, Some(target)) = (status.phase, status.target) else {
+        let Some(target) = inner.targets.asking_for_code(target) else {
             return Err("The TV isn't asking for a code right now.".into());
         };
         let code = code.trim();
         if code.is_empty() {
             return Err("Enter the code shown on the TV.".into());
         }
-        inner.session.code_sent();
+        if let Some(session) = inner.targets.get_mut(&target) {
+            session.code_sent();
+        }
         self.write(&mut inner, json!({ "cmd": "connect", "target": target, "pin": code }), Pending::Reply, None)?;
         self.publish(&mut inner);
-        Ok(MirrorSnapshot::of(&inner.session))
+        Ok(MirrorSnapshot::of(&inner.targets))
     }
 
-    /// Ends mirroring (or a pending connect or code prompt). Returns once the sender has torn it down.
-    pub fn stop(&self) -> Result<MirrorSnapshot, String> {
+    /// Removes one TV from the mirror, or every TV (Stop all) when `target` is None. Returns once the
+    /// sender has torn it down. A TV that already failed or ended is just taken off the list.
+    pub fn stop(&self, target: Option<&str>) -> Result<MirrorSnapshot, String> {
         let rx = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.proc.is_none() {
-                inner.session.stopped();
+            let live = match target {
+                Some(t) => inner.targets.is_active(t),
+                None => inner.targets.any_active(),
+            };
+            if inner.proc.is_none() || !live {
+                Self::forget(&mut inner, target);
                 self.publish(&mut inner);
-                return Ok(MirrorSnapshot::of(&inner.session));
+                return Ok(MirrorSnapshot::of(&inner.targets));
             }
             let (tx, rx) = mpsc::channel();
-            self.write(&mut inner, json!({ "cmd": "disconnect" }), Pending::Reply, Some(tx))?;
+            let request = match target {
+                Some(t) => json!({ "cmd": "disconnect", "target": t }),
+                None => json!({ "cmd": "disconnect" }),
+            };
+            self.write(&mut inner, request, Pending::Reply, Some(tx))?;
             rx
         };
         let reply = rx.recv_timeout(REPLY_TIMEOUT);
@@ -400,10 +408,18 @@ impl Mirror {
         if reply.is_err() {
             // No answer: end the process so nothing keeps sending this PC's screen.
             Self::kill(&mut inner);
+            inner.targets.sender_exited();
         }
-        inner.session.stopped();
+        Self::forget(&mut inner, target);
         self.publish(&mut inner);
-        Ok(MirrorSnapshot::of(&inner.session))
+        Ok(MirrorSnapshot::of(&inner.targets))
+    }
+
+    fn forget(inner: &mut Inner, target: Option<&str>) {
+        match target {
+            Some(t) => inner.targets.remove(t),
+            None => inner.targets.remove_all(),
+        }
     }
 
     /// The displays this PC can mirror.
@@ -447,7 +463,7 @@ impl Mirror {
     }
 
     fn publish(&self, inner: &mut Inner) {
-        let snapshot = MirrorSnapshot::of(&inner.session);
+        let snapshot = MirrorSnapshot::of(&inner.targets);
         if inner.published.as_ref() != Some(&snapshot) {
             (self.on_status)(&snapshot);
             inner.published = Some(snapshot);
@@ -518,7 +534,7 @@ impl Mirror {
         let mut inner = self.inner.lock().unwrap();
         if inner.proc.as_ref().map(|p| p.generation) == Some(generation) {
             Self::kill(&mut inner);
-            inner.session.sender_exited();
+            inner.targets.sender_exited();
             self.publish(&mut inner);
         }
     }
@@ -529,9 +545,9 @@ impl Mirror {
             Some("response") => {
                 let id = message["id"].as_u64().unwrap_or(0);
                 match inner.pending.remove(&id) {
-                    Some((Pending::Connect, _)) => {
+                    Some((Pending::Connect(target), _)) => {
                         let ok = message["ok"] == json!(true);
-                        inner.session.connect_replied(ok, message["error_kind"].as_str().unwrap_or(""));
+                        inner.targets.connect_replied(&target, ok, message["error_kind"].as_str().unwrap_or(""));
                         if ok {
                             // A connect that fails before the next state line would otherwise go unseen.
                             let _ = self.write(inner, json!({ "cmd": "status" }), Pending::State, None);
@@ -552,12 +568,13 @@ impl Mirror {
         };
         if state_line {
             let state: SenderState = serde_json::from_value(message).unwrap_or_default();
-            if inner.session.on_state(&state, (self.now_ms)()) == FollowUp::Reconnect {
-                if let Some(request) = inner.connect.clone() {
-                    inner.session.reconnecting();
-                    if self.write(inner, request, Pending::Connect, None).is_err() {
-                        inner.session.sender_exited();
-                    }
+            for target in inner.targets.on_state(&state, (self.now_ms)()) {
+                if let Some(session) = inner.targets.get_mut(&target) {
+                    session.reconnecting();
+                }
+                let request = json!({ "cmd": "connect", "target": target });
+                if self.write(inner, request, Pending::Connect(target), None).is_err() {
+                    inner.targets.sender_exited();
                 }
             }
         }
@@ -690,38 +707,41 @@ mod tests {
     const FAKE_SENDER: &str = r#"
 import json, sys
 def out(o): print(json.dumps(o), flush=True)
-def errors(err):
-    return [dict(target=tv, kind=err, message="detail")] if err else []
-def state(st, err="", streams=()):
-    out(dict(type="state", ok=True, state=st, errors=errors(err), streams=list(streams)))
-tv = None; err = ""; st = "idle"
+tvs = {}    # target -> "pin_required" | "streaming"
+errs = {}   # target -> kind
+def status():
+    streams = [dict(device="Den TV", device_ip=t, state=st, credential_kind="pin" if st == "pin_required" else "") for t, st in sorted(tvs.items())]
+    errors = [dict(target=t, kind=k, message="detail") for t, k in sorted(errs.items())]
+    agg = "pin_required" if "pin_required" in tvs.values() else "streaming" if tvs else "idle"
+    return dict(ok=True, state=agg, streams=streams, errors=errors)
+def state(): out(dict(type="state", **status()))
+def reply(rid, **extra): out(dict(type="response", id=rid, **{**status(), **extra}))
 out(dict(type="hello", protocol=1))
-state("idle")
+state()
 for raw in sys.stdin:
-    req = json.loads(raw); rid = req.get("id"); cmd = req["cmd"]
+    req = json.loads(raw); rid = req.get("id"); cmd = req["cmd"]; tv = req.get("target")
     if cmd == "connect" and req.get("pin"):
-        out(dict(type="response", id=rid, ok=True, state="connecting"))
+        reply(rid)
         if req["pin"] == "1111":
-            st = "streaming"; state("streaming", streams=[dict(device="Den TV", device_ip=tv, state="streaming")])
+            tvs[tv] = "streaming"
         else:
-            st = "idle"; err = "wrong_code"; state("idle", err)
+            tvs.pop(tv, None); errs[tv] = "wrong_code"
+        state()
     elif cmd == "connect":
-        tv = req["target"]; err = ""
-        out(dict(type="response", id=rid, ok=True, state="connecting"))
-        if req.get("port") != 7000 or req.get("options") != dict(display=1):
-            # Like a real sender: the wrong port or display reaches nothing useful.
-            st = "idle"; err = "unreachable"; state("idle", err)
-            continue
-        st = "pin_required"; state("pin_required", streams=[dict(device="Den TV", device_ip=tv, state="pin_required", credential_kind="pin")])
+        if tv in tvs:
+            reply(rid, ok=False, error_kind="busy"); continue
+        errs.pop(tv, None); tvs[tv] = "pin_required"
+        reply(rid); state()
     elif cmd == "status":
-        streams = [] if st == "idle" else [dict(device="Den TV", device_ip=tv, state=st)]
-        out(dict(type="response", id=rid, ok=True, state=st, errors=errors(err), streams=streams))
+        reply(rid)
     elif cmd == "disconnect":
-        st = "idle"; out(dict(type="response", id=rid, ok=True, state="idle")); state("idle", err)
+        if tv: tvs.pop(tv, None)
+        else: tvs.clear()
+        reply(rid); state()
     elif cmd == "displays":
-        out(dict(type="response", id=rid, ok=True, state=st, displays=[
+        reply(rid, displays=[
             dict(index=0, name="\\\\.\\DISPLAY1", x=0, y=0, width=2560, height=1440, primary=True),
-            dict(index=1, name="\\\\.\\DISPLAY2", x=2560, y=0, width=1920, height=1080, primary=False)]))
+            dict(index=1, name="\\\\.\\DISPLAY2", x=2560, y=0, width=1920, height=1080, primary=False)])
     elif cmd == "crash":
         sys.exit(3)
 "#;
@@ -737,14 +757,15 @@ for raw in sys.stdin:
         }
     }
 
-    /// The controller plus a feed of its (single) target's published status; default when none.
-    fn watched() -> (Mirror, mpsc::Receiver<MirrorStatus>) {
+    type Statuses = Vec<MirrorStatus>;
+
+    fn watched() -> (Mirror, mpsc::Receiver<Statuses>) {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        (Mirror::new(move |s: &MirrorSnapshot| drop(tx.lock().unwrap().send(s.targets.first().cloned().unwrap_or_default())), || 7), rx)
+        (Mirror::new(move |s: &MirrorSnapshot| drop(tx.lock().unwrap().send(s.targets.clone())), || 7), rx)
     }
 
-    fn wait_for(rx: &mpsc::Receiver<MirrorStatus>, what: &str, pred: impl Fn(&MirrorStatus) -> bool) -> MirrorStatus {
+    fn wait_for(rx: &mpsc::Receiver<Statuses>, what: &str, pred: impl Fn(&Statuses) -> bool) -> Statuses {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
             if let Ok(s) = rx.recv_timeout(left) {
@@ -756,21 +777,70 @@ for raw in sys.stdin:
         panic!("timed out waiting for {what}");
     }
 
+    fn of<'a>(list: &'a Statuses, target: &str) -> Option<&'a MirrorStatus> {
+        list.iter().find(|s| s.target.as_deref() == Some(target))
+    }
+
+    fn phase(list: &Statuses, target: &str) -> Option<MirrorPhase> {
+        of(list, target).map(|s| s.phase)
+    }
+
     #[test]
     fn pairs_with_a_code_retries_a_wrong_one_and_stops() {
         let sender = fake_sender("pair");
         let (mirror, rx) = watched();
         mirror.start(&sender, "127.0.0.1", Some(7000), "Den TV", Some(1)).unwrap();
-        wait_for(&rx, "code prompt", |s| s.phase == MirrorPhase::Code);
-        mirror.submit_code("0000").unwrap();
-        let retry = wait_for(&rx, "second prompt", |s| s.phase == MirrorPhase::Code && s.message.is_some());
-        assert_eq!(retry.message.as_deref(), Some("That code didn't work. Enter the new code shown on Den TV."));
-        mirror.submit_code("1111").unwrap();
-        let live = wait_for(&rx, "mirroring", |s| s.phase == MirrorPhase::Mirroring);
-        assert_eq!((live.target.as_deref(), live.since_ms), (Some("127.0.0.1"), Some(7)));
-        assert!(mirror.start(&sender, "10.0.0.2", None, "Other", None).is_err(), "one session at a time");
-        assert_eq!(mirror.stop().unwrap(), MirrorSnapshot::default());
+        wait_for(&rx, "code prompt", |s| phase(s, "127.0.0.1") == Some(MirrorPhase::Code));
+        mirror.submit_code(Some("127.0.0.1"), "0000").unwrap();
+        let retry = wait_for(&rx, "second prompt", |s| of(s, "127.0.0.1").is_some_and(|t| t.phase == MirrorPhase::Code && t.message.is_some()));
+        assert_eq!(of(&retry, "127.0.0.1").unwrap().message.as_deref(), Some("That code didn't work. Enter the new code shown on Den TV."));
+        mirror.submit_code(Some("127.0.0.1"), "1111").unwrap();
+        let live = wait_for(&rx, "mirroring", |s| phase(s, "127.0.0.1") == Some(MirrorPhase::Mirroring));
+        assert_eq!(of(&live, "127.0.0.1").unwrap().since_ms, Some(7));
+        assert_eq!(mirror.start(&sender, "127.0.0.1", None, "Den TV", None).unwrap_err(), "Already mirroring to Den TV.");
+        assert_eq!(mirror.stop(None).unwrap(), MirrorSnapshot::default());
         mirror.shutdown();
+    }
+
+    #[test]
+    fn adds_a_second_tv_to_a_running_mirror_removes_one_and_stops_all() {
+        let sender = fake_sender("multi");
+        let (mirror, rx) = watched();
+        let (a, b) = ("127.0.0.1", "127.0.0.2");
+        mirror.start(&sender, a, None, "Living Room", None).unwrap();
+        wait_for(&rx, "A's code", |s| phase(s, a) == Some(MirrorPhase::Code));
+        mirror.submit_code(Some(a), "1111").unwrap();
+        wait_for(&rx, "A live", |s| phase(s, a) == Some(MirrorPhase::Mirroring));
+
+        mirror.start(&sender, b, None, "Bedroom", None).unwrap();
+        let both = wait_for(&rx, "B's code", |s| phase(s, b) == Some(MirrorPhase::Code));
+        assert_eq!(phase(&both, a), Some(MirrorPhase::Mirroring), "adding B leaves A mirroring");
+        assert_eq!(both.iter().map(|s| s.target.clone().unwrap()).collect::<Vec<_>>(), vec![a, b], "in the order added");
+        mirror.submit_code(Some(b), "1111").unwrap();
+        wait_for(&rx, "both live", |s| phase(s, a) == Some(MirrorPhase::Mirroring) && phase(s, b) == Some(MirrorPhase::Mirroring));
+
+        let left = mirror.stop(Some(a)).unwrap().targets;
+        assert_eq!((phase(&left, a), phase(&left, b)), (None, Some(MirrorPhase::Mirroring)));
+        // The sender's next lines don't bring A back or touch B.
+        mirror.start(&sender, "127.0.0.3", None, "Office", None).unwrap();
+        let after = wait_for(&rx, "C's code", |s| phase(s, "127.0.0.3") == Some(MirrorPhase::Code));
+        assert_eq!((phase(&after, a), phase(&after, b)), (None, Some(MirrorPhase::Mirroring)));
+
+        assert_eq!(mirror.stop(None).unwrap(), MirrorSnapshot::default());
+        mirror.shutdown();
+    }
+
+    #[test]
+    fn removing_a_tv_that_already_failed_needs_no_sender() {
+        let (mirror, rx) = watched();
+        let sender = fake_sender("remove-failed");
+        mirror.start(&sender, "127.0.0.1", None, "Den TV", None).unwrap();
+        wait_for(&rx, "code prompt", |s| phase(s, "127.0.0.1") == Some(MirrorPhase::Code));
+        let mut inner = mirror.inner.lock().unwrap();
+        mirror.write(&mut inner, json!({ "cmd": "crash" }), Pending::Reply, None).unwrap();
+        drop(inner);
+        wait_for(&rx, "error", |s| phase(s, "127.0.0.1") == Some(MirrorPhase::Error));
+        assert_eq!(mirror.stop(Some("127.0.0.1")).unwrap(), MirrorSnapshot::default());
     }
 
     #[test]
@@ -786,13 +856,13 @@ for raw in sys.stdin:
     fn a_sender_crash_mid_session_is_reported() {
         let sender = fake_sender("crash");
         let (mirror, rx) = watched();
-        mirror.start(&sender, "127.0.0.1", Some(7000), "Den TV", Some(1)).unwrap();
-        wait_for(&rx, "code prompt", |s| s.phase == MirrorPhase::Code);
+        mirror.start(&sender, "127.0.0.1", None, "Den TV", None).unwrap();
+        wait_for(&rx, "code prompt", |s| phase(s, "127.0.0.1") == Some(MirrorPhase::Code));
         let mut inner = mirror.inner.lock().unwrap();
         mirror.write(&mut inner, json!({ "cmd": "crash" }), Pending::Reply, None).unwrap();
         drop(inner);
-        let crashed = wait_for(&rx, "error", |s| s.phase == MirrorPhase::Error);
-        assert_eq!(crashed.message.as_deref(), Some("Mirroring stopped unexpectedly. Try again."));
+        let crashed = wait_for(&rx, "error", |s| phase(s, "127.0.0.1") == Some(MirrorPhase::Error));
+        assert_eq!(of(&crashed, "127.0.0.1").unwrap().message.as_deref(), Some("Mirroring stopped unexpectedly. Try again."));
     }
 
     #[test]

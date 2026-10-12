@@ -622,8 +622,8 @@ fn mirror_status(app: AppHandle) -> mirror::MirrorSnapshot {
     the_mirror(&app).map(|m| m.snapshot()).unwrap_or_default()
 }
 
-/// Mirrors this PC to the TV at `target` (its address from the device list). Progress arrives as
-/// "mirror-status" events: connecting, code (enter the TV's PIN or password), mirroring, error.
+/// Mirrors this PC to the TV at `target` (its address from the device list), alongside any TVs it
+/// already mirrors to. Progress arrives as "mirror-status" events, one entry per TV.
 #[tauri::command]
 async fn mirror_start(app: AppHandle, target: String, port: Option<u16>, name: String, display: Option<i32>) -> Result<mirror::MirrorSnapshot, String> {
     tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.start(&mirror_sender(&app), &target, port, &name, display))
@@ -631,16 +631,17 @@ async fn mirror_start(app: AppHandle, target: String, port: Option<u16>, name: S
         .map_err(|e| e.to_string())?
 }
 
-/// The code shown on the TV, or the password set on it.
+/// The code shown on a TV, or the password set on it. `target` names the TV; without it, the code
+/// goes to the only TV asking.
 #[tauri::command]
-async fn mirror_code(app: AppHandle, code: String) -> Result<mirror::MirrorSnapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.submit_code(&code)).await.map_err(|e| e.to_string())?
+async fn mirror_code(app: AppHandle, target: Option<String>, code: String) -> Result<mirror::MirrorSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.submit_code(target.as_deref(), &code)).await.map_err(|e| e.to_string())?
 }
 
-/// Stop: ends mirroring, a pending connect, or a code prompt.
+/// Removes the TV at `target` from the mirror, or without `target`, stops all.
 #[tauri::command]
-async fn mirror_stop(app: AppHandle) -> Result<mirror::MirrorSnapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.stop()).await.map_err(|e| e.to_string())?
+async fn mirror_stop(app: AppHandle, target: Option<String>) -> Result<mirror::MirrorSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.stop(target.as_deref())).await.map_err(|e| e.to_string())?
 }
 
 /// This PC's displays, for the picker shown when there is more than one.
