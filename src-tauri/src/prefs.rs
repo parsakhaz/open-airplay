@@ -30,12 +30,18 @@ impl AppPrefs {
         if prefs.receiver.name.trim().is_empty() {
             prefs.receiver.name = default_name.to_string();
         }
-        // New installs, and older ones whose "off" was the old default rather than a choice.
-        if !prefs.start_at_login_offered {
-            prefs.start_at_login = true;
-            prefs.start_at_login_offered = true;
-        }
         prefs
+    }
+
+    /// Turns start at login on once: for new installs, and older ones whose "off" was the old default
+    /// rather than a choice. Returns true the one time it does so.
+    pub fn offer_start_at_login(&mut self) -> bool {
+        if self.start_at_login_offered {
+            return false;
+        }
+        self.start_at_login = true;
+        self.start_at_login_offered = true;
+        true
     }
 
     /// Whether a manual launch starts receiving: the remembered switch, on if never chosen.
@@ -66,9 +72,10 @@ mod tests {
 
     #[test]
     fn missing_file_gives_defaults_named_after_the_pc() {
-        let prefs = AppPrefs::load(&temp_path("missing"), "PARSA-DEVBOX");
+        let mut prefs = AppPrefs::load(&temp_path("missing"), "PARSA-DEVBOX");
         assert_eq!(prefs.receiver, ReceiverSettings { name: "PARSA-DEVBOX".into(), pin_mode: false, h265: false });
         assert!(!prefs.open_full_view_on_mirror);
+        assert!(prefs.offer_start_at_login(), "a new install is offered start at login");
         assert!(prefs.start_at_login, "start at login is on by default");
     }
 
@@ -109,10 +116,13 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"receiver": {"name": "Den"}, "start_at_login": false}"#).unwrap();
         let mut prefs = AppPrefs::load(&path, "PC");
+        assert!(prefs.offer_start_at_login());
         assert!(prefs.start_at_login);
         prefs.start_at_login = false;
         prefs.save(&path).unwrap();
-        assert!(!AppPrefs::load(&path, "PC").start_at_login, "turning it off survives the next launch");
+        let mut next = AppPrefs::load(&path, "PC");
+        assert!(!next.offer_start_at_login(), "offered only once");
+        assert!(!next.start_at_login, "turning it off survives the next launch");
     }
 
     #[test]

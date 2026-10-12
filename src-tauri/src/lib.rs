@@ -423,6 +423,17 @@ fn apply_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
     result.or_else(|e| if enabled { Err(format!("Could not turn on start at login: {e}")) } else { Ok(()) })
 }
 
+/// Rewrites a live Run entry so one from an older version gains --autostart. An entry the user turned
+/// off in Task Manager reads as not enabled and is left alone, since enabling would turn it back on.
+fn refresh_start_at_login(app: &AppHandle) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    if app.autolaunch().is_enabled().unwrap_or(false) {
+        apply_start_at_login(app, true)
+    } else {
+        Ok(())
+    }
+}
+
 /// Async + spawn_blocking: stopping the old engine joins a thread, which must never happen on the UI thread.
 #[tauri::command]
 async fn receiver_start(app: AppHandle, settings: ReceiverSettings) -> Result<ReceiverStatus, String> {
@@ -658,13 +669,17 @@ pub fn run() {
                 });
                 *state.prefs.lock().unwrap() = prefs;
                 *state.prefs_path.lock().unwrap() = path;
-                // Persists the one-time "start at login on" marker, then refreshes the Run entry so older
-                // entries gain --autostart.
-                let prefs = state.update_prefs(|_| {});
-                if prefs.start_at_login {
-                    if let Err(e) = apply_start_at_login(app.handle(), true) {
-                        eprintln!("open-airplay: {e}");
-                    }
+                let mut offered = false;
+                let prefs = state.update_prefs(|p| offered = p.offer_start_at_login());
+                let result = if offered {
+                    apply_start_at_login(app.handle(), true)
+                } else if prefs.start_at_login {
+                    refresh_start_at_login(app.handle())
+                } else {
+                    Ok(())
+                };
+                if let Err(e) = result {
+                    eprintln!("open-airplay: {e}");
                 }
             }
             let launch = launch::plan(&std::env::args().collect::<Vec<_>>(), &app.state::<AppState>().prefs.lock().unwrap());
