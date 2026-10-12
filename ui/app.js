@@ -282,7 +282,7 @@ function render() {
     syncSettingsInputs();
   } else if (ui.page === "cast") {
     patch("send-head", sendHeadHtml());
-    patch("device-extra", AddDevice.removeHtml(ui.target));
+    patch("device-extra", deviceExtraHtml());
   } else if (ui.page === "mirror") {
     patch("send-head", mirrorHeadHtml());
     OapMirror.render();
@@ -386,6 +386,14 @@ function showDevicePage() {
   const mirrorTile = !isSpeaker(d) && window.OapMirror && OapMirror.tile ? OapMirror.tile(d) : null;
   if (canCast(d)) OapCast.show(d, { speaker: isSpeaker(d), mirrorTile });
   $("cast-media").hidden = !canCast(d);
+}
+
+/** Below the cast part: the Mirror tile alone for a device that can mirror but not cast (added by
+ *  address, and no cast scan answered), then Remove for a device added by address. */
+function deviceExtraHtml() {
+  const d = ui.target;
+  const mirrorOnly = !canCast(d) && !isSpeaker(d) && window.OapMirror && OapMirror.tile;
+  return (mirrorOnly ? `<div class="send-body"><div class="send-tiles">${OapMirror.tile(d)}</div></div>` : "") + AddDevice.removeHtml(d);
 }
 
 /** Opens the Mirror sheet from the open device page. */
