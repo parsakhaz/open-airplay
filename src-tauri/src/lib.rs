@@ -6,6 +6,7 @@ pub mod engine_log;
 pub mod launch;
 pub mod mirror;
 pub mod mirror_options;
+pub mod mirror_targets;
 pub mod netwatch;
 pub mod panel;
 pub mod prefs;
@@ -240,32 +241,72 @@ fn set_tray_look(app: &AppHandle, tray: &tauri::tray::TrayIcon, look: TrayLook) 
     }
 }
 
-/// The tray menu: Disconnect while a phone is connected to this PC, and Quit.
-fn tray_menu(app: &AppHandle, session: bool) -> tauri::Result<Menu<tauri::Wry>> {
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    if session {
-        let disconnect = MenuItem::with_id(app, "disconnect", "Disconnect", true, None::<&str>)?;
-        Menu::with_items(app, &[&disconnect, &quit])
-    } else {
-        Menu::with_items(app, &[&quit])
+/// What the tray menu offers besides Quit: Disconnect while a phone is connected to this PC, and
+/// Stop sending while this PC mirrors or casts to any device (it stops them all).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TrayItems {
+    disconnect: bool,
+    stop_sending: bool,
+}
+
+impl TrayItems {
+    fn ids(self) -> Vec<(&'static str, &'static str)> {
+        let mut items = Vec::new();
+        if self.disconnect {
+            items.push(("disconnect", "Disconnect"));
+        }
+        if self.stop_sending {
+            items.push(("stop_sending", "Stop sending"));
+        }
+        items.push(("quit", "Quit"));
+        items
     }
 }
 
-fn set_tray_menu(app: &AppHandle, tray: &tauri::tray::TrayIcon, session: bool) {
-    static CURRENT: AtomicBool = AtomicBool::new(false);
-    if CURRENT.swap(session, Ordering::SeqCst) == session {
+fn tray_menu(app: &AppHandle, items: TrayItems) -> tauri::Result<Menu<tauri::Wry>> {
+    let items = items.ids().into_iter().map(|(id, text)| MenuItem::with_id(app, id, text, true, None::<&str>)).collect::<tauri::Result<Vec<_>>>()?;
+    let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
+    Menu::with_items(app, &refs)
+}
+
+static TRAY_DISCONNECT: AtomicBool = AtomicBool::new(false);
+static TRAY_MIRRORING: AtomicBool = AtomicBool::new(false);
+static TRAY_CASTING: AtomicBool = AtomicBool::new(false);
+
+/// Rebuilds the tray menu when what it offers changed. Waits for the main thread, so never call it there.
+fn set_tray_menu(app: &AppHandle, tray: &tauri::tray::TrayIcon) {
+    static SHOWN: Mutex<TrayItems> = Mutex::new(TrayItems { disconnect: false, stop_sending: false });
+    let mut shown = SHOWN.lock().unwrap();
+    let want = TrayItems { disconnect: TRAY_DISCONNECT.load(Ordering::SeqCst), stop_sending: TRAY_MIRRORING.load(Ordering::SeqCst) || TRAY_CASTING.load(Ordering::SeqCst) };
+    if *shown == want {
         return;
     }
-    if let Ok(menu) = tray_menu(app, session) {
+    if let Ok(menu) = tray_menu(app, want) {
         let _ = tray.set_menu(Some(menu));
+        *shown = want;
     }
+}
+
+/// Mirroring or casting started or ended: offer Stop sending while either sends. Callers hold the
+/// mirror's or the cast sidecar's lock, so the menu is rebuilt on its own thread.
+fn set_tray_sending(app: &AppHandle, flag: &AtomicBool, sending: bool) {
+    if flag.swap(sending, Ordering::SeqCst) == sending {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Some(tray) = app.tray_by_id("main") {
+            set_tray_menu(&app, &tray);
+        }
+    });
 }
 
 fn publish(app: &AppHandle, snapshot: &ReceiverStatus) {
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(tray_text(snapshot)));
         set_tray_look(app, &tray, tray_look(snapshot.phase));
-        set_tray_menu(app, &tray, session_live(snapshot));
+        TRAY_DISCONNECT.store(session_live(snapshot), Ordering::SeqCst);
+        set_tray_menu(app, &tray);
     }
     let _ = app.emit("receiver-status", snapshot);
 }
@@ -741,6 +782,7 @@ fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
     let generation = sidecars.sender_generation.fetch_add(1, Ordering::SeqCst) + 1;
     *sidecars.sender_ready.lock().unwrap() = None;
     sidecars.casting.lock().unwrap().clear();
+    set_tray_sending(app, &TRAY_CASTING, false);
     sender_log_line(app, &format!("starting {:?} {:?} ({:?})", program.program, program.args, program.source));
     let (events, exits) = (app.clone(), app.clone());
     let sidecar = SenderSidecar::spawn(
@@ -758,6 +800,7 @@ fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
                 } else {
                     casting.remove(&identifier);
                 }
+                set_tray_sending(&events, &TRAY_CASTING, !casting.is_empty());
             }
             let _ = events.emit("sender-event", &event);
         },
@@ -771,6 +814,7 @@ fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
             if current.as_ref().is_some_and(|(g, _)| *g == generation) {
                 *current = None;
                 state.sidecars.casting.lock().unwrap().clear();
+                set_tray_sending(&exits, &TRAY_CASTING, false);
             }
             drop(current);
             let _ = exits.emit("sender-exit", json!({ "message": CASTING_STOPPED }));
@@ -891,8 +935,8 @@ fn mirror_status(app: AppHandle) -> mirror::MirrorSnapshot {
     the_mirror(&app).map(|m| m.snapshot()).unwrap_or_default()
 }
 
-/// Mirrors this PC to the TV at `target` (its address from the device list). Progress arrives as
-/// "mirror-status" events: connecting, code (enter the TV's PIN or password), mirroring, error.
+/// Mirrors this PC to the TV at `target` (its address from the device list), alongside any TVs it
+/// already mirrors to. Progress arrives as "mirror-status" events, one entry per TV.
 /// The options are the saved Advanced choices, plus the `display` picked in the sheet (sent only when
 /// this PC has more than one).
 #[tauri::command]
@@ -924,16 +968,17 @@ async fn mirror_capabilities(app: AppHandle) -> Result<mirror::SenderCapabilitie
     tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.capabilities(&mirror_sender(&app))).await.map_err(|e| e.to_string())?
 }
 
-/// The code shown on the TV, or the password set on it.
+/// The code shown on a TV, or the password set on it. `target` names the TV; without it, the code
+/// goes to the only TV asking.
 #[tauri::command]
-async fn mirror_code(app: AppHandle, code: String) -> Result<mirror::MirrorSnapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.submit_code(&code)).await.map_err(|e| e.to_string())?
+async fn mirror_code(app: AppHandle, target: Option<String>, code: String) -> Result<mirror::MirrorSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.submit_code(target.as_deref(), &code)).await.map_err(|e| e.to_string())?
 }
 
-/// Stop: ends mirroring, a pending connect, or a code prompt.
+/// Removes the TV at `target` from the mirror, or without `target`, stops all.
 #[tauri::command]
-async fn mirror_stop(app: AppHandle) -> Result<mirror::MirrorSnapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.stop()).await.map_err(|e| e.to_string())?
+async fn mirror_stop(app: AppHandle, target: Option<String>) -> Result<mirror::MirrorSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || the_mirror(&app)?.stop(target.as_deref())).await.map_err(|e| e.to_string())?
 }
 
 /// This PC's displays, for the picker shown when there is more than one.
@@ -1229,13 +1274,19 @@ pub fn run() {
             }
             {
                 let events = app.handle().clone();
-                let mirror = mirror::Mirror::new(move |snapshot| drop(events.emit("mirror-status", snapshot)), || {
-                    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
-                });
+                let mirror = mirror::Mirror::new(
+                    move |snapshot| {
+                        let _ = events.emit("mirror-status", snapshot);
+                        set_tray_sending(&events, &TRAY_MIRRORING, snapshot.is_sending());
+                    },
+                    || {
+                        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+                    },
+                );
                 let _ = app.state::<AppState>().mirror.set(mirror);
             }
             let launch = launch::plan(&std::env::args().collect::<Vec<_>>(), &app.state::<AppState>().prefs.lock().unwrap());
-            let menu = tray_menu(app.handle(), false)?;
+            let menu = tray_menu(app.handle(), TrayItems::default())?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().expect("bundle icon"))
                 .tooltip("open-airplay")
@@ -1260,6 +1311,18 @@ pub fn run() {
                         let app = app.clone();
                         std::thread::spawn(move || {
                             if let Err(e) = disconnect_inner(&app) {
+                                eprintln!("open-airplay: {e}");
+                            }
+                        });
+                    }
+                    "stop_sending" => {
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            // Everything this PC sends: every mirrored TV and every cast.
+                            if let Err(e) = the_mirror(&app).and_then(|m| m.stop(None)) {
+                                eprintln!("open-airplay: {e}");
+                            }
+                            if let Err(e) = stop_casting(&app, None) {
                                 eprintln!("open-airplay: {e}");
                             }
                         });
@@ -1356,6 +1419,15 @@ mod tests {
         let plugged = [speakers::Speaker { id: id.into(), name: "Speakers".into() }];
         assert_eq!(engine_settings(chosen.clone(), &plugged).speaker.as_deref(), Some(id));
         assert_eq!(engine_settings(chosen, &[]).speaker, None);
+    }
+
+    #[test]
+    fn the_tray_offers_disconnect_and_stop_sending_only_when_they_apply() {
+        let ids = |disconnect, stop_sending| TrayItems { disconnect, stop_sending }.ids().into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(ids(false, false), ["quit"]);
+        assert_eq!(ids(false, true), ["stop_sending", "quit"]);
+        assert_eq!(ids(true, true), ["disconnect", "stop_sending", "quit"]);
+        assert_eq!(TrayItems { disconnect: false, stop_sending: true }.ids()[0].1, "Stop sending");
     }
 
     #[test]
