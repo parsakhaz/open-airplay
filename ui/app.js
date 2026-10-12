@@ -400,9 +400,10 @@ function back() {
   goTo(ui.page === "mirror" && ui.mirrorFrom === "cast" && ui.target ? "cast" : "home");
 }
 
-/** A mirror status change: refresh the device page's tile (it carries the live state), then render. */
+/** A mirror status change: refresh the open device's tile (it carries the live state), then render.
+ *  Also while the sheet is open, so going back shows the tile as it is now. */
 function mirrorChanged() {
-  if (ui.page === "cast" && ui.target) showDevicePage();
+  if (ui.target) showDevicePage();
   render();
 }
 
