@@ -28,7 +28,20 @@ pub fn load(path: &Path) -> Result<CastCredentials, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CastCredentials::new()),
         Err(e) => return Err(format!("couldn't read {}: {e}", path.display())),
     };
-    serde_json::from_str(&text).map_err(|e| format!("{} isn't a credentials file ({e})", path.display()))
+    serde_json::from_str(&text).map_err(|e| format!("{} isn't a credentials file ({})", path.display(), parse_problem(&e)))
+}
+
+/// Where and what kind of parse error, never the message itself: serde quotes the offending value,
+/// which here can be a credential.
+fn parse_problem(e: &serde_json::Error) -> String {
+    use serde_json::error::Category;
+    let kind = match e.classify() {
+        Category::Syntax => "not valid JSON",
+        Category::Eof => "cut short",
+        Category::Data => "wrong shape",
+        Category::Io => "unreadable",
+    };
+    format!("{kind} at line {} column {}", e.line(), e.column())
 }
 
 /// The credentials casts use: the saved ones plus this run's pairings (which win). When the file
@@ -163,6 +176,28 @@ mod tests {
             assert!(log.contains("wasn't saved") && !log.contains("b1"), "{log}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), junk, "the file is left as it was");
             assert_eq!(current(Some(&path), &session)["tv-b"]["AirPlay"], "b1", "usable until the app quits");
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_malformed_file_never_puts_its_contents_in_the_log() {
+        const SENTINEL: &str = "SENTINEL-credential-7f3a91";
+        let path = temp_file("sentinel");
+        // Wrong shapes whose parse errors would quote the value, and broken JSON around it.
+        for junk in [
+            format!(r#"{{"tv-a": "{SENTINEL}"}}"#),
+            format!(r#"{{"tv-a": {{"AirPlay": ["{SENTINEL}"]}}}}"#),
+            format!(r#"{{"tv-a": {{"AirPlay": "{SENTINEL}" "#),
+            format!(r#"["{SENTINEL}"]"#),
+        ] {
+            std::fs::write(&path, &junk).unwrap();
+            let err = load(&path).unwrap_err();
+            assert!(!err.contains(SENTINEL), "load error quotes the file: {err}");
+            assert!(err.contains("line 1"), "says where: {err}");
+            let mut event = paired("tv-b", "b1");
+            let log = on_sidecar_event(Some(&path), &mut CastCredentials::new(), &mut event).unwrap();
+            assert!(!log.contains(SENTINEL), "log line quotes the file: {log}");
         }
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
