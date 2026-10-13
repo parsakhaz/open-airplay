@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -12,12 +13,24 @@ SENDER = Path(__file__).resolve().parents[1] / "oap_sender.py"
 FROZEN = os.environ.get("OAP_SENDER_EXE")
 
 
-def run_sidecar(*commands, wait_for=(), timeout=30):
-    """Sends the commands, keeps stdin open until every id in wait_for has a final reply, then closes it."""
-    argv = [FROZEN] if FROZEN else [sys.executable, str(SENDER)]
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+def run_sidecar(*commands, wait_for=(), timeout=30, argv=None):
+    """Sends the commands, keeps stdin open until every id in wait_for has a final reply, then closes it.
+
+    Fails if the helper exits with an error (a crash at shutdown) or has to be killed after `timeout`
+    seconds, even when every reply arrived; its stderr goes into the failure message. `argv` replaces
+    the helper (the tests of this function use it).
+    """
+    argv = argv or ([FROZEN] if FROZEN else [sys.executable, str(SENDER)])
+    stderr = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True)
     events, waiting = [], set(wait_for)
-    timer = threading.Timer(timeout, proc.kill)
+    timed_out = threading.Event()
+
+    def kill():
+        timed_out.set()
+        proc.kill()
+
+    timer = threading.Timer(timeout, kill)
     timer.start()
     try:
         proc.stdin.write("".join(json.dumps(c) + "\n" for c in commands))
@@ -37,7 +50,28 @@ def run_sidecar(*commands, wait_for=(), timeout=30):
         proc.stdout.close()
     finally:
         timer.cancel()
+    stderr.seek(0)
+    log = stderr.read()[-4000:]
+    stderr.close()
+    if timed_out.is_set():
+        raise AssertionError(f"the helper was still running after {timeout}s and was killed; stderr:\n{log}")
+    if proc.returncode != 0:
+        raise AssertionError(f"the helper exited with {proc.returncode}; stderr:\n{log}")
     return events
+
+
+class RunSidecarHelper(unittest.TestCase):
+    """The helper itself: a sidecar that answers and then crashes, or hangs, must fail the test."""
+
+    def test_a_helper_that_crashes_after_replying_fails(self):
+        crash = [sys.executable, "-c", "import json, sys; print(json.dumps({'event': 'ready'})); sys.stderr.write('boom'); sys.exit(3)"]
+        with self.assertRaisesRegex(AssertionError, r"exited with 3(.|\n)*boom"):
+            run_sidecar(argv=crash)
+
+    def test_a_helper_that_hangs_fails(self):
+        hang = [sys.executable, "-c", "import time; time.sleep(30)"]
+        with self.assertRaisesRegex(AssertionError, "killed"):
+            run_sidecar(argv=hang, timeout=1)
 
 
 class SidecarProtocol(unittest.TestCase):
