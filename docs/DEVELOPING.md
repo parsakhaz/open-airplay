@@ -28,8 +28,10 @@ Prerequisites: [MSYS2](https://www.msys2.org) at `C:\msys64`, Rust (rustup, MSVC
 # 1. Build the receiver engine (installs MSYS2 packages: gcc, cmake, GStreamer, libplist)
 C:\msys64\usr\bin\bash.exe -lc "/c/path/to/open-airplay/engine/build-engine.sh"
 
-# 2. Sender sidecar
+# 2. Sender sidecar. The build needs the frozen helper's folder to exist; in development the app runs
+#    the Python script, so an empty folder is enough (npm run build-sender fills it for the installer).
 python -m venv sender\.venv; sender\.venv\Scripts\python -m pip install -r sender\requirements.txt
+New-Item -ItemType Directory -Force sender\dist\oap-sender | Out-Null
 
 # 3. Mirror sender (for Mirror screen; needs Go 1.25+ and an FFmpeg with ddagrab on PATH)
 go build -o bin\open-airplay-sender.exe ./cmd/open-airplay
