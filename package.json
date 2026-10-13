@@ -9,7 +9,8 @@
     "tauri": "tauri",
     "dev": "npm run sync-tokens && tauri dev",
     "build": "npm run sync-tokens && tauri build",
-    "test": "cargo test --manifest-path src-tauri/Cargo.toml && node --test tests/ui/mirror-sheet.test.js && sender/.venv/Scripts/python -m unittest discover -s sender/tests"
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml && npm run test:ui && sender/.venv/Scripts/python -m unittest discover -s sender/tests",
+    "test:ui": "node tests/ui/run.js"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.1"
