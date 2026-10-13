@@ -87,6 +87,40 @@ struct AppState {
     panel: PanelState,
     /// Mirroring this PC to a TV; set during setup.
     mirror: std::sync::OnceLock<mirror::Mirror>,
+    lifecycle: Lifecycle,
+}
+
+/// Turning the receiver on, off or restarting it happens one at a time. Every start and stop
+/// takes a new generation, so a restart scheduled earlier (settings saved during a session, a
+/// network change) can tell that receiving was turned off or restarted since, and stand down.
+#[derive(Default)]
+struct Lifecycle {
+    lock: Mutex<()>,
+    generation: AtomicU64,
+}
+
+impl Lifecycle {
+    /// The current generation, for a restart that will run later.
+    fn ticket(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    /// Starts a start or stop: holds the lock and makes every earlier ticket stale.
+    fn begin(&self) -> std::sync::MutexGuard<'_, ()> {
+        let guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        guard
+    }
+
+    /// Runs `restart` only if nothing started or stopped the receiver since `ticket` was taken.
+    /// It runs under the lock, so a stop can't slip in between the check and the restart.
+    fn restart_if_current<T>(&self, ticket: u64, restart: impl FnOnce() -> T) -> Option<T> {
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        (self.generation.load(Ordering::SeqCst) == ticket).then(|| {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            restart()
+        })
+    }
 }
 
 /// The tray panel's placement and dismissal bookkeeping (see panel.rs for the rules).
@@ -329,6 +363,13 @@ fn update_status(app: &AppHandle, change: impl FnOnce(&mut ReceiverStatus)) -> R
 /// ("the network changed"); None when the user turned it on.
 fn start_receiver_inner(app: &AppHandle, settings: ReceiverSettings, reason: Option<&str>) -> Result<ReceiverStatus, String> {
     let state = app.state::<AppState>();
+    let _lifecycle = state.lifecycle.begin();
+    start_receiver_locked(app, settings, reason)
+}
+
+/// `start_receiver_inner` for a caller that already holds the lifecycle lock.
+fn start_receiver_locked(app: &AppHandle, settings: ReceiverSettings, reason: Option<&str>) -> Result<ReceiverStatus, String> {
+    let state = app.state::<AppState>();
     state.update_prefs(|p| p.receiver = settings.clone());
     let (engine, source) = find_engine(app).ok_or("Part of open-airplay is missing, so it can't receive. Reinstall open-airplay.")?;
     state.sidecars.replace_supervisor(None);
@@ -396,6 +437,12 @@ fn engine_settings(mut settings: ReceiverSettings, available: &[speakers::Speake
 
 fn stop_receiver_inner(app: &AppHandle) -> ReceiverStatus {
     let state = app.state::<AppState>();
+    let _lifecycle = state.lifecycle.begin();
+    // Unwanted before the engine goes: its exit must not schedule the restart for saved settings.
+    update_status(app, |st| {
+        st.wanted = false;
+        st.settings_pending = false;
+    });
     state.sidecars.replace_supervisor(None);
     update_status(app, |st| {
         st.wanted = false;
@@ -419,11 +466,17 @@ fn after_event(app: &AppHandle, snapshot: &ReceiverStatus) {
             }
         });
     } else if snapshot.settings_pending && snapshot.wanted && !session_live(snapshot) {
-        // The session ended: apply the settings saved during it. Taking the flag here schedules one restart.
+        // The session ended: apply the settings saved during it. Taking the flag here schedules one
+        // restart, which stands down if receiving is turned off (or restarted) before it runs.
         update_status(&app, |st| st.settings_pending = false);
+        let ticket = app.state::<AppState>().lifecycle.ticket();
         std::thread::spawn(move || {
-            let settings = app.state::<AppState>().prefs.lock().unwrap().receiver.clone();
-            if let Err(e) = start_receiver_inner(&app, settings, None) {
+            let state = app.state::<AppState>();
+            let settings = state.prefs.lock().unwrap().receiver.clone();
+            let started = state.lifecycle.restart_if_current(ticket, || {
+                state.status.snapshot().wanted.then(|| start_receiver_locked(&app, settings, None))
+            });
+            if let Some(Some(Err(e))) = started {
                 update_status(&app, |st| st.last_error = Some(e));
             }
         });
@@ -1082,14 +1135,16 @@ fn spawn_network_watcher(app: AppHandle) {
             let Some(reason) = decision else { continue };
             // The panel refreshes its device list (devices on the old network are gone).
             let _ = app.emit("network-changed", ());
-            let settings = settings_to_restart(&app.state::<AppState>().status.snapshot());
-            if let Some(settings) = settings {
+            let why = match reason {
+                netwatch::Restart::Resumed => "the PC woke up",
+                netwatch::Restart::NetworkChanged { .. } => "the network changed",
+            };
+            // Decided under the lifecycle lock, so a receiver turned off meanwhile stays off.
+            let state = app.state::<AppState>();
+            let _lifecycle = state.lifecycle.begin();
+            if let Some(settings) = settings_to_restart(&state.status.snapshot()) {
                 eprintln!("open-airplay: restarting the receiver ({reason:?})");
-                let why = match reason {
-                    netwatch::Restart::Resumed => "the PC woke up",
-                    netwatch::Restart::NetworkChanged { .. } => "the network changed",
-                };
-                if let Err(e) = start_receiver_inner(&app, settings, Some(why)) {
+                if let Err(e) = start_receiver_locked(&app, settings, Some(why)) {
                     update_status(&app, |st| st.last_error = Some(e));
                 }
             }
@@ -1419,6 +1474,46 @@ mod tests {
         let plugged = [speakers::Speaker { id: id.into(), name: "Speakers".into() }];
         assert_eq!(engine_settings(chosen.clone(), &plugged).speaker.as_deref(), Some(id));
         assert_eq!(engine_settings(chosen, &[]).speaker, None);
+    }
+
+    #[test]
+    fn a_restart_scheduled_before_off_stands_down() {
+        let lifecycle = Lifecycle::default();
+        let ticket = lifecycle.ticket();
+        drop(lifecycle.begin()); // the user turns receiving off
+        assert_eq!(lifecycle.restart_if_current(ticket, || "restarted"), None);
+    }
+
+    #[test]
+    fn a_restart_nothing_overtook_runs_once() {
+        let lifecycle = Lifecycle::default();
+        let ticket = lifecycle.ticket();
+        assert_eq!(lifecycle.restart_if_current(ticket, || "restarted"), Some("restarted"));
+        assert_eq!(lifecycle.restart_if_current(ticket, || "again"), None, "a second copy of the same restart");
+    }
+
+    #[test]
+    fn off_pressed_during_a_restart_waits_for_it_and_has_the_last_word() {
+        use std::sync::{mpsc, Arc};
+        let lifecycle = Arc::new(Lifecycle::default());
+        let ticket = lifecycle.ticket();
+        let (started, wait) = mpsc::channel();
+        let (go, release) = mpsc::channel::<()>();
+        let restarting = Arc::clone(&lifecycle);
+        let worker = std::thread::spawn(move || {
+            restarting.restart_if_current(ticket, || {
+                started.send(()).unwrap();
+                release.recv().unwrap(); // the restart is mid-way when Off is pressed
+            })
+        });
+        wait.recv().unwrap();
+        let off = Arc::clone(&lifecycle);
+        let stopper = std::thread::spawn(move || drop(off.begin()));
+        go.send(()).unwrap();
+        assert!(worker.join().unwrap().is_some());
+        stopper.join().unwrap();
+        // Off ran after the restart finished, so a later copy of that restart can't undo it.
+        assert_eq!(lifecycle.restart_if_current(ticket, || ()), None);
     }
 
     #[test]
