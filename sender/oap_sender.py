@@ -13,6 +13,17 @@ own task, so a long cast never blocks a scan or another device. Replies carry th
   -> {"id": 5, "cmd": "pause" | "resume", "identifier": "..."}
   -> {"id": 6, "cmd": "ping"}     <- {"id": 6, "event": "pong"}
   -> {"id": 7, "cmd": "health"}   <- {"id": 7, "event": "health", "pyatv", "frozen", "casting": [identifiers]}
+play_url and stream_file also take "credentials": {"<protocol>": "<credentials>", "password": "..."},
+saved by the app from an earlier pairing. A cast that needs them fails with code "needs_pairing".
+Pairing, for a device that asks ("protocol" is "AirPlay" for play_url, "RAOP" for stream_file):
+  -> {"id": 8, "cmd": "pair_begin", "identifier": "...", "name": "Den", "protocol": "AirPlay", "address"?}
+  <- {"id": 8, "event": "pairing", "identifier": "...", "credential": "pin" | "password"}
+       "pin": the device now shows a 4-digit code. "password": it has a password set; nothing is shown.
+  -> {"id": 9, "cmd": "pair_code", "identifier": "...", "code": "1234"}
+  <- {"id": 9, "event": "paired", "identifier": "...", "credentials": {"AirPlay": "..."}}
+       or an error with code "wrong_code": the device now shows a new code; send pair_code again.
+  -> {"id": 10, "cmd": "pair_cancel", "identifier": "..."}   <- {"id": 10, "event": "ok"}
+Credentials and codes are never written to the log.
 Errors are {"event": "error", "code": "<code>", "message": "<a plain sentence>"}; technical detail
 goes to stderr, which the app writes to sender.log.
 The first line is always {"event": "ready", "pyatv": "<version>"}.
@@ -141,6 +152,15 @@ async def resolve_hosts(hosts):
     return list(dict.fromkeys(a for a in found if a))
 
 
+class Pairing:
+    """A pairing in progress with one device: pyatv's handler, or None when the device has a password."""
+
+    def __init__(self, protocol, handler, name):
+        self.protocol = protocol
+        self.handler = handler
+        self.name = name
+
+
 class Job:
     def __init__(self, request_id, identifier):
         self.request_id = request_id
@@ -151,11 +171,13 @@ class Job:
 
 
 class Sidecar:
-    def __init__(self, emit=emit, scan=None, connect=None, local=local_addresses):
+    def __init__(self, emit=emit, scan=None, connect=None, local=local_addresses, pair=None):
         self.emit = emit
         self.scan_fn = scan or (lambda **kw: pyatv.scan(asyncio.get_running_loop(), **kw))
         self.connect_fn = connect or (lambda conf: pyatv.connect(conf, asyncio.get_running_loop()))
+        self.pair_fn = pair or (lambda conf, protocol: pyatv.pair(conf, protocol, asyncio.get_running_loop()))
         self.local = local
+        self.pairings = {}  # identifier -> Pairing in progress
         self.jobs = {}  # identifier -> Job: at most one cast per device
         self.known = {}  # identifier -> config from the last scan, so a cast needn't scan again
         self.tasks = set()
@@ -194,6 +216,13 @@ class Sidecar:
             return await self.stop(cmd.get("identifier"))
         if kind in ("pause", "resume"):
             return await self.pause(cmd, kind == "pause")
+        if kind == "pair_begin":
+            return await self.pair_begin(cmd)
+        if kind == "pair_code":
+            return await self.pair_code(cmd)
+        if kind == "pair_cancel":
+            await self.pair_cancel(cmd.get("identifier"))
+            return {"event": "ok"}
         raise Refused("bad_request", f"unknown command: {kind}")
 
     async def scan(self, cmd):
@@ -263,7 +292,8 @@ class Sidecar:
             if self.jobs.get(identifier) is job:
                 del self.jobs[identifier]
 
-    async def open(self, identifier, credentials, address=None):
+    async def find(self, identifier, address=None):
+        """The device's config: from the last scan, else asked for by address or by identifier."""
         conf = self.known.get(identifier)
         if conf is None:
             if address:  # added by address: ask it directly, discovery may be blocked
@@ -276,9 +306,83 @@ class Sidecar:
             if not confs:
                 raise LookupError(f"device {identifier} not found")
             conf = self.known[identifier] = confs[0]
+        return conf
+
+    async def open(self, identifier, credentials, address=None):
+        conf = await self.find(identifier, address)
         for proto, creds in (credentials or {}).items():
-            conf.set_credentials(Protocol[proto], creds)
+            if proto == "password":  # a password set on the device: every service that asks gets it
+                for service in conf.services:
+                    service.password = creds
+            elif proto in Protocol.__members__:
+                conf.set_credentials(Protocol[proto], creds)
         return await self.connect_fn(conf)
+
+    async def pair_begin(self, cmd):
+        identifier = cmd.get("identifier")
+        if not identifier:
+            raise Refused("bad_request", "Choose a device first.")
+        name = cmd.get("name") or "The device"
+        protocol = Protocol.__members__.get(cmd.get("protocol") or "AirPlay")
+        if protocol not in (Protocol.AirPlay, Protocol.RAOP):
+            raise Refused("bad_request", f"can't pair {cmd.get('protocol')}")
+        await self.pair_cancel(identifier)  # a fresh start replaces one left open
+        conf = await asyncio.wait_for(self.find(identifier, cmd.get("address")), CONNECT_SECONDS)
+        service = conf.get_service(protocol)
+        if service is None:
+            raise Refused("unsupported", f"{name} can't be paired with this PC.")
+        if getattr(service, "requires_password", False):
+            # Nothing to show: the password is checked when the cast connects.
+            self.pairings[identifier] = Pairing(protocol, None, name)
+            return {"event": "pairing", "identifier": identifier, "credential": "password"}
+        handler = await self.pair_fn(conf, protocol)
+        try:
+            await asyncio.wait_for(handler.begin(), CONNECT_SECONDS)
+        except BaseException:
+            await self.close_pairing(handler)
+            raise
+        self.pairings[identifier] = Pairing(protocol, handler, name)
+        return {"event": "pairing", "identifier": identifier, "credential": "pin"}
+
+    async def pair_code(self, cmd):
+        identifier = cmd.get("identifier")
+        pairing = self.pairings.get(identifier)
+        if pairing is None:
+            raise Refused("not_pairing", "That code has expired. Try casting again.")
+        code = str(cmd.get("code") or "").strip()
+        if not code:
+            raise Refused("bad_request", "Enter the code first.")
+        if pairing.handler is None:
+            del self.pairings[identifier]
+            return {"event": "paired", "identifier": identifier, "credentials": {"password": code}}
+        handler = pairing.handler
+        try:
+            handler.pin(code)
+            await asyncio.wait_for(handler.finish(), CONNECT_SECONDS)
+        except Exception as e:
+            log.warning("pairing with %s failed: %s", identifier, type(e).__name__)
+            # The device drops a failed attempt; start again so it shows a new code to type.
+            await self.pair_cancel(identifier)
+            await self.pair_begin({"identifier": identifier, "name": pairing.name, "protocol": pairing.protocol.name})
+            raise Refused("wrong_code", f"That code didn't work. Enter the new code shown on {pairing.name}.")
+        if not handler.has_paired:
+            await self.pair_cancel(identifier)
+            raise Refused("failed", f"Couldn't pair with {pairing.name}. Try again.")
+        credentials = handler.service.credentials
+        await self.pair_cancel(identifier)
+        log.info("paired with %s (%s)", identifier, pairing.protocol.name)
+        return {"event": "paired", "identifier": identifier, "credentials": {pairing.protocol.name: credentials}}
+
+    async def pair_cancel(self, identifier):
+        pairing = self.pairings.pop(identifier, None)
+        if pairing and pairing.handler:
+            await self.close_pairing(pairing.handler)
+
+    async def close_pairing(self, handler):
+        try:
+            await asyncio.wait_for(handler.close(), CLOSE_SECONDS)
+        except Exception as e:
+            log.info("closing a pairing: %s", type(e).__name__)
 
     async def close(self, job):
         atv, job.atv = job.atv, None
@@ -314,6 +418,8 @@ class Sidecar:
 
     async def shutdown(self):
         await self.stop(None)
+        for identifier in list(self.pairings):
+            await self.pair_cancel(identifier)
 
 
 async def main():

@@ -85,7 +85,7 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
   let changed = () => {};
 
   const castOf = (identifier) => casts.get(identifier) || { state: "idle", message: "" };
-  const isActive = (c) => !!c && (c.state === "connecting" || c.state === "playing" || c.state === "stopping");
+  const isActive = (c) => !!c && (c.state === "connecting" || c.state === "playing" || c.state === "stopping" || c.state === "pairing" || c.state === "code");
   /** What a link or path is called on screen: its file name. */
   const mediaName = (media) => {
     const s = String(media || "").split(/[?#]/)[0].replace(/[\\/]+$/, "");
@@ -106,8 +106,9 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
     if (c && c.timer) { clearTimeout(c.timer); c.timer = null; }
   }
 
-  /** Casts a link or a file path. A speaker gets the audio stream; everything else plays it itself. */
-  function cast(device, media) {
+  /** Casts a link or a file path. A speaker gets the audio stream; everything else plays it itself.
+   *  `paired`: the retry right after pairing (so a second "needs pairing" says the code didn't take). */
+  function cast(device, media, paired = false) {
     const { identifier, name, speaker, address } = device;
     if (castOf(identifier).state === "connecting") return; // a double-click sends one request
     const cmd = speaker
@@ -121,7 +122,7 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
       update(identifier, { state: "error", message: `${name} didn't answer. Check it's on and on the same network.`, timer: null });
       invoke("sender_stop", { identifier }).catch(() => {});
     }, CONNECT_TIMEOUT_MS);
-    update(identifier, { state: "connecting", message: "", id, name, media, timer });
+    update(identifier, { state: "connecting", message: "", id, name, media, timer, device: { ...device }, paired });
   }
 
   function onCastEvent(identifier, id, msg) {
@@ -130,8 +131,74 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
     switch (msg.event) {
       case "playing": return update(identifier, { state: "playing" });
       case "ok": case "stopped": return update(identifier, { state: "idle", message: "" });
-      case "error": return update(identifier, { state: "error", message: msg.message || "Couldn't cast. Try again.", open: true });
+      case "error": {
+        const next = CastPairing.afterCastError(msg, castOf(identifier));
+        if (next.pair) return beginPairing(identifier, next.message);
+        return update(identifier, { state: "error", message: next.message, open: true });
+      }
     }
+  }
+
+  // ---------- pairing, for a device that asks before it takes a cast ----------
+  // The device's cast state goes "pairing" (asking it to show a code) -> "code" (the sheet waits for
+  // the user) -> the original cast again. The shell keeps the credentials; the panel never sees them.
+  FINAL.add("pairing");
+  FINAL.add("paired");
+  const PAIR_TIMEOUT_MS = 30000; // a wrong code makes the helper start over, so allow two attempts
+
+  /** Calls a pairing command; resolves with its final reply, or rejects with it (an error event). */
+  function pairCall(command, args, timeoutMs = PAIR_TIMEOUT_MS) {
+    return new Promise((resolve, reject) => {
+      const id = nextId++;
+      const timer = setTimeout(() => { handlers.delete(id); reject({ event: "error", message: "That took too long. Try again." }); }, timeoutMs);
+      handlers.set(id, (msg) => {
+        if (!FINAL.has(msg.event)) return;
+        clearTimeout(timer);
+        msg.event === "error" ? reject(msg) : resolve(msg);
+      });
+      invoke(command, { id, ...args }).catch((err) => {
+        if (handlers.delete(id)) { clearTimeout(timer); reject({ event: "error", message: String(err) }); }
+      });
+    });
+  }
+
+  const isPairing = (c) => c.state === "pairing" || c.state === "code";
+
+  async function beginPairing(identifier, message = "") {
+    const { device } = castOf(identifier);
+    const round = (castOf(identifier).codeRound || 0) + 1;
+    update(identifier, { state: "pairing", message: "", timer: null, codeMessage: "", codeBusy: false, codeRound: round });
+    try {
+      const reply = await pairCall("sender_pair_begin", {
+        identifier, name: device.name, protocol: CastPairing.protocolFor(device.speaker), address: device.address || null,
+      }, CONNECT_TIMEOUT_MS);
+      if (castOf(identifier).codeRound !== round) return; // cancelled meanwhile
+      update(identifier, { state: "code", credential: reply.credential, codeMessage: message });
+    } catch (err) {
+      if (castOf(identifier).codeRound !== round) return;
+      update(identifier, { state: "error", message: err.message || "Couldn't pair. Try again.", open: true });
+    }
+  }
+
+  async function sendCode(identifier, code) {
+    const c = castOf(identifier);
+    if (c.state !== "code" || c.codeBusy) return;
+    const round = c.codeRound;
+    update(identifier, { codeBusy: true });
+    let reply;
+    try { reply = await pairCall("sender_pair_code", { identifier, code }); } catch (err) { reply = err; }
+    const now = castOf(identifier);
+    if (now.state !== "code" || now.codeRound !== round) return; // cancelled meanwhile
+    const next = CastPairing.afterCode(reply);
+    if (next.next === "retry") return cast(now.device, now.media, true);
+    if (next.next === "code") return update(identifier, { codeBusy: false, codeMessage: next.message, codeRound: round + 1 });
+    update(identifier, { state: "error", message: next.message, codeBusy: false, open: true });
+  }
+
+  /** Cancel on the code sheet: back to the device page as it was. */
+  function cancelPairing(identifier) {
+    update(identifier, { state: "idle", message: "", codeRound: (castOf(identifier).codeRound || 0) + 1, codeBusy: false });
+    pairCall("sender_pair_cancel", { identifier }).catch(() => {});
   }
 
   /** Stops what this PC casts to one device. */
@@ -179,6 +246,22 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
     container.innerHTML = `
       <div class="send-body">
         <div data-r="ban"></div>
+        <div class="m-code cast-code" data-cast-code hidden>
+          <h4 data-cast-code-title></h4>
+          <p data-cast-code-help></p>
+          <p class="m-code-msg" data-cast-code-msg role="alert" hidden></p>
+          <div class="m-digits" data-cast-digits>
+            <input class="m-digit" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 1">
+            <input class="m-digit" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 2">
+            <input class="m-digit" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 3">
+            <input class="m-digit" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 4">
+          </div>
+          <form class="m-password" data-cast-password autocomplete="off">
+            <input class="oai-input" type="password" aria-label="Password" data-cast-password-field>
+            <div class="m-btns"><button type="button" class="oai-btn" data-cast-action="cancel-code">Cancel</button><button class="oai-btn is-primary" data-cast-action="send-password">Continue</button></div>
+          </form>
+          <button class="oai-ghost m-cancel" data-cast-action="cancel-code" data-cast-pin-cancel>Cancel</button>
+        </div>
         <div data-r="live"></div>
         <div data-r="tiles"></div>
         <div data-r="drop"></div>
@@ -204,13 +287,74 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
         case "link": setPage(current.identifier, { link: true }); renderPage(); return field.focus();
         case "cast": return castField();
         case "stop": return stop(current.identifier);
+        case "cancel-code": e.preventDefault(); return cancelPairing(current.identifier);
+        case "send-password": e.preventDefault(); return submitPassword();
       }
     });
+    watchCode();
     field.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); castField(); }
     });
     field.addEventListener("input", () => setPage(current.identifier, { draft: field.value }));
     watchDrops();
+  }
+
+  /** The code sheet's boxes: each digit moves on; the last one (or a pasted code) sends it. */
+  function watchCode() {
+    const digits = [...root.querySelectorAll("[data-cast-digits] .m-digit")];
+    digits.forEach((el, i) => {
+      el.addEventListener("input", () => {
+        const all = el.value.replace(/\D/g, "");
+        if (all.length > 1) {
+          [...all].slice(0, digits.length - i).forEach((ch, k) => { digits[i + k].value = ch; });
+        } else {
+          el.value = all;
+        }
+        const next = digits.find((d) => !d.value);
+        if (next) next.focus();
+        else if (current) sendCode(current.identifier, digits.map((d) => d.value).join(""));
+      });
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Backspace" && !el.value && i > 0) { digits[i - 1].value = ""; digits[i - 1].focus(); e.preventDefault(); }
+      });
+    });
+    root.querySelector("[data-cast-password]").addEventListener("submit", (e) => { e.preventDefault(); submitPassword(); });
+  }
+
+  function submitPassword() {
+    const field = root.querySelector("[data-cast-password-field]");
+    if (current && field.value) sendCode(current.identifier, field.value);
+  }
+
+  let codeKey = null;
+  /** Shows the code sheet for a device being paired (it replaces the page's tiles and drop zone). */
+  function renderCode(c) {
+    const box = root.querySelector("[data-cast-code]");
+    const on = c.state === "pairing" || c.state === "code";
+    box.hidden = !on;
+    if (!on) { codeKey = null; return; }
+    const s = CastPairing.codeSheet(c);
+    const set = (sel, text) => { const el = root.querySelector(sel); if (el.textContent !== text) el.textContent = text; };
+    set("[data-cast-code-title]", s.title);
+    set("[data-cast-code-help]", s.help);
+    set("[data-cast-code-msg]", s.message);
+    root.querySelector("[data-cast-code-msg]").hidden = !s.message;
+    root.querySelector("[data-cast-digits]").hidden = s.waiting || s.password;
+    root.querySelector("[data-cast-password]").hidden = s.waiting || !s.password;
+    root.querySelector("[data-cast-pin-cancel]").hidden = s.password && !s.waiting;
+    const digits = root.querySelectorAll("[data-cast-digits] .m-digit");
+    const field = root.querySelector("[data-cast-password-field]");
+    const key = `${current.identifier}|${s.key}`;
+    if (s.key !== null && key !== codeKey) {
+      // A new prompt (another device, or a new code after a wrong one) starts with empty boxes.
+      codeKey = key;
+      digits.forEach((d) => { d.value = ""; });
+      field.value = "";
+      setTimeout(() => (s.password ? field : digits[0]).focus(), 0);
+    }
+    digits.forEach((d) => { d.disabled = !!s.busy; });
+    field.disabled = !!s.busy;
+    root.querySelector('[data-cast-action="send-password"]').classList.toggle("is-busy", !!s.busy);
   }
 
   /** Files dragged onto the panel: the window reports real paths (a web drop would not). */
@@ -291,7 +435,8 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
     const dropOpen = !active && (!tiles || page.open || c.state === "error" || !!dragging);
 
     region("ban", c.state === "error" ? `<div class="send-ban" role="alert">${ICON.warn}<span>${esc(c.message)}</span></div>` : "");
-    region("live", active ? liveHtml(c) : "");
+    region("live", active && !isPairing(c) ? liveHtml(c) : "");
+    renderCode(c);
     region("tiles", tiles ? `<div class="send-tiles">${current.mirrorTile}<button class="send-tile ${dropOpen ? "is-open" : ""}" data-cast-action="open" aria-expanded="${dropOpen}"><span class="ti">${ICON.cast}</span><span><b>Cast media</b><small>A song, video or link</small></span></button></div>` : "");
     region("drop", dropOpen ? dropHtml() : "");
     const linkRegion = root.querySelector('[data-r="link"]');
@@ -324,6 +469,7 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
     if (!c) return null;
     if (c.state === "connecting") return { text: "Connecting…", kind: "busy" };
     if (c.state === "playing") return { text: `Playing ${mediaName(c.media)}`, kind: "live", short: "Playing" };
+    if (isPairing(c)) return { text: "Pairing…", kind: "busy" };
     return null;
   }
 

@@ -159,6 +159,8 @@ button.m-row:focus-visible, .m-row .x:focus-visible, .m-disp:focus-visible { out
 .m-password .oai-input { width: 100%; }
 .m-btns { display: flex; gap: var(--oai-space-2); }
 .m-btns > * { flex: 1; }
+/* the code sheet on a device page, when a cast device asks to be paired (cast.js) */
+.cast-code { padding: 14px 4px 6px; }
 .send-head .s svg { width: 12px; height: 12px; flex: none; }
 
 /* network doctor */

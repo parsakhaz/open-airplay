@@ -1,4 +1,5 @@
 pub mod added;
+pub mod cast_credentials;
 pub mod dacp;
 pub mod doctor;
 pub mod engine;
@@ -849,8 +850,11 @@ fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
     let sidecar = SenderSidecar::spawn(
         &program,
         sender_log(app),
-        move |event| {
+        move |mut event| {
             let sidecars = &events.state::<AppState>().inner().sidecars;
+            if let Some((identifier, credentials)) = cast_credentials::take_paired(&mut event) {
+                save_cast_credentials(&events, &identifier, credentials);
+            }
             if event["event"] == "ready" {
                 *sidecars.sender_ready.lock().unwrap() = Some(event.clone());
             }
@@ -903,6 +907,54 @@ fn send_to_sender(app: &AppHandle, command: &Value) -> Result<(), String> {
 /// If the sidecar dies, "sender-exit" is emitted so the UI can fail outstanding requests and retry.
 #[tauri::command]
 async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut command = command;
+        if let Some(path) = cast_credentials_path(&app) {
+            cast_credentials::attach(&mut command, &cast_credentials::load(&path));
+        }
+        send_to_sender(&app, &command)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// <app config dir>/cast-credentials.json: what pairing a cast device gave us, per device.
+fn cast_credentials_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join(cast_credentials::FILE_NAME))
+}
+
+/// Keeps a device's credentials from a "paired" reply. Only the fact is logged, never the credentials.
+fn save_cast_credentials(app: &AppHandle, identifier: &str, credentials: cast_credentials::DeviceCredentials) {
+    let Some(path) = cast_credentials_path(app) else { return };
+    match cast_credentials::remember(&path, identifier, credentials) {
+        Ok(()) => sender_log_line(app, &format!("paired with {identifier}")),
+        Err(e) => sender_log_line(app, &format!("could not save the pairing with {identifier}: {e}")),
+    }
+}
+
+/// Starts pairing with a cast device that asked for it: it shows a code, or wants its password.
+/// The reply ("pairing", or an error) arrives as "sender-event" with `id`.
+#[tauri::command]
+async fn sender_pair_begin(app: AppHandle, id: Value, identifier: String, name: String, protocol: String, address: Option<String>) -> Result<(), String> {
+    let mut command = json!({ "id": id, "cmd": "pair_begin", "identifier": identifier, "name": name, "protocol": protocol });
+    if let Some(address) = address {
+        command["address"] = json!(address);
+    }
+    tauri::async_runtime::spawn_blocking(move || send_to_sender(&app, &command)).await.map_err(|e| e.to_string())?
+}
+
+/// Sends the code (or password) the user typed. On "paired" the shell saves the credentials and the
+/// panel gets the reply without them.
+#[tauri::command]
+async fn sender_pair_code(app: AppHandle, id: Value, identifier: String, code: String) -> Result<(), String> {
+    let command = json!({ "id": id, "cmd": "pair_code", "identifier": identifier, "code": code });
+    tauri::async_runtime::spawn_blocking(move || send_to_sender(&app, &command)).await.map_err(|e| e.to_string())?
+}
+
+/// Gives up a pairing in progress (Cancel on the code sheet).
+#[tauri::command]
+async fn sender_pair_cancel(app: AppHandle, id: Value, identifier: String) -> Result<(), String> {
+    let command = json!({ "id": id, "cmd": "pair_cancel", "identifier": identifier });
     tauri::async_runtime::spawn_blocking(move || send_to_sender(&app, &command)).await.map_err(|e| e.to_string())?
 }
 
@@ -1420,7 +1472,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays, set_mirror_options, mirror_capabilities, added_device_check, added_device_save, added_device_remove])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, sender_pair_begin, sender_pair_code, sender_pair_cancel, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays, set_mirror_options, mirror_capabilities, added_device_check, added_device_save, added_device_remove])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
