@@ -81,7 +81,18 @@
     };
   }
 
-  const api = { mirrorSheet };
+  /** Orders the first mirror status (asked for once) against the ones the shell pushes: a reply
+   *  that arrives after a push is older than it, so it is dropped. Pushes are always newer. */
+  function snapshotGate() {
+    let pushes = 0;
+    return {
+      pushed() { pushes++; },
+      /** Call when asking; the returned check says whether the reply is still the newest. */
+      asking() { const at = pushes; return () => pushes === at; },
+    };
+  }
+
+  const api = { mirrorSheet, snapshotGate };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.MirrorSheet = api;
 })(this);

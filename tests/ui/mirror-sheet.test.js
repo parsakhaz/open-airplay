@@ -1,7 +1,7 @@
 // The Mirror sheet's view model: what the sheet shows for a mirror snapshot, the device list and the ticks.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { mirrorSheet } = require("../../ui/mirror-sheet.js");
+const { mirrorSheet, snapshotGate } = require("../../ui/mirror-sheet.js");
 
 const atv = { name: "Living Room", ip: "192.168.1.20" };
 const bed = { name: "Bedroom", ip: "192.168.1.21" };
@@ -47,6 +47,15 @@ test("Add a device lists the TVs not already in the mirror, ticked as the user p
   m = mirrorSheet({ snapshot, devices, ticked: [mac.ip], adding: true });
   assert.deepEqual(m.add.rows.map((r) => [r.target, r.ticked]), [[bed.ip, false], [mac.ip, true]]);
   assert.deepEqual(m.add.button, { label: "Add Study Mac", action: "add", disabled: false });
+});
+
+test("the first mirror status, answered after a newer push, doesn't replace it", () => {
+  const gate = snapshotGate();
+  const newest = gate.asking();
+  gate.pushed(); // "mirroring" pushed while the idle reply was on its way
+  assert.equal(newest(), false, "the reply is dropped");
+  const later = gate.asking();
+  assert.equal(later(), true, "with no push in between, the reply is used");
 });
 
 test("a code that couldn't be sent says why on the code sheet", () => {

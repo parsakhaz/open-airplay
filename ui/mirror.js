@@ -379,14 +379,24 @@ window.OapMirror = (() => {
   }
   setInterval(tick, 1000);
 
-  listen("mirror-status", (e) => {
+  const gate = MirrorSheet.snapshotGate();
+  const listening = listen("mirror-status", (e) => {
+    gate.pushed();
     const wasSending = sending();
     state.snapshot = e.payload || { targets: [] };
     // When mirroring ends, the sheet offers the device it was opened from again.
     if (wasSending && !sending() && state.ticked.length === 0 && state.from) state.ticked = [state.from];
     host.changed();
   });
-  invoke("mirror_status").then((s) => { state.snapshot = s || { targets: [] }; host.changed(); }).catch(() => {});
+  // Listen first, then ask: a push that lands before the reply is newer, so the reply is dropped.
+  listening.catch(() => {}).then(() => {
+    const newest = gate.asking();
+    return invoke("mirror_status").then((s) => {
+      if (!newest()) return;
+      state.snapshot = s || { targets: [] };
+      host.changed();
+    });
+  }).catch(() => {});
 
   return { mount, open, render, head, tile, rowStatus, tick, actions, isSending: sending };
 })();
