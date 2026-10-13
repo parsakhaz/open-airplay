@@ -289,6 +289,7 @@ func main() {
 			NoEncrypt:    *noEncrypt,
 			DirectKey:    *directKey,
 			NoAudio:      *noAudio,
+			Audio:        audioOptions,
 			ShowCursor:   !*noCursor,
 			DisplayIndex: selectedDisplay,
 			Code:         credential,
