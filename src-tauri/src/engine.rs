@@ -77,6 +77,9 @@ pub enum EngineEvent {
     VideoLink,
     /// The video link ended: the phone stopped it, it finished, or it was torn down (engine patch 0006).
     VideoLinkStopped,
+    /// The video link's player failed (a bad stream, a decoder error), even before its first frame;
+    /// the engine ends the link (engine patch 0006).
+    VideoLinkFailed,
     /// A video link from an app other than YouTube, which the engine can't play.
     UnsupportedVideoLink,
     /// A second device was turned away because one is already connected.
@@ -169,6 +172,9 @@ pub fn parse_line(line: &str) -> Option<EngineEvent> {
     }
     if line == "open-airplay: video link stopped" {
         return Some(EngineEvent::VideoLinkStopped);
+    }
+    if line == "open-airplay: video link failed" {
+        return Some(EngineEvent::VideoLinkFailed);
     }
     if let Some(size) = line.strip_prefix("open-airplay: video ") {
         let (w, h) = size.split_once('x')?;
@@ -456,6 +462,7 @@ mod tests {
     fn parses_a_video_link_from_patched_engine() {
         assert_eq!(parse_line("open-airplay: video link"), Some(EngineEvent::VideoLink));
         assert_eq!(parse_line("open-airplay: video link stopped"), Some(EngineEvent::VideoLinkStopped));
+        assert_eq!(parse_line("open-airplay: video link failed"), Some(EngineEvent::VideoLinkFailed));
     }
 
     #[test]

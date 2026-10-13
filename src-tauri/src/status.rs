@@ -246,7 +246,10 @@ pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
                 status.mirroring_since_ms = None;
             }
             // Whether or not a frame arrived: a link stopped before playing must not hide the next mirror.
-            EngineEvent::VideoLinkStopped => {
+            EngineEvent::VideoLinkStopped | EngineEvent::VideoLinkFailed => {
+                if matches!(event, EngineEvent::VideoLinkFailed) && status.video_link {
+                    status.notice = Some("That video stopped playing. Try it again from the phone.".into());
+                }
                 status.video_link = false;
                 status.video = None;
                 status.mirroring_since_ms = None;
@@ -574,6 +577,21 @@ mod tests {
         assert_eq!((s.phase, s.video_link), (Phase::Connecting, false), "the phone is still connected");
         apply_event(&mut s, &engine(EngineEvent::Video { width: 886, height: 1920 }));
         assert_eq!(s.phase, Phase::Mirroring);
+    }
+
+    #[test]
+    fn a_video_link_that_fails_before_its_first_frame_does_not_hide_the_next_mirror() {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &request("Sam's iPhone", "1A:2B"));
+        apply_event(&mut s, &engine(EngineEvent::VideoLink));
+        // A resource or decoder error in the link's player, with the phone still connected.
+        apply_event(&mut s, &engine(EngineEvent::VideoLinkFailed));
+        assert_eq!((s.phase, s.video_link), (Phase::Connecting, false));
+        assert_eq!(s.notice.as_deref(), Some("That video stopped playing. Try it again from the phone."));
+        apply_event(&mut s, &engine(EngineEvent::VideoStopped));
+        apply_event(&mut s, &engine(EngineEvent::Video { width: 886, height: 1920 }));
+        assert_eq!(s.phase, Phase::Mirroring, "the phone's Screen Mirroring shows as mirroring");
     }
 
     #[test]

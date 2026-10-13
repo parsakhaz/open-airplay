@@ -1,3 +1,31 @@
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index 01b58de..0813bec 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -20,6 +20,7 @@
+  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
+  */
+ 
++#include <stdio.h>   /* open-airplay: printf for the machine-readable status lines */
+ #include <gst/gst.h>
+ #include <gst/app/gstappsrc.h>
+ #include "video_renderer.h"
+@@ -975,6 +976,15 @@ static gboolean gstreamer_video_pipeline_bus_callback(GstBus *bus, GstMessage *m
+             gst_element_set_state (renderer->pipeline, GST_STATE_READY);
+             g_main_loop_quit( (GMainLoop *) loop);
+         }
++        if (hls_video && !closed_window) {
++            /* open-airplay: a video link that fails (a bad stream, a decoder error) is over, even before
++             * its first frame: end it like EOS, so uxplay tears it down and tells the phone, and say so
++             * to the shell (machine-readable). */
++            printf("open-airplay: video link failed\n");
++            gst_bus_set_flushing(bus, TRUE);
++            gst_element_set_state (renderer->pipeline, GST_STATE_READY);
++            renderer->eos = TRUE;
++        }
+         break;
+     }
+     case GST_MESSAGE_EOS:
 diff --git a/uxplay.cpp b/uxplay.cpp
 index 53dd069..4fba5be 100644
 --- a/uxplay.cpp

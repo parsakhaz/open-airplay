@@ -18,6 +18,7 @@
 //! - `video-stop`                `open-airplay: video stopped`
 //! - `link`                      `open-airplay: video link` (a YouTube video link starts)
 //! - `link-stop`                 `open-airplay: video link stopped`
+//! - `link-fail`                 `open-airplay: video link failed` (the link's player hit an error)
 //! - `pin <code>`                `open-airplay: pin = <code>`
 //! - `end`                       video stopped (if video) + `Open connections: 0`
 //! - `lost`                      client-lost error + `Open connections: 0`
@@ -132,6 +133,7 @@ fn handle(ctx: &Ctx, raw: &str) {
         }
         "link" => emit("open-airplay: video link"),
         "link-stop" => emit("open-airplay: video link stopped"),
+        "link-fail" => emit("open-airplay: video link failed"),
         "pin" => {
             let code = if rest.is_empty() { DEFAULT_PIN } else { rest };
             emit(&format!("open-airplay: pin = {code}"));
