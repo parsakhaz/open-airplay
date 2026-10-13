@@ -116,6 +116,34 @@ class Pairing(unittest.TestCase):
             self.assertEqual(paired["credentials"], {"AirPlay": SECRET})
         run(go())
 
+    def test_cancel_while_the_device_is_still_starting_closes_the_late_pairing(self):
+        async def go():
+            h = Harness([device()])
+            release = asyncio.Event()
+
+            async def slow_begin(handler=None):
+                await release.wait()  # the device takes its time to show the code
+
+            original_pair = h.sidecar.pair_fn
+
+            async def pair(conf, protocol):
+                handler = await original_pair(conf, protocol)
+                handler.begin = slow_begin
+                return handler
+
+            h.sidecar.pair_fn = pair
+            begin = asyncio.create_task(h.ask({"id": 1, "cmd": "pair_begin", "identifier": "tv", "name": "Den TV"}))
+            while not h.handlers:  # begin() is waiting on the device
+                await asyncio.sleep(0)
+            cancelled = await h.ask({"id": 2, "cmd": "pair_cancel", "identifier": "tv"})
+            self.assertEqual(cancelled["event"], "ok")
+            release.set()  # ...and then the device finishes starting
+            late = await begin
+            self.assertEqual((late["event"], late.get("code")), ("error", "cancelled"))
+            self.assertTrue(h.handlers[0].closed, "the pairing that finished after Cancel is closed")
+            self.assertEqual(h.sidecar.pairings, {}, "no pairing is left open")
+        run(go())
+
     def test_cancel_closes_the_pairing(self):
         async def go():
             h = Harness([device()])

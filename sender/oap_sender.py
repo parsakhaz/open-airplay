@@ -23,6 +23,7 @@ Pairing, for a device that asks ("protocol" is "AirPlay" for play_url, "RAOP" fo
   <- {"id": 9, "event": "paired", "identifier": "...", "credentials": {"AirPlay": "..."}}
        or an error with code "wrong_code": the device now shows a new code; send pair_code again.
   -> {"id": 10, "cmd": "pair_cancel", "identifier": "..."}   <- {"id": 10, "event": "ok"}
+       A pair_begin still waiting on the device then fails with code "cancelled" and leaves nothing open.
 Credentials and codes are never written to the log.
 Errors are {"event": "error", "code": "<code>", "message": "<a plain sentence>"}; technical detail
 goes to stderr, which the app writes to sender.log.
@@ -178,6 +179,9 @@ class Sidecar:
         self.pair_fn = pair or (lambda conf, protocol: pyatv.pair(conf, protocol, asyncio.get_running_loop()))
         self.local = local
         self.pairings = {}  # identifier -> Pairing in progress
+        # identifier -> the current pairing attempt's number. Cancel (or a new begin) moves it on, so a
+        # begin still waiting on the device can tell it was cancelled and close what it opened.
+        self.pair_attempts = {}
         self.jobs = {}  # identifier -> Job: at most one cast per device
         self.known = {}  # identifier -> config from the last scan, so a cast needn't scan again
         self.tasks = set()
@@ -327,7 +331,14 @@ class Sidecar:
         if protocol not in (Protocol.AirPlay, Protocol.RAOP):
             raise Refused("bad_request", f"can't pair {cmd.get('protocol')}")
         await self.pair_cancel(identifier)  # a fresh start replaces one left open
+        attempt = self.pair_attempts[identifier]
+
+        def cancelled():
+            return self.pair_attempts.get(identifier) != attempt
+
         conf = await asyncio.wait_for(self.find(identifier, cmd.get("address")), CONNECT_SECONDS)
+        if cancelled():
+            raise Refused("cancelled", "Pairing was cancelled.")
         service = conf.get_service(protocol)
         if service is None:
             raise Refused("unsupported", f"{name} can't be paired with this PC.")
@@ -337,10 +348,15 @@ class Sidecar:
             return {"event": "pairing", "identifier": identifier, "credential": "password"}
         handler = await self.pair_fn(conf, protocol)
         try:
-            await asyncio.wait_for(handler.begin(), CONNECT_SECONDS)
+            if not cancelled():
+                await asyncio.wait_for(handler.begin(), CONNECT_SECONDS)
         except BaseException:
             await self.close_pairing(handler)
             raise
+        # Cancel arrived while the device was starting: close what finished late, keep nothing open.
+        if cancelled():
+            await self.close_pairing(handler)
+            raise Refused("cancelled", "Pairing was cancelled.")
         self.pairings[identifier] = Pairing(protocol, handler, name)
         return {"event": "pairing", "identifier": identifier, "credential": "pin"}
 
@@ -374,6 +390,8 @@ class Sidecar:
         return {"event": "paired", "identifier": identifier, "credentials": {pairing.protocol.name: credentials}}
 
     async def pair_cancel(self, identifier):
+        # Also ends a begin still waiting on the device (it sees the attempt moved on).
+        self.pair_attempts[identifier] = self.pair_attempts.get(identifier, 0) + 1
         pairing = self.pairings.pop(identifier, None)
         if pairing and pairing.handler:
             await self.close_pairing(pairing.handler)
