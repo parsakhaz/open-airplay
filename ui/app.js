@@ -11,21 +11,14 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const use = (id) => `<svg><use href="#${id}"/></svg>`;
 
 // ---------- app preferences (saved by the Rust side in the app's config folder) ----------
-const prefs = { startAtLogin: false, addedDevices: [] };
+// prefs.js: a failure at start keeps the defaults; after a change it is reported (see refreshAddedDevices).
+const prefStore = OapPrefs.createPrefs(invoke);
+const prefs = prefStore.values;
+const loadPrefs = () => prefStore.load();
 
-async function loadPrefs() {
-  try {
-    const p = await invoke("get_prefs");
-    prefs.startAtLogin = !!p.start_at_login;
-    prefs.addedDevices = Array.isArray(p.added_devices) ? p.added_devices : [];
-  } catch { /* keep defaults */ }
-}
-
-/** After a device is added or removed by address: reload the list of added devices and redraw. */
-async function refreshAddedDevices() {
-  await loadPrefs();
-  render();
-}
+/** After a device is added or removed by address: reload the list of added devices (strictly: a
+ *  failure rejects, and the add or remove step shows it) and redraw. */
+const refreshAddedDevices = OapPrefs.refresher(prefStore, () => render());
 
 async function savePrefs() {
   const p = await invoke("set_prefs", { startAtLogin: prefs.startAtLogin });
