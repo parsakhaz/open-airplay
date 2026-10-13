@@ -56,3 +56,10 @@ test("a wrong code gives a new prompt, so the boxes start empty again", () => {
   assert.equal(again.message, "That code didn't work. Enter the new code shown on Den TV.");
   assert.equal(codeSheet({ ...c, codeBusy: true }).busy, true);
 });
+
+test("a pairing the shell couldn't save still retries the cast, and says the device will ask again", () => {
+  const next = afterCode({ event: "paired", identifier: "tv", saved: false });
+  assert.equal(next.next, "retry");
+  assert.match(next.notice, /couldn't save the pairing/);
+  assert.equal(afterCode({ event: "paired", identifier: "tv" }).notice, undefined);
+});

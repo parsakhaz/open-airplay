@@ -89,6 +89,8 @@ struct AppState {
     /// Mirroring this PC to a TV; set during setup.
     mirror: std::sync::OnceLock<mirror::Mirror>,
     lifecycle: Lifecycle,
+    /// Cast pairings made this run, kept in memory too so they work even if the file can't be saved.
+    cast_pairings: Mutex<cast_credentials::CastCredentials>,
 }
 
 /// Turning the receiver on, off or restarting it happens one at a time. Every start and stop
@@ -852,8 +854,11 @@ fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
         sender_log(app),
         move |mut event| {
             let sidecars = &events.state::<AppState>().inner().sidecars;
-            if let Some((identifier, credentials)) = cast_credentials::take_paired(&mut event) {
-                save_cast_credentials(&events, &identifier, credentials);
+            // A "paired" reply loses its credentials here; if they couldn't be saved it says so.
+            let path = cast_credentials_path(&events);
+            let note = cast_credentials::on_sidecar_event(path.as_deref(), &mut events.state::<AppState>().cast_pairings.lock().unwrap(), &mut event);
+            if let Some(note) = note {
+                sender_log_line(&events, &note);
             }
             if event["event"] == "ready" {
                 *sidecars.sender_ready.lock().unwrap() = Some(event.clone());
@@ -909,9 +914,8 @@ fn send_to_sender(app: &AppHandle, command: &Value) -> Result<(), String> {
 async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut command = command;
-        if let Some(path) = cast_credentials_path(&app) {
-            cast_credentials::attach(&mut command, &cast_credentials::load(&path));
-        }
+        let saved = cast_credentials::current(cast_credentials_path(&app).as_deref(), &app.state::<AppState>().cast_pairings.lock().unwrap());
+        cast_credentials::attach(&mut command, &saved);
         send_to_sender(&app, &command)
     })
     .await
@@ -921,15 +925,6 @@ async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
 /// <app config dir>/cast-credentials.json: what pairing a cast device gave us, per device.
 fn cast_credentials_path(app: &AppHandle) -> Option<PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join(cast_credentials::FILE_NAME))
-}
-
-/// Keeps a device's credentials from a "paired" reply. Only the fact is logged, never the credentials.
-fn save_cast_credentials(app: &AppHandle, identifier: &str, credentials: cast_credentials::DeviceCredentials) {
-    let Some(path) = cast_credentials_path(app) else { return };
-    match cast_credentials::remember(&path, identifier, credentials) {
-        Ok(()) => sender_log_line(app, &format!("paired with {identifier}")),
-        Err(e) => sender_log_line(app, &format!("could not save the pairing with {identifier}: {e}")),
-    }
 }
 
 /// Starts pairing with a cast device that asked for it: it shows a code, or wants its password.

@@ -15,7 +15,13 @@
 
   /** What the reply to a typed code leads to: "retry" the cast, ask for the "code" again, or an "error". */
   function afterCode(msg) {
-    if (msg.event === "paired") return { next: "retry" };
+    // Paired but not saved (the shell couldn't write it): the cast goes on, and the user learns why
+    // the device will ask again next time.
+    if (msg.event === "paired") {
+      return msg.saved === false
+        ? { next: "retry", notice: "Paired, but this PC couldn't save the pairing. It works until open-airplay closes; then the device asks for the code again." }
+        : { next: "retry" };
+    }
     if (msg.code === "wrong_code") return { next: "code", message: msg.message || "That code didn't work. Try again." };
     return { next: "error", message: msg.message || "Couldn't pair. Try again." };
   }

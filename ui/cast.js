@@ -122,7 +122,7 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
       update(identifier, { state: "error", message: `${name} didn't answer. Check it's on and on the same network.`, timer: null });
       invoke("sender_stop", { identifier }).catch(() => {});
     }, CONNECT_TIMEOUT_MS);
-    update(identifier, { state: "connecting", message: "", id, name, media, timer, device: { ...device }, paired });
+    update(identifier, { state: "connecting", message: "", notice: "", id, name, media, timer, device: { ...device }, paired });
   }
 
   function onCastEvent(identifier, id, msg) {
@@ -190,7 +190,10 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
     const now = castOf(identifier);
     if (now.state !== "code" || now.codeRound !== round) return; // cancelled meanwhile
     const next = CastPairing.afterCode(reply);
-    if (next.next === "retry") return cast(now.device, now.media, true);
+    if (next.next === "retry") {
+      cast(now.device, now.media, true);
+      return next.notice ? update(identifier, { notice: next.notice }) : undefined;
+    }
     if (next.next === "code") return update(identifier, { codeBusy: false, codeMessage: next.message, codeRound: round + 1 });
     update(identifier, { state: "error", message: next.message, codeBusy: false, open: true });
   }
@@ -434,7 +437,9 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
     const tiles = !!current.mirrorTile && !active;
     const dropOpen = !active && (!tiles || page.open || c.state === "error" || !!dragging);
 
-    region("ban", c.state === "error" ? `<div class="send-ban" role="alert">${ICON.warn}<span>${esc(c.message)}</span></div>` : "");
+    const ban = c.state === "error" ? `<div class="send-ban" role="alert">${ICON.warn}<span>${esc(c.message)}</span></div>`
+      : c.notice ? `<div class="send-ban is-info" role="status">${ICON.warn}<span>${esc(c.notice)}</span></div>` : "";
+    region("ban", ban);
     region("live", active && !isPairing(c) ? liveHtml(c) : "");
     renderCode(c);
     region("tiles", tiles ? `<div class="send-tiles">${current.mirrorTile}<button class="send-tile ${dropOpen ? "is-open" : ""}" data-cast-action="open" aria-expanded="${dropOpen}"><span class="ti">${ICON.cast}</span><span><b>Cast media</b><small>A song, video or link</small></span></button></div>` : "");
