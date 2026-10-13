@@ -26,18 +26,17 @@ if [ ! -d "$SRC/.git" ]; then
   git clone "$UXPLAY_REPO" "$SRC"
 fi
 git -C "$SRC" fetch --quiet origin
-git -C "$SRC" checkout --quiet --detach "$UXPLAY_PIN"
+# Start from the pristine pinned sources (keeping the build dir), then apply every patch in order.
+# Later patches change files earlier ones add, so "already applied" can't be checked patch by patch.
+git -C "$SRC" checkout --quiet --force --detach "$UXPLAY_PIN"
+git -C "$SRC" clean -fdq -e /build/
 
 # Our patches (kept small and upstreamable) live in engine/patches/*.patch.
 # --ignore-whitespace: the checkout may have CRLF line endings (Git for Windows autocrlf).
 for p in "$HERE"/patches/*.patch; do
   [ -e "$p" ] || continue
-  if git -C "$SRC" apply --ignore-whitespace --reverse --check "$p" 2>/dev/null; then
-    echo "patch already applied: $(basename "$p")"
-  else
-    git -C "$SRC" apply --ignore-whitespace "$p"
-    echo "patch applied: $(basename "$p")"
-  fi
+  git -C "$SRC" apply --ignore-whitespace "$p"
+  echo "patch applied: $(basename "$p")"
 done
 
 cmake -S "$SRC" -B "$SRC/build" -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -47,7 +46,16 @@ ninja -C "$SRC/build"
 gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_window_fit.c" -o "$SRC/build/test_window_fit.exe"
 "$SRC/build/test_window_fit.exe"
 
-# Regression test: a maximized mirror window reappears for the next stream (runs on a private desktop).
+# Unit test for the stdin control-line parser (patch 0003).
+gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_control.c" -o "$SRC/build/test_control.exe"
+"$SRC/build/test_control.exe"
+
+# Unit test for the now-playing line helpers (patch 0005).
+gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_audio.c" -o "$SRC/build/test_audio.exe"
+"$SRC/build/test_audio.exe"
+
+# Regression test: a maximized mirror window reappears for the next stream, shows without taking
+# focus, and its close button runs the close handler (runs on a private desktop).
 gcc -Wall -I "$SRC/renderers" "$HERE/tests/test_window_reshow.c" "$SRC/renderers/oap_window.c"   $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-video-1.0) -luser32 -lgdi32 -o "$SRC/build/test_window_reshow.exe"
 "$SRC/build/test_window_reshow.exe"
 

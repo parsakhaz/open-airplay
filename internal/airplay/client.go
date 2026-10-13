@@ -1360,6 +1360,7 @@ type StreamConfig struct {
 	SourceHeight           int           // selected source display height; zero preserves the receiver's nominal canvas
 	AutomaticHEVCAvailable bool          // retained for programmatic compatibility
 	MeasuredVideoLatency   time.Duration // measured minimum lead for the local HEVC capture path
+	TargetLatency          time.Duration // explicit joint audio/video lead for this session; zero keeps SetTargetLatency or automatic
 	NoEncrypt              bool          // Disable encryption for debugging
 	DirectKey              bool          // Use shk/shiv directly without SHA-512 derivation
 	NoAudio                bool          // Disable audio streaming

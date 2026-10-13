@@ -1,0 +1,76 @@
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index 01b58de..0813bec 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -20,6 +20,7 @@
+  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
+  */
+ 
++#include <stdio.h>   /* open-airplay: printf for the machine-readable status lines */
+ #include <gst/gst.h>
+ #include <gst/app/gstappsrc.h>
+ #include "video_renderer.h"
+@@ -975,6 +976,15 @@ static gboolean gstreamer_video_pipeline_bus_callback(GstBus *bus, GstMessage *m
+             gst_element_set_state (renderer->pipeline, GST_STATE_READY);
+             g_main_loop_quit( (GMainLoop *) loop);
+         }
++        if (hls_video && !closed_window) {
++            /* open-airplay: a video link that fails (a bad stream, a decoder error) is over, even before
++             * its first frame: end it like EOS, so uxplay tears it down and tells the phone, and say so
++             * to the shell (machine-readable). */
++            printf("open-airplay: video link failed\n");
++            gst_bus_set_flushing(bus, TRUE);
++            gst_element_set_state (renderer->pipeline, GST_STATE_READY);
++            renderer->eos = TRUE;
++        }
+         break;
+     }
+     case GST_MESSAGE_EOS:
+diff --git a/uxplay.cpp b/uxplay.cpp
+index 53dd069..4fba5be 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -704,6 +704,7 @@ static gboolean video_eos_watch_callback (gpointer loop) {
+     if (video_renderer_eos_watch()) {
+         /* HLS video has sent EOS */
+         LOGI("hls video has sent EOS");
++        printf("open-airplay: video link stopped\n");   /* machine-readable: the video link ended */
+         video_renderer_hls_ready();
+         raop_handle_eos(raop);
+     }
+@@ -2476,6 +2477,11 @@ static int start_dnssd(std::vector<char> hw_addr, std::string name) {
+     dnssd_set_airplay_features(dnssd, 61, 0); // Supports RFC2198 redundancy
+     */
+ 
++    /* open-airplay: no photo (bit 1) or slideshow (bit 5) support: there is no /photo handler, so a
++     * phone that sends photos here would fail; with these off it offers mirroring instead */
++    dnssd_set_airplay_features(dnssd, 1, 0);
++    dnssd_set_airplay_features(dnssd, 5, 0);
++
+     /* needed for HLS video support */
+     dnssd_set_airplay_features(dnssd, 0, (int) hls_support);
+     dnssd_set_airplay_features(dnssd, 4, (int) hls_support);
+@@ -2557,6 +2563,7 @@ extern "C" void video_reset(void *cls, reset_type_t type) {
+         break;
+     case RESET_TYPE_HLS_SHUTDOWN:
+         LOGD("video_reset: type = HLS_Shutdown");
++        printf("open-airplay: video link stopped\n");   /* machine-readable: the video link was torn down */
+         if (use_video) {
+             video_renderer_stop();
+         }
+@@ -3081,6 +3088,7 @@ extern "C" void on_video_play(void *cls, const char* location, const float start
+     relaunch_video = true;
+     preserve_connections = true;
+     LOGI("********************on_video_play: location = %s*** start position %f ********************", url.c_str(), start_position);
++    printf("open-airplay: video link\n");   /* machine-readable: a video link (HLS) started playing */
+     video_reset(cls, RESET_TYPE_ON_VIDEO_PLAY);
+ }
+ 
+@@ -3114,6 +3122,7 @@ extern "C" float on_video_playlist_remove (void *cls) {
+ 
+  extern "C" void on_video_stop(void *cls) {
+     LOGI("**************************on_video_stop\n");
++    printf("open-airplay: video link stopped\n");   /* machine-readable: the phone stopped the video link */
+     video_renderer_hls_ready();
+  }
+ 

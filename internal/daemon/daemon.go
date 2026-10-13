@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"syscall"
@@ -39,21 +40,70 @@ const (
 	CredentialKindPassword CredentialKind = "password"
 )
 
-// Request is a command sent to the daemon over the control socket.
+// Request is a command sent to the daemon over the control socket or, in
+// stdio mode, as one JSON line on stdin.
 type Request struct {
+	// ID is echoed on the stdio response so a caller can match replies to
+	// requests among pushed state lines. The socket protocol ignores it.
+	ID     uint64 `json:"id,omitempty"`
 	Cmd    string `json:"cmd"`
 	Target string `json:"target,omitempty"`
 	Port   int    `json:"port,omitempty"`
 	Pin    string `json:"pin,omitempty"`
+	// Options tune a new connect; nil (or a zero field) keeps the daemon's
+	// configuration, which defaults to automatic.
+	Options *MirrorOptions `json:"options,omitempty"`
+}
+
+// MirrorOptions are per-target settings for a connect. Every field is
+// optional and zero means automatic or the daemon's configured default.
+type MirrorOptions struct {
+	Display     *int   `json:"display,omitempty"`      // capture display index (see "displays")
+	FPS         int    `json:"fps,omitempty"`          // frames per second
+	BitrateKbps int    `json:"bitrate_kbps,omitempty"` // video bitrate
+	LatencyMs   int    `json:"latency_ms,omitempty"`   // joint audio/video playout latency
+	VideoCodec  string `json:"video_codec,omitempty"`  // "auto", "h264" or "hevc"
+	HWAccel     string `json:"hwaccel,omitempty"`      // "auto", "nvenc", "none", ...
+	ShowCursor  *bool  `json:"show_cursor,omitempty"`  // draw the pointer in the video
+	Audio       *bool  `json:"audio,omitempty"`        // send this PC's sound
+}
+
+// ErrorKind classifies a failure so a control client can choose its words
+// without parsing Error text, which is for logs only.
+type ErrorKind string
+
+const (
+	ErrorKindInvalidRequest    ErrorKind = "invalid_request"    // malformed or contradictory request
+	ErrorKindUnsupportedOption ErrorKind = "unsupported_option" // an option this build cannot honour yet
+	ErrorKindBusy              ErrorKind = "busy"               // already connected or connecting to that target
+	ErrorKindNotWaiting        ErrorKind = "not_waiting"        // a code was sent but nothing is waiting for one
+	ErrorKindUnreachable       ErrorKind = "unreachable"        // could not open or keep the connection
+	ErrorKindWrongCode         ErrorKind = "wrong_code"         // the receiver rejected the PIN or password
+	ErrorKindRejected          ErrorKind = "rejected"           // the receiver refused pairing or the mirror setup
+	ErrorKindCaptureFailed     ErrorKind = "capture_failed"     // screen capture or encoding failed
+	ErrorKindEnded             ErrorKind = "ended"              // the receiver ended a running mirror
+	ErrorKindFailed            ErrorKind = "failed"             // anything else
+)
+
+// TargetError is the most recent failure of one target. It stays until the
+// target is connected again, so a client that missed a state line still sees it.
+type TargetError struct {
+	Target  string    `json:"target"`
+	Device  string    `json:"device,omitempty"`
+	Kind    ErrorKind `json:"kind"`
+	Message string    `json:"message"`
 }
 
 // StreamInfo describes one active (or connecting) mirror stream.
 type StreamInfo struct {
-	Device         string         `json:"device"`
-	DeviceIP       string         `json:"device_ip"`
-	State          State          `json:"state"`
-	HasAudio       bool           `json:"has_audio"`
-	AudioMuted     bool           `json:"audio_muted"`
+	Device     string `json:"device"`
+	DeviceIP   string `json:"device_ip"`
+	State      State  `json:"state"`
+	HasAudio   bool   `json:"has_audio"`
+	AudioMuted bool   `json:"audio_muted"`
+	// AudioError says why this PC's sound isn't reaching the receiver (capture
+	// couldn't start, or the audio stream failed) while video keeps going.
+	AudioError     string         `json:"audio_error,omitempty"`
 	CredentialKind CredentialKind `json:"credential_kind,omitempty"`
 }
 
@@ -71,8 +121,23 @@ type Response struct {
 	NeedsCredential bool           `json:"needs_credential,omitempty"`
 	CredentialKind  CredentialKind `json:"credential_kind,omitempty"`
 	Error           string         `json:"error,omitempty"`
-	Devices         []DeviceInfo   `json:"devices,omitempty"`
-	Streams         []StreamInfo   `json:"streams,omitempty"`
+	// ErrorKind classifies Error when this response itself failed (OK false).
+	ErrorKind ErrorKind     `json:"error_kind,omitempty"`
+	Errors    []TargetError `json:"errors,omitempty"` // per-target failures, sorted by target
+	Devices   []DeviceInfo  `json:"devices,omitempty"`
+	Streams   []StreamInfo  `json:"streams,omitempty"`
+	Displays  []DisplayInfo `json:"displays,omitempty"`
+}
+
+// DisplayInfo is one display this machine can mirror, in capture index order.
+type DisplayInfo struct {
+	Index   int    `json:"index"`
+	Name    string `json:"name"`
+	X       int    `json:"x"`
+	Y       int    `json:"y"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+	Primary bool   `json:"primary"`
 }
 
 // DeviceInfo is a simplified view of a discovered AirPlay device.
@@ -100,21 +165,78 @@ type Config struct {
 	NoEncrypt    bool
 	DirectKey    bool
 	NoAudio      bool
+	Audio        airplay.AudioCaptureOptions // device, offset and test tone for mirror audio
 	ShowCursor   bool
 	DisplayIndex int
 	Code         string // default pairing/Digest credential; request Pin overrides it
 }
 
-func (d *Daemon) mirrorStreamConfig() airplay.StreamConfig {
+// mirrorSettings is what one target is mirrored with: the daemon's
+// configuration with that target's connect options applied on top.
+type mirrorSettings struct {
+	display    int
+	fps        int // zero: the receiver's recommended rate
+	bitrate    int // kbps; zero: tuned for resolution and frame rate
+	latency    time.Duration
+	videoCodec airplay.VideoCodec
+	hwaccel    string
+	showCursor bool
+	noAudio    bool
+}
+
+// mirrorSettingsFor resolves a connect's options against the daemon's
+// configuration. Options must already have passed validateMirrorOptions.
+func (d *Daemon) mirrorSettingsFor(options *MirrorOptions) mirrorSettings {
+	settings := mirrorSettings{
+		display:    d.cfg.DisplayIndex,
+		fps:        d.cfg.FPS,
+		bitrate:    d.cfg.Bitrate,
+		videoCodec: d.cfg.VideoCodec,
+		hwaccel:    d.cfg.HWAccel,
+		showCursor: d.cfg.ShowCursor,
+		noAudio:    d.cfg.NoAudio,
+	}
+	if options == nil {
+		return settings
+	}
+	if options.Display != nil {
+		settings.display = *options.Display
+	}
+	if options.FPS != 0 {
+		settings.fps = options.FPS
+	}
+	if options.BitrateKbps != 0 {
+		settings.bitrate = options.BitrateKbps
+	}
+	if options.LatencyMs != 0 {
+		settings.latency = time.Duration(options.LatencyMs) * time.Millisecond
+	}
+	if options.VideoCodec != "" {
+		settings.videoCodec = airplay.VideoCodec(options.VideoCodec)
+	}
+	if options.HWAccel != "" {
+		settings.hwaccel = options.HWAccel
+	}
+	if options.ShowCursor != nil {
+		settings.showCursor = *options.ShowCursor
+	}
+	if options.Audio != nil {
+		settings.noAudio = !*options.Audio
+	}
+	return settings
+}
+
+func (d *Daemon) mirrorStreamConfig(settings mirrorSettings) airplay.StreamConfig {
 	return airplay.StreamConfig{
-		FPS:        d.cfg.FPS,
-		Bitrate:    d.cfg.Bitrate,
-		VideoCodec: d.cfg.VideoCodec,
-		NoEncrypt:  d.cfg.NoEncrypt,
-		DirectKey:  d.cfg.DirectKey,
-		NoAudio:    d.cfg.NoAudio,
-		PortMin:    d.cfg.PortMin,
-		PortMax:    d.cfg.PortMax,
+		FPS:           settings.fps,
+		Bitrate:       settings.bitrate,
+		VideoCodec:    settings.videoCodec,
+		TargetLatency: settings.latency,
+		NoEncrypt:     d.cfg.NoEncrypt,
+		DirectKey:     d.cfg.DirectKey,
+		NoAudio:       settings.noAudio,
+		PortMin:       d.cfg.PortMin,
+		PortMax:       d.cfg.PortMax,
 	}
 }
 
@@ -207,6 +329,7 @@ type activeStream struct {
 	deviceID       string
 	state          State
 	audioMuted     bool
+	audioError     string // why sound isn't reaching the receiver; empty while it is (or isn't wanted)
 	session        *airplay.MirrorSession
 	client         *airplay.AirPlayClient
 	sink           *airplay.BroadcastSink // fan-out video sink (nil when no broadcast)
@@ -214,16 +337,25 @@ type activeStream struct {
 	cancelFn       context.CancelFunc
 	credentialCh   chan string
 	credentialKind CredentialKind
+	settings       mirrorSettings // display, encoder and audio choices made when the stream was requested
 }
 
 // videoCaptureKey identifies captures which can safely share one encoded
-// stream. Capture settings are daemon-wide, so only the receiver's negotiated
-// canvas, frame rate, and codec vary between concurrent targets.
+// stream: same display, negotiated canvas, frame rate and codec, and the same
+// per-target encoder choices.
 type videoCaptureKey struct {
+	display   int
 	maxWidth  int
 	maxHeight int
 	fps       int
 	codec     airplay.VideoCodec
+
+	bitrate    int
+	hwaccel    string
+	showCursor bool
+	// explicitLatency skips the HEVC capture-lead measurement, so a group
+	// started without it cannot serve a target on automatic latency.
+	explicitLatency bool
 }
 
 // videoCaptureGroup owns one capture/encoder and its byte-stream fan-out. A
@@ -317,11 +449,15 @@ type Daemon struct {
 	captureStartMu  sync.Mutex                             // serializes exact-size group publication/encoder startup
 	lastError       string                                 // most recent asynchronous stream failure
 	lastErrorTarget string                                 // target associated with lastError; empty for capture-wide errors
+	targetErrors    map[string]TargetError                 // latest failure per target, cleared when it reconnects
 
 	discoverCancel context.CancelFunc
 	listener       net.Listener
 	streamWorkers  sync.WaitGroup // stream, capture, and externally detached cleanup workers
 	shuttingDown   bool
+
+	listDisplays  func() ([]airplay.Display, error) // nil means airplay.ListDisplays
+	skipDiscovery bool                              // tests: no mDNS browsing in RunStdio
 }
 
 // New creates a new Daemon with the given configuration.
@@ -550,12 +686,14 @@ func (d *Daemon) handleRequest(req Request) Response {
 		return d.handleConnect(req)
 	case "disconnect":
 		return d.handleDisconnect(req)
+	case "displays":
+		return d.handleDisplays()
 	case "mute":
 		return d.handleSetMute(req, true)
 	case "unmute":
 		return d.handleSetMute(req, false)
 	default:
-		return Response{OK: false, Error: "unknown command: " + req.Cmd}
+		return Response{OK: false, Error: "unknown command: " + req.Cmd, ErrorKind: ErrorKindInvalidRequest}
 	}
 }
 
@@ -601,6 +739,7 @@ func (d *Daemon) statusResponseLocked(ok bool, errMsg string) Response {
 			State:          s.state,
 			HasAudio:       s.session != nil && s.session.HasAudio(),
 			AudioMuted:     s.audioMuted,
+			AudioError:     s.audioError,
 			CredentialKind: waitingCredentialKind(s),
 		})
 	}
@@ -637,9 +776,16 @@ func (d *Daemon) statusResponseLocked(ok bool, errMsg string) Response {
 		}
 	}
 
+	var targetErrors []TargetError
+	for _, failure := range d.targetErrors {
+		targetErrors = append(targetErrors, failure)
+	}
+	sort.Slice(targetErrors, func(i, j int) bool { return targetErrors[i].Target < targetErrors[j].Target })
+
 	return Response{
 		OK:              ok,
 		State:           overall,
+		Errors:          targetErrors,
 		Device:          device,
 		DeviceIP:        deviceIP,
 		HasAudio:        hasAudio,
@@ -699,11 +845,113 @@ func (d *Daemon) handleDevices() Response {
 	}
 }
 
+func (d *Daemon) displays() ([]airplay.Display, error) {
+	if d.listDisplays != nil {
+		return d.listDisplays()
+	}
+	return airplay.ListDisplays()
+}
+
+// sourceSize returns the size of the display being mirrored, which the CLI
+// also passes so the receiver's canvas fits that screen. Zero (keep the
+// receiver's nominal canvas) when displays cannot be listed.
+func (d *Daemon) sourceSize(index int) (int, int) {
+	displays, err := d.displays()
+	if err != nil {
+		return 0, 0
+	}
+	for _, display := range displays {
+		if display.Index == index {
+			return display.Width, display.Height
+		}
+	}
+	return 0, 0
+}
+
+func (d *Daemon) handleDisplays() Response {
+	displays, err := d.displays()
+	if err != nil {
+		return Response{OK: false, State: d.handleStatus().State, Error: "list displays: " + err.Error(), ErrorKind: ErrorKindFailed}
+	}
+	infos := make([]DisplayInfo, len(displays))
+	for i, display := range displays {
+		infos[i] = DisplayInfo{
+			Index:   display.Index,
+			Name:    display.Name,
+			X:       display.X,
+			Y:       display.Y,
+			Width:   display.Width,
+			Height:  display.Height,
+			Primary: display.Primary,
+		}
+	}
+	return Response{OK: true, State: d.handleStatus().State, Displays: infos}
+}
+
+// validateMirrorOptions refuses options this build cannot honour (rather than
+// ignoring them, so a client never believes a setting took effect when it did
+// not) and values out of range.
+func validateMirrorOptions(options *MirrorOptions) (ErrorKind, string) {
+	if options == nil {
+		return "", ""
+	}
+	invalid := func(message string) (ErrorKind, string) { return ErrorKindInvalidRequest, message }
+	unsupported := func(name, value string) (ErrorKind, string) {
+		return ErrorKindUnsupportedOption, fmt.Sprintf("option %s %q is not supported by this build", name, value)
+	}
+	if options.Display != nil && *options.Display < 0 {
+		return invalid("display must be zero or greater")
+	}
+	if options.FPS < 0 || options.FPS > maxOptionFPS {
+		return invalid(fmt.Sprintf("fps must be 0 (automatic) to %d", maxOptionFPS))
+	}
+	if options.BitrateKbps < 0 || options.BitrateKbps > maxOptionBitrateKbps {
+		return invalid(fmt.Sprintf("bitrate_kbps must be 0 (automatic) to %d", maxOptionBitrateKbps))
+	}
+	if options.LatencyMs != 0 && (options.LatencyMs < minOptionLatencyMs || options.LatencyMs > maxOptionLatencyMs) {
+		return invalid(fmt.Sprintf("latency_ms must be 0 (automatic) or %d to %d", minOptionLatencyMs, maxOptionLatencyMs))
+	}
+	if err := airplay.ValidateVideoCodec(options.VideoCodec); err != nil {
+		return invalid("video_codec: " + err.Error())
+	}
+	if err := airplay.ValidateHWAccel(options.HWAccel); err != nil {
+		return invalid("hwaccel: " + err.Error())
+	}
+	if runtime.GOOS == "windows" {
+		// Desktop Duplication capture encodes H.264 with nvenc or libx264 only.
+		switch options.VideoCodec {
+		case "", string(airplay.VideoCodecAuto), string(airplay.VideoCodecH264):
+		default:
+			return unsupported("video_codec", options.VideoCodec)
+		}
+		switch options.HWAccel {
+		case "", "auto", "nvenc", "none":
+		default:
+			return unsupported("hwaccel", options.HWAccel)
+		}
+	}
+	if options.Audio != nil && *options.Audio && !airplay.SystemAudioCaptureAvailable() {
+		return ErrorKindUnsupportedOption, "option audio is not supported by this build (no system audio capture)"
+	}
+	return "", ""
+}
+
+// Bounds for connect options. Latency matches airplay.SetTargetLatency.
+const (
+	maxOptionFPS         = 120
+	maxOptionBitrateKbps = 100000
+	minOptionLatencyMs   = 5
+	maxOptionLatencyMs   = 2000
+)
+
 func (d *Daemon) handleConnect(req Request) Response {
+	if kind, message := validateMirrorOptions(req.Options); kind != "" {
+		return Response{OK: false, State: d.handleStatus().State, Error: message, ErrorKind: kind}
+	}
 	d.mu.Lock()
 	if d.shuttingDown {
 		d.mu.Unlock()
-		return Response{OK: false, State: StateIdle, Error: "daemon is shutting down"}
+		return Response{OK: false, State: StateIdle, Error: "daemon is shutting down", ErrorKind: ErrorKindFailed}
 	}
 
 	// Resume a pending authentication session without replacing its AirPlay
@@ -717,13 +965,13 @@ func (d *Daemon) handleConnect(req Request) Response {
 			case 0:
 				state := d.overallStateLocked()
 				d.mu.Unlock()
-				return Response{OK: false, State: state, Error: "no device is waiting for a credential"}
+				return Response{OK: false, State: state, Error: "no device is waiting for a credential", ErrorKind: ErrorKindNotWaiting}
 			case 1:
 				target = pending[0]
 			default:
 				state := d.overallStateLocked()
 				d.mu.Unlock()
-				return Response{OK: false, State: state, Error: "multiple devices are waiting for credentials; specify a target"}
+				return Response{OK: false, State: state, Error: "multiple devices are waiting for credentials; specify a target", ErrorKind: ErrorKindInvalidRequest}
 			}
 		}
 
@@ -731,7 +979,7 @@ func (d *Daemon) handleConnect(req Request) Response {
 			if entry.state != StatePINRequired || entry.credentialCh == nil {
 				state := d.overallStateLocked()
 				d.mu.Unlock()
-				return Response{OK: false, State: state, Error: "credential prompt is not ready for " + target}
+				return Response{OK: false, State: state, Error: "credential prompt is not ready for " + target, ErrorKind: ErrorKindNotWaiting}
 			}
 			entry.state = StateConnecting
 			entry.credentialKind = ""
@@ -752,7 +1000,7 @@ func (d *Daemon) handleConnect(req Request) Response {
 		if existing, ok := d.streams[target]; ok {
 			st := existing.state
 			d.mu.Unlock()
-			return Response{OK: false, State: st, Error: "already connected or connecting to " + target}
+			return Response{OK: false, State: st, Error: "already connected or connecting to " + target, ErrorKind: ErrorKindBusy}
 		}
 	}
 
@@ -763,7 +1011,7 @@ func (d *Daemon) handleConnect(req Request) Response {
 		if target == "" {
 			state := d.overallStateLocked()
 			d.mu.Unlock()
-			return Response{OK: false, State: state, Error: "no available devices found"}
+			return Response{OK: false, State: state, Error: "no available devices found", ErrorKind: ErrorKindUnreachable}
 		}
 	}
 
@@ -788,6 +1036,7 @@ func (d *Daemon) handleConnect(req Request) Response {
 		state:        StateConnecting,
 		cancelFn:     cancel,
 		credentialCh: make(chan string, 1),
+		settings:     d.mirrorSettingsFor(req.Options),
 	}
 	d.clearLastErrorForTargetLocked(target)
 	d.streams[target] = entry
@@ -828,6 +1077,16 @@ func (d *Daemon) clearLastErrorForTargetLocked(target string) {
 		d.lastError = ""
 		d.lastErrorTarget = ""
 	}
+	delete(d.targetErrors, target)
+}
+
+// recordTargetErrorLocked keeps a target's latest failure for status replies.
+// Must be called with d.mu held.
+func (d *Daemon) recordTargetErrorLocked(entry *activeStream, kind ErrorKind, message string) {
+	if d.targetErrors == nil {
+		d.targetErrors = make(map[string]TargetError)
+	}
+	d.targetErrors[entry.deviceIP] = TargetError{Target: entry.deviceIP, Device: entry.device, Kind: kind, Message: message}
 }
 
 // pickFreeDeviceLocked returns the first discovered device not already in d.streams.
@@ -848,7 +1107,7 @@ func (d *Daemon) pickFreeDeviceLocked(preferredPort int) (string, int) {
 func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, target string, port int, suppliedCredential string) {
 	// removeStream cleans up this stream's entry and tears down its capture group
 	// if no other streams use that group.
-	removeStream := func(msg string) {
+	removeStream := func(kind ErrorKind, msg string) {
 		failure := msg
 		if failure != "" {
 			failure = fmt.Sprintf("%s: %s", target, failure)
@@ -863,6 +1122,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 		if failure != "" {
 			d.lastError = failure
 			d.lastErrorTarget = target
+			d.recordTargetErrorLocked(entry, kind, msg)
 		}
 		cleanup := d.detachStreamLocked(target)
 		d.mu.Unlock()
@@ -928,7 +1188,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 
 	client, info, err := connectClient()
 	if err != nil {
-		removeStream(fmt.Sprintf("connect to %s:%d failed: %v", target, port, err))
+		removeStream(ErrorKindUnreachable, fmt.Sprintf("connect to %s:%d failed: %v", target, port, err))
 		return
 	}
 
@@ -1024,7 +1284,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 		if verifyErr != nil {
 			log.Printf("[daemon] pair-verify with saved creds failed: %v", verifyErr)
 			if err := reconnect(); err != nil {
-				removeStream(fmt.Sprintf("reconnect failed: %v", err))
+				removeStream(ErrorKindUnreachable, fmt.Sprintf("reconnect failed: %v", err))
 				return
 			}
 		} else {
@@ -1046,7 +1306,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 				client.SetPassword(credential)
 			}
 			if err := pairWithCredentialValue(credential); err != nil {
-				return fmt.Errorf("%s pairing: %w", kind, err)
+				return fmt.Errorf("%s pairing: %w", kind, &credentialRejectedError{err})
 			}
 			return nil
 		}
@@ -1058,12 +1318,12 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 		switch requiredPairingCredentialKind(info) {
 		case CredentialKindPassword:
 			if err := pairWithCredential(CredentialKindPassword); err != nil {
-				removeStream(err.Error())
+				removeStream(credentialFailureKind(err), err.Error())
 				return
 			}
 		case CredentialKindPIN:
 			if err := pairWithCredential(CredentialKindPIN); err != nil {
-				removeStream(err.Error())
+				removeStream(credentialFailureKind(err), err.Error())
 				return
 			}
 		default:
@@ -1072,17 +1332,17 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 				// A modern fixed password is an HTTP Digest credential, not an SRP
 				// secret. Do not turn a transient failure into an invalid full setup.
 				if info.RequiresPassword() {
-					removeStream(fmt.Sprintf("transient pairing failed for password-protected receiver: %v", err))
+					removeStream(ErrorKindRejected, fmt.Sprintf("transient pairing failed for password-protected receiver: %v", err))
 					return
 				}
 				// A failed setup may leave pairing state attached to this socket. Start
 				// and finish the explicit PIN exchange on a fresh connection.
 				if err := reconnect(); err != nil {
-					removeStream(fmt.Sprintf("reconnect for credential pairing failed: %v", err))
+					removeStream(ErrorKindUnreachable, fmt.Sprintf("reconnect for credential pairing failed: %v", err))
 					return
 				}
 				if err := pairWithCredential(CredentialKindPIN); err != nil {
-					removeStream(err.Error())
+					removeStream(credentialFailureKind(err), err.Error())
 					return
 				}
 			} else {
@@ -1097,7 +1357,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 	if info.RequiresPassword() && credential == "" {
 		value, err := waitForCredential(CredentialKindPassword)
 		if err != nil {
-			removeStream(fmt.Sprintf("wait for password: %v", err))
+			removeStream(ErrorKindFailed, fmt.Sprintf("wait for password: %v", err))
 			return
 		}
 		credential = value
@@ -1107,7 +1367,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 	// FairPlay setup
 	if err := client.FairPlaySetup(ctx); err != nil {
 		if !errors.Is(err, airplay.ErrFairPlayUnsupported) {
-			removeStream(fmt.Sprintf("FairPlay setup failed: %v", err))
+			removeStream(setupFailureKind(err, credential), fmt.Sprintf("FairPlay setup failed: %v", err))
 			return
 		}
 		log.Printf("[daemon] FairPlay SAP unsupported (%v); continuing with pair-verify DataStream setup", err)
@@ -1117,13 +1377,16 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 	// not start an encoder until control SETUP exposes session-time display info.
 	// This preserves the receiver deadline while avoiding the provisional 720p
 	// fallback used by receivers whose public /info omits displays.
-	capturePreparation, err := d.prepareVideoCapture(ctx, screenCastRestoreToken, deviceID)
+	capturePreparation, err := d.prepareVideoCapture(ctx, entry.settings, screenCastRestoreToken, deviceID)
 	if err != nil {
-		removeStream(fmt.Sprintf("prepare capture failed: %v", err))
+		removeStream(ErrorKindCaptureFailed, fmt.Sprintf("prepare capture failed: %v", err))
 		return
 	}
 	defer func() { capturePreparation.Close() }()
-	streamCfg := d.mirrorStreamConfig()
+	streamCfg := d.mirrorStreamConfig(entry.settings)
+	if !d.cfg.TestMode {
+		streamCfg.SourceWidth, streamCfg.SourceHeight = d.sourceSize(entry.settings.display)
+	}
 	streamCfg.AutomaticHEVCAvailable = capturePreparation.AutomaticHEVCAvailable()
 	streamCfg.MeasuredVideoLatency = capturePreparation.MeasuredVideoLatency()
 	var broadcast *airplay.BroadcastCapture
@@ -1156,7 +1419,7 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 				if saved := d.credStore.Lookup(deviceID); saved != nil && saved.RestoreToken != "" {
 					restoreToken = saved.RestoreToken
 				}
-				replacement, fallbackErr := d.prepareVideoCapture(ctx, restoreToken, deviceID, airplay.VideoCodecH264)
+				replacement, fallbackErr := d.prepareVideoCapture(ctx, entry.settings, restoreToken, deviceID, airplay.VideoCodecH264)
 				if fallbackErr != nil {
 					return airplay.VideoPreparationResult{}, fmt.Errorf("%v; prepare H.264 fallback: %w", startErr, fallbackErr)
 				}
@@ -1189,12 +1452,12 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 		},
 	)
 	if err != nil {
-		removeStream(fmt.Sprintf("mirror setup failed: %v", err))
+		removeStream(setupFailureKind(err, credential), fmt.Sprintf("mirror setup failed: %v", err))
 		return
 	}
 	if broadcast == nil {
 		_ = session.Close()
-		removeStream("mirror setup completed without preparing video capture")
+		removeStream(ErrorKindCaptureFailed, "mirror setup completed without preparing video capture")
 		return
 	}
 
@@ -1231,17 +1494,21 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 	// so the stream worker does not outlive daemon shutdown.
 	var audioCapture *airplay.AudioCapture
 	var audioDone chan error
-	if !d.cfg.NoAudio && session.HasAudio() {
+	if !entry.settings.noAudio && session.HasAudio() {
 		var audioErr error
-		audioCapture, audioErr = airplay.StartAudioCapture(ctx, d.cfg.TestMode, session.AudioCodec())
+		audioOptions := d.cfg.Audio
+		audioOptions.TestTone = audioOptions.TestTone || d.cfg.TestMode
+		audioCapture, audioErr = airplay.StartAudioCaptureWithOptions(ctx, session.AudioCodec(), audioOptions)
 		if audioErr != nil {
 			log.Printf("[daemon] audio capture failed: %v (continuing without audio)", audioErr)
+			d.recordAudioError(entry, "this PC's sound couldn't be captured: "+audioErr.Error())
 		} else {
 			audioDone = make(chan error, 1)
 			go func() {
 				aerr := session.StreamAudio(ctx, audioCapture, session.AudioStream())
 				if aerr != nil && ctx.Err() == nil {
 					log.Printf("[daemon] audio streaming error: %v", aerr)
+					d.recordAudioError(entry, "the sound stream stopped: "+aerr.Error())
 				}
 				audioDone <- aerr
 			}()
@@ -1260,6 +1527,13 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 	d.mu.Lock()
 	cleanup := daemonCleanup{}
 	if d.streams[target] == entry {
+		if ctx.Err() == nil {
+			message := "the receiver ended the session"
+			if streamErr != nil {
+				message = streamErr.Error()
+			}
+			d.recordTargetErrorLocked(entry, ErrorKindEnded, message)
+		}
 		cleanup = d.detachStreamLocked(target)
 	}
 	d.mu.Unlock()
@@ -1280,6 +1554,35 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 // retries once on the existing paired/FairPlay connection: a rejected Digest
 // request has not created receiver-side media state, and reconnecting would
 // discard both the cached challenge and the completed handshakes.
+// credentialRejectedError marks a pairing failure after the user supplied a
+// PIN or password, as opposed to a cancelled wait for one.
+type credentialRejectedError struct{ err error }
+
+func (e *credentialRejectedError) Error() string { return e.err.Error() }
+func (e *credentialRejectedError) Unwrap() error { return e.err }
+
+// setupFailureKind classifies a FairPlay or mirror SETUP failure. A receiver
+// with "Require Password" answers a wrong password with a second 401, which is
+// a wrong code the user can retry, not a refusal.
+func setupFailureKind(err error, credential string) ErrorKind {
+	if errors.Is(err, airplay.ErrCredentialsRequired) {
+		return ErrorKindWrongCode
+	}
+	var status *airplay.HTTPStatusError
+	if credential != "" && errors.As(err, &status) && status.StatusCode == 401 {
+		return ErrorKindWrongCode
+	}
+	return ErrorKindRejected
+}
+
+func credentialFailureKind(err error) ErrorKind {
+	var rejected *credentialRejectedError
+	if errors.As(err, &rejected) {
+		return ErrorKindWrongCode
+	}
+	return ErrorKindFailed
+}
+
 func retryMirrorSetupAfterDigestChallenge(
 	setupErr error,
 	waitForPassword func() (string, error),
@@ -1319,26 +1622,38 @@ func normalizedVideoCaptureProfileKey(profile airplay.VideoProfile) videoCapture
 	return key
 }
 
+// captureGroupKey is the encoder group a target joins. Receivers share an
+// encoder only when they mirror the same display with the same encoder choices.
+func captureGroupKey(profile airplay.VideoProfile, settings mirrorSettings) videoCaptureKey {
+	key := normalizedVideoCaptureProfileKey(profile)
+	key.display = settings.display
+	key.bitrate = settings.bitrate
+	key.hwaccel = settings.hwaccel
+	key.showCursor = settings.showCursor
+	key.explicitLatency = settings.latency > 0 || airplay.HasExplicitTargetLatency()
+	return key
+}
+
 // prepareVideoCapture completes interactive capture authorization before the
 // receiver session begins, but leaves GStreamer unstarted until control SETUP
 // reveals the session-time display canvas. Portal serialization is deliberately
 // separate from captureStartMu: a different user prompt must not block an
 // already-negotiated receiver from starting its encoder before its deadline.
-func (d *Daemon) prepareVideoCapture(ctx context.Context, restoreToken, deviceID string, codecs ...airplay.VideoCodec) (*airplay.CapturePreparation, error) {
+func (d *Daemon) prepareVideoCapture(ctx context.Context, settings mirrorSettings, restoreToken, deviceID string, codecs ...airplay.VideoCodec) (*airplay.CapturePreparation, error) {
 	d.capturePortalMu.Lock()
 	defer d.capturePortalMu.Unlock()
 
-	codec := d.cfg.VideoCodec
+	codec := settings.videoCodec
 	if len(codecs) != 0 {
 		codec = codecs[0]
 	}
 	cfg := airplay.CaptureConfig{
-		FPS:          d.cfg.FPS,
-		Bitrate:      d.cfg.Bitrate,
-		HWAccel:      d.cfg.HWAccel,
+		FPS:          settings.fps,
+		Bitrate:      settings.bitrate,
+		HWAccel:      settings.hwaccel,
 		VideoCodec:   codec,
-		ShowCursor:   d.cfg.ShowCursor,
-		DisplayIndex: d.cfg.DisplayIndex,
+		ShowCursor:   settings.showCursor,
+		DisplayIndex: settings.display,
 		RestoreToken: restoreToken,
 	}
 	if deviceID != "" {
@@ -1360,7 +1675,7 @@ func (d *Daemon) getOrStartPreparedCaptureGroup(ctx context.Context, entry *acti
 	d.captureStartMu.Lock()
 	defer d.captureStartMu.Unlock()
 
-	key := normalizedVideoCaptureProfileKey(profile)
+	key := captureGroupKey(profile, entry.settings)
 	d.mu.Lock()
 	if d.streams[entry.deviceIP] != entry {
 		d.mu.Unlock()
@@ -1402,7 +1717,7 @@ func (d *Daemon) getOrStartPreparedCaptureGroup(ctx context.Context, entry *acti
 	}
 
 	minimumVideoLead := time.Duration(0)
-	if key.codec == airplay.VideoCodecHEVC && !airplay.HasExplicitTargetLatency() {
+	if key.codec == airplay.VideoCodecHEVC && !key.explicitLatency {
 		minimumVideoLead, err = airplay.MeasureVideoCaptureLatency(ctx, capture, key.fps)
 		if err != nil {
 			captureCancel()
@@ -1656,6 +1971,11 @@ func (d *Daemon) finishCaptureGroup(group *videoCaptureGroup, broadcast *airplay
 	if unexpected && inUse {
 		d.lastError = fmt.Sprintf("%dx%d capture failed: %v", group.key.maxWidth, group.key.maxHeight, runErr)
 		d.lastErrorTarget = ""
+		for _, entry := range d.streams {
+			if entry.captureGroup == group {
+				d.recordTargetErrorLocked(entry, ErrorKindCaptureFailed, d.lastError)
+			}
+		}
 	}
 	// A capture failure affects only receivers consuming this encoded canvas;
 	// other resolution groups continue streaming.
@@ -1675,7 +1995,7 @@ func (d *Daemon) handleDisconnect(req Request) Response {
 	if req.Target != "" {
 		_, ok := d.streams[req.Target]
 		if !ok {
-			response := Response{OK: false, State: d.overallStateLocked(), Error: "no active stream to " + req.Target}
+			response := Response{OK: false, State: d.overallStateLocked(), Error: "no active stream to " + req.Target, ErrorKind: ErrorKindInvalidRequest}
 			d.mu.Unlock()
 			return response
 		}
@@ -1737,7 +2057,7 @@ func (d *Daemon) handleSetMute(req Request, muted bool) Response {
 
 	sessions := make([]*airplay.MirrorSession, 0, len(targets))
 	for _, t := range targets {
-		if t.session != nil && (d.cfg.NoAudio || t.session.HasAudio()) {
+		if t.session != nil && (t.settings.noAudio || t.session.HasAudio()) {
 			sessions = append(sessions, t.session)
 		}
 	}
@@ -1761,6 +2081,17 @@ func (d *Daemon) handleSetMute(req Request, muted bool) Response {
 	}
 	defer d.mu.Unlock()
 	return d.statusResponseLocked(true, "")
+}
+
+// recordAudioError notes on a stream that its sound isn't reaching the
+// receiver; video goes on. The status (and the next stdio state line) carries
+// it. A stream that already ended is left alone.
+func (d *Daemon) recordAudioError(entry *activeStream, message string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.streams[entry.deviceIP] == entry {
+		entry.audioError = message
+	}
 }
 
 // detachAllLocked removes every active stream and capture group atomically and

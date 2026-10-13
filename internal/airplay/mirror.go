@@ -569,7 +569,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	// Select the same low/normal/high screen profiles from the control route's
 	// interface latency hint. Timing protocol only changes clock conversion.
 	latencyHint, routeInterface := connectionLatencyHintForConnection(c.conn)
-	latencies := screenLatenciesForHint(latencyHint)
+	latencies, explicitLatency := sessionScreenLatencies(latencyHint, cfg.TargetLatency)
 	if routeInterface == "" {
 		dbg("[SETUP] base screen latency policy: hint=%s interface=unknown video=%v audio=%v",
 			connectionLatencyHintName(latencyHint), latencies.video, latencies.audio)
@@ -585,7 +585,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	// SETUP ordering.
 	sessionFirstSetup := true
 
-	audioStreamConnectionID := int64(time.Now().UnixNano() & 0x7FFFFFFFFFFFFFFF)
+	audioStreamConnectionID := newStreamConnectionID()
 	selectedAudioCodec := policy.audioCodec
 	// Use streamConnectionID as the RTSP URI path. Control, audio, RECORD, and
 	// SET_PARAMETER share the audio URI; video uses a separate URI with its own
@@ -618,7 +618,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	measuredLatencyApplied := false
 	audioSetupCommitted := false
 	applyMeasuredCaptureLatency := func(codec VideoCodec, minimumVideoLead time.Duration) error {
-		if measuredLatencyApplied || codec != VideoCodecHEVC || targetLatencyIsExplicit() || minimumVideoLead <= latencies.video {
+		if measuredLatencyApplied || codec != VideoCodecHEVC || explicitLatency || minimumVideoLead <= latencies.video {
 			return nil
 		}
 		if audioSetupCommitted {
@@ -772,7 +772,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 			return fpsErr
 		}
 		if selection.codec == VideoCodecHEVC && cfg.VideoCodec == VideoCodecAuto && audioSetupCommitted &&
-			!targetLatencyIsExplicit() && (cfg.MeasuredVideoLatency > latencies.video || captureMayReportMinimumLead) {
+			!explicitLatency && (cfg.MeasuredVideoLatency > latencies.video || captureMayReportMinimumLead) {
 			// The legacy media-first flow exposes dynamic display metadata only after
 			// latencyMax has been accepted. Keep the descriptor and TimeAnnounce
 			// coherent by retaining the nominal H.264 path for this session rather
@@ -1032,7 +1032,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	// Attach the video stream to the prepared session.
 	// Video SETUP uses the same sessionUUID but a different streamConnectionID.
 	// The Apple TV attaches this video stream to the existing session.
-	videoStreamConnectionID := int64(time.Now().UnixNano() & 0x7FFFFFFFFFFFFFFF)
+	videoStreamConnectionID := newStreamConnectionID()
 	videoURI := fmt.Sprintf("rtsp://%s:%d/%d", c.host, c.port, videoStreamConnectionID)
 
 	videoStreamDesc := map[string]interface{}{

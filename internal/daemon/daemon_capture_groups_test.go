@@ -58,6 +58,34 @@ func TestNormalizedVideoCaptureProfileKeySeparatesFrameRates(t *testing.T) {
 	}
 }
 
+func TestTargetsShareAnEncoderOnlyWithTheSameEncoderChoices(t *testing.T) {
+	profile := airplay.VideoProfile{Width: 1920, Height: 1080, FPS: 60, Codec: airplay.VideoCodecH264}
+	base := mirrorSettings{hwaccel: "auto", showCursor: true}
+	if captureGroupKey(profile, base) != captureGroupKey(profile, base) {
+		t.Fatal("identical settings must share an encoder")
+	}
+	// Frame rate and codec arrive through the negotiated profile; audio is not
+	// part of the video encoder.
+	quiet := base
+	quiet.noAudio = true
+	if captureGroupKey(profile, base) != captureGroupKey(profile, quiet) {
+		t.Fatal("sound on or off must not split the video encoder")
+	}
+	for name, change := range map[string]func(*mirrorSettings){
+		"display":     func(s *mirrorSettings) { s.display = 1 },
+		"bitrate":     func(s *mirrorSettings) { s.bitrate = 8000 },
+		"hwaccel":     func(s *mirrorSettings) { s.hwaccel = "none" },
+		"show_cursor": func(s *mirrorSettings) { s.showCursor = false },
+		"latency_ms":  func(s *mirrorSettings) { s.latency = 300 * time.Millisecond },
+	} {
+		other := base
+		change(&other)
+		if captureGroupKey(profile, base) == captureGroupKey(profile, other) {
+			t.Errorf("a different %s shared the encoder", name)
+		}
+	}
+}
+
 func TestRemovingStreamStopsOnlyItsResolutionGroup(t *testing.T) {
 	for _, first := range []videoCaptureKey{
 		{maxWidth: 1920, maxHeight: 1080},

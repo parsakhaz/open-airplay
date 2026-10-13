@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-mode="compact">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="tokens.css">
   <link rel="stylesheet" href="components.css">
   <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="mirror-advanced.css">
+  <link rel="stylesheet" href="add-device.css">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -24,79 +26,111 @@
       <symbol id="i-laptop" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M1.5 12.5h13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
       <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
       <symbol id="i-refresh" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5V5h-2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-      <symbol id="i-lock" viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
       <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 1.8 15 14H1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 6v3.6M8 11.6v.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
-      <symbol id="i-min" viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor" stroke-width="1"/></symbol>
-      <symbol id="i-max" viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></symbol>
-      <symbol id="i-restore" viewBox="0 0 10 10"><rect x=".5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/><path d="M2.5 2.5V.5h7v7h-2" fill="none" stroke="currentColor" stroke-width="1"/></symbol>
-      <symbol id="i-expand" viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-      <symbol id="i-collapse" viewBox="0 0 16 16"><path d="M13 7H9V3M3 9h4v4M9 7l4.5-4.5M7 9l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-      <symbol id="i-fullscreen" viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3.5 5.5 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-mirror" viewBox="0 0 16 16"><path d="M5 11H3a1.5 1.5 0 0 1-1.5-1.5v-6A1.5 1.5 0 0 1 3 2h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 11h-2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 9.2 11 14H5z" fill="currentColor"/></symbol>
+      <symbol id="i-check" viewBox="0 0 16 16"><path d="M3.5 8.4 6.6 11.4 12.5 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+      <symbol id="i-sound" viewBox="0 0 16 16"><path d="M2.5 6h2.2L8 3.2v9.6L4.7 10H2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M10.6 5.6a3.4 3.4 0 0 1 0 4.8M12.4 3.8a6 6 0 0 1 0 8.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
       <symbol id="i-chev" viewBox="0 0 16 16"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-      <symbol id="i-close" viewBox="0 0 10 10"><path d="M0 0l10 10M10 0 0 10" stroke="currentColor" stroke-width="1"/></symbol>
+      <symbol id="i-music" viewBox="0 0 16 16"><path d="M6 12V3.5l7-1.5v8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="4.3" cy="12" r="1.8" fill="currentColor"/><circle cx="11.3" cy="10.5" r="1.8" fill="currentColor"/></symbol>
+      <symbol id="i-prev" viewBox="0 0 16 16"><path d="M3.5 3v10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M13 3.2v9.6L5.5 8z" fill="currentColor"/></symbol>
+      <symbol id="i-next" viewBox="0 0 16 16"><path d="M12.5 3v10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M3 3.2v9.6L10.5 8z" fill="currentColor"/></symbol>
+      <symbol id="i-playpause" viewBox="0 0 16 16"><path d="M1.5 3.2v9.6L8 8z" fill="currentColor"/><path d="M10.5 3.5v9M14 3.5v9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-volume" viewBox="0 0 16 16"><path d="M2 6h2.5L8 3v10l-3.5-3H2z" fill="currentColor"/><path d="M10.5 5.5a3.5 3.5 0 0 1 0 5M12.5 3.5a6.3 6.3 0 0 1 0 9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+      <!-- From the approved device-page design. -->
+      <symbol id="i-down" viewBox="0 0 16 16"><path d="M3.5 6 8 10.5 12.5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-check" viewBox="0 0 16 16"><path d="M3.5 8.4 6.6 11.4 12.5 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-mirror" viewBox="0 0 16 16"><path d="M5 11H3a1.5 1.5 0 0 1-1.5-1.5v-6A1.5 1.5 0 0 1 3 2h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 11h-2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 9.2 11 14H5z" fill="currentColor"/></symbol>
+      <symbol id="i-cast" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.7 5.4 10.7 8l-4 2.6z" fill="currentColor"/></symbol>
+      <symbol id="i-drop" viewBox="0 0 16 16"><path d="M8 2v7.5M5 6.8 8 9.8l3-3M2.5 10v2a1.5 1.5 0 0 0 1.5 1.5h8a1.5 1.5 0 0 0 1.5-1.5v-2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-link" viewBox="0 0 16 16"><path d="M6.8 9.2a2.8 2.8 0 0 0 4 0l2-2a2.8 2.8 0 0 0-4-4l-.6.6M9.2 6.8a2.8 2.8 0 0 0-4 0l-2 2a2.8 2.8 0 0 0 4 4l.6-.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-sound" viewBox="0 0 16 16"><path d="M2.5 6h2.2L8 3.2v9.6L4.7 10H2.5zM10.6 5.6a3.4 3.4 0 0 1 0 4.8M12.4 3.8a6 6 0 0 1 0 8.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+      <symbol id="i-net" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M1.7 8h12.6M8 1.7c2 2 2 10.6 0 12.6M8 1.7c-2 2-2 10.6 0 12.6" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
     </defs>
   </svg>
 
-  <!-- Compact: the tray popover (primary surface) -->
-  <div class="compact" id="compact">
-    <section class="oai-popover" aria-label="open-airplay">
-      <header class="oai-popover-head" data-tauri-drag-region>
-        <svg class="oai-app-icon" data-tauri-drag-region><use href="#i-app"/></svg>
-        <div data-tauri-drag-region style="min-width:0"><div class="oai-t" data-tauri-drag-region>AirPlay Receiver</div><div class="oai-s" id="pop-sub" data-tauri-drag-region>Starting…</div></div>
-        <input type="checkbox" class="oai-switch" id="rx-switch" aria-label="Receiving">
-      </header>
-      <div class="oai-popover-body" id="pop-body"></div>
-      <footer class="oai-popover-foot">
-        <button class="oai-ghost" id="pop-settings"><svg><use href="#i-gear"/></svg>Settings</button>
-        <span class="oai-spacer"></span>
-        <button class="oai-ghost" id="pop-expand" title="Open the full view"><svg><use href="#i-expand"/></svg>Expand</button>
-      </footer>
-    </section>
-  </div>
-
-  <!-- Full view (on demand) -->
-  <div class="oai-window" id="full">
-    <header class="oai-titlebar" data-tauri-drag-region>
-      <svg class="oai-app-icon" data-tauri-drag-region><use href="#i-app"/></svg>
-      <span class="oai-title" data-tauri-drag-region>open-airplay</span>
-      <div class="oai-window-controls">
-        <button id="win-collapse" aria-label="Back to compact view" title="Back to compact (Esc)"><svg style="width:13px;height:13px"><use href="#i-collapse"/></svg></button>
-        <button id="win-fullscreen" aria-label="Full screen" title="Full screen (F11)"><svg style="width:13px;height:13px"><use href="#i-fullscreen"/></svg></button>
-        <button id="win-min" aria-label="Minimize"><svg><use href="#i-min"/></svg></button>
-        <button id="win-max" aria-label="Maximize"><svg><use id="win-max-icon" href="#i-max"/></svg></button>
-        <button id="win-close" class="oai-close" aria-label="Close"><svg><use href="#i-close"/></svg></button>
-      </div>
+  <!-- The tray panel: the app's only window. Regions are filled by app.js. -->
+  <section class="oai-popover" id="panel" aria-label="open-airplay">
+    <header class="oai-popover-head" id="panel-head">
+      <svg class="oai-app-icon"><use href="#i-app"/></svg>
+      <div class="oai-tt"><div class="oai-t">AirPlay Receiver</div><div class="oai-s" id="pop-sub">Starting…</div></div>
+      <label class="oai-hit" id="rx-switch-hit" title="Turn on receiving"><input type="checkbox" class="oai-switch" id="rx-switch" aria-label="Receiving"></label>
     </header>
+    <!-- Sub-pages (settings, a device) swap the home header for this one: back, an icon, a title over a subtitle. -->
+    <header class="oai-popover-head is-sub" id="panel-subhead" hidden>
+      <button class="oai-icon-btn" data-action="home" aria-label="Back" title="Back"><svg><use href="#i-back"/></svg></button>
+      <span class="oai-dico" id="sub-ico"></span>
+      <div class="oai-tt"><div class="oai-t" id="sub-title"></div><div class="oai-s" id="sub-sub"></div></div>
+    </header>
+    <!-- Send pages (a device page) have a neutral header instead: back, the device, its type or live state. -->
+    <header class="send-head" id="send-head" hidden></header>
+    <div class="oai-popover-body" id="pop-body">
+      <div id="pop-content">
+        <div class="region-error" id="r-switch-error" hidden></div>
 
-    <div class="oai-body">
-      <nav class="oai-sidebar" aria-label="Devices">
-        <div class="oai-sidebar-group">Receive</div>
-        <button class="oai-sidebar-item" data-view="receive" aria-current="true">
-          <svg><use id="receive-icon" href="#i-pc"/></svg><span class="oai-label" id="receive-label">This PC</span><span class="oai-dot" id="receive-dot"></span>
-        </button>
-
-        <div class="oai-sidebar-group">Send to
-          <button class="oai-btn is-icon is-small scan-btn" id="scan" aria-label="Find AirPlay devices" title="Find AirPlay devices"><svg><use href="#i-refresh"/></svg></button>
+        <div class="pop-page" id="page-home">
+          <div id="r-notice"></div>
+          <div id="r-status"></div>
+          <div id="r-findings"></div>
+          <div class="oai-sep"></div>
+          <div id="r-devices"></div>
         </div>
-        <div id="devices"></div>
-        <div class="oai-sidebar-empty" id="devices-empty">Press ↻ to find Apple TVs and speakers.</div>
 
-        <div class="oai-sidebar-group">App</div>
-        <button class="oai-sidebar-item" data-view="settings"><svg><use href="#i-gear"/></svg><span class="oai-label">Settings</span></button>
-
-        <div class="oai-sidebar-foot"><svg><use href="#i-pc"/></svg><span id="foot-name">This PC</span></div>
-      </nav>
-
-      <main class="oai-content">
-        <div class="oai-toolbar">
-          <div><div class="oai-toolbar-title" id="tb-title">This PC</div><div class="oai-toolbar-sub" id="tb-sub"></div></div>
-          <div class="oai-toolbar-tools" id="tb-tools"></div>
+        <div class="pop-page" id="page-settings" hidden>
+          <form class="settings-form" autocomplete="off">
+            <label class="oai-list-row"><span class="oai-grow"><span>Name</span><small class="oai-sub" style="display:block">Shown in Screen Mirroring</small></span><input class="oai-input" data-set="name" required maxlength="63"></label>
+            <label class="oai-list-row"><span class="oai-grow"><span>Require a PIN</span><small class="oai-sub" style="display:block">Every new connection enters a code</small></span><input type="checkbox" class="oai-switch" data-set="pin_mode"></label>
+            <div class="sub-rows" id="pin-options">
+              <label class="oai-list-row"><span class="oai-grow"><span>Remember devices</span><small class="oai-sub" style="display:block">Ask each device for the code only once</small></span><input type="checkbox" class="oai-switch" data-set="remember_pin"></label>
+              <button type="button" class="oai-ghost forget" data-action="forget-paired">Forget remembered devices</button>
+            </div>
+            <label class="oai-list-row is-stacked"><span>Speaker</span><select class="oai-input" data-set="speaker" aria-label="Speaker"></select></label>
+            <label class="oai-list-row"><span class="oai-grow"><span>Start at login</span><small class="oai-sub" style="display:block">Open quietly in the tray when you sign in</small></span><input type="checkbox" class="oai-switch" data-pref="startAtLogin"></label>
+            <div id="r-blocked"></div>
+            <details class="advanced" id="advanced">
+              <summary class="oai-list-label">Advanced <svg><use href="#i-chev"/></svg></summary>
+              <label class="oai-list-row"><span class="oai-grow"><span>YouTube videos <span class="beta">Beta</span></span><small class="oai-sub" style="display:block">Play videos sent from the YouTube app</small></span><input type="checkbox" class="oai-switch" data-set="video_links"></label>
+              <label class="oai-list-row is-stacked"><span>When another device connects</span><select class="oai-input" data-set="switch_to_new"><option value="">Keep the current one</option><option value="1">Switch to the new one</option></select></label>
+              <label class="oai-list-row"><span class="oai-grow"><span>High-efficiency video</span><small class="oai-sub" style="display:block">Turn on if a newer iPhone can't connect</small></span><input type="checkbox" class="oai-switch" data-set="h265"></label>
+            </details>
+            <div class="status-line" id="r-settings-status"></div>
+          </form>
         </div>
-        <div class="oai-stage" id="stage"></div>
-      </main>
+
+        <!-- A device page (approved device-page design): the Mirror screen and Cast media tiles, the drop
+             zone and link fallback, the casting card. The cast part is built and driven by cast.js. -->
+        <div class="pop-page" id="page-cast" hidden>
+          <div id="cast-media"></div>
+          <div id="device-extra"></div>
+        </div>
+
+        <!-- The Mirror sheet (approved device-page design), built and driven by mirror.js. -->
+        <div class="pop-page" id="page-mirror" hidden>
+          <div id="mirror-sheet"></div>
+        </div>
+
+        <!-- Add device by address: filled by add-device.js -->
+        <div class="pop-page" id="page-add-device" hidden></div>
+      </div>
     </div>
-  </div>
+    <footer class="oai-popover-foot" id="panel-foot">
+      <button class="oai-ghost" data-action="settings"><svg><use href="#i-gear"/></svg>Settings</button>
+    </footer>
+  </section>
 
+  <script src="prefs.js"></script>
+  <script src="add-device.js"></script>
+  <script src="cast-pairing.js"></script>
+  <script src="cast.js"></script>
+  <script src="mirror-advanced.js"></script>
+  <script src="mirror-sheet.js"></script>
+  <script src="mirror.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

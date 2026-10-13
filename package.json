@@ -5,10 +5,12 @@
   "license": "GPL-3.0-only",
   "scripts": {
     "sync-tokens": "node -e \"const fs=require('fs');for(const f of ['tokens.css','components.css'])fs.copyFileSync('design/'+f,'ui/'+f)\"",
+    "build-sender": "sender/.venv/Scripts/python sender/freeze.py",
     "tauri": "tauri",
     "dev": "npm run sync-tokens && tauri dev",
     "build": "npm run sync-tokens && tauri build",
-    "test": "cargo test --manifest-path src-tauri/Cargo.toml && sender/.venv/Scripts/python -m unittest discover -s sender/tests"
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml && npm run test:ui && sender/.venv/Scripts/python -m unittest discover -s sender/tests",
+    "test:ui": "node tests/ui/run.js"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.1"

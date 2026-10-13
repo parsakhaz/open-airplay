@@ -4,20 +4,24 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::added::AddedDevice;
 use crate::engine::ReceiverSettings;
+use crate::mirror_options::MirrorOptions;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppPrefs {
     pub receiver: ReceiverSettings,
-    /// Switch to the full view automatically when a mirroring session starts.
-    pub open_full_view_on_mirror: bool,
     /// Launch open-airplay when the user signs in to Windows (quietly, receiving off).
     pub start_at_login: bool,
     /// Set once start at login has been turned on by default, so the user's later "off" sticks.
     pub start_at_login_offered: bool,
     /// The receiving switch as the user last left it; None until they first flip it.
     pub receiving: Option<bool>,
+    /// Mirror options under Advanced in the Mirror sheet: the defaults for every mirror.
+    pub mirror: MirrorOptions,
+    /// Devices added by IP address or hostname, shown in Send to next to discovered ones.
+    pub added_devices: Vec<AddedDevice>,
 }
 
 impl AppPrefs {
@@ -73,8 +77,7 @@ mod tests {
     #[test]
     fn missing_file_gives_defaults_named_after_the_pc() {
         let mut prefs = AppPrefs::load(&temp_path("missing"), "PARSA-DEVBOX");
-        assert_eq!(prefs.receiver, ReceiverSettings { name: "PARSA-DEVBOX".into(), pin_mode: false, h265: false });
-        assert!(!prefs.open_full_view_on_mirror);
+        assert_eq!(prefs.receiver, ReceiverSettings { name: "PARSA-DEVBOX".into(), ..Default::default() });
         assert!(prefs.offer_start_at_login(), "a new install is offered start at login");
         assert!(prefs.start_at_login, "start at login is on by default");
     }
@@ -83,11 +86,21 @@ mod tests {
     fn saved_prefs_round_trip_and_the_folder_is_created() {
         let path = temp_path("roundtrip");
         let prefs = AppPrefs {
-            receiver: ReceiverSettings { name: "Living Room PC".into(), pin_mode: true, h265: true },
-            open_full_view_on_mirror: true,
+            receiver: ReceiverSettings {
+                name: "Living Room PC".into(),
+                pin_mode: true,
+                h265: true,
+                remember_pin: true,
+                video_links: true,
+                switch_to_new: true,
+                blocked: vec![crate::engine::BlockedDevice { id: "1A:2B".into(), name: "Old iPad".into() }],
+                speaker: Some("{0.0.0.00000000}.{8f6c0f4e-1b2a-4c3d-9e8f-0a1b2c3d4e5f}".into()),
+            },
             start_at_login: false,
             start_at_login_offered: true,
             receiving: Some(false),
+            mirror: MirrorOptions { fps: Some(30), ..MirrorOptions::default() },
+            added_devices: Vec::new(),
         };
         prefs.save(&path).unwrap();
         assert_eq!(AppPrefs::load(&path, "IGNORED"), prefs);
@@ -107,7 +120,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"receiver": {"name": "Den", "pin_mode": true}}"#).unwrap();
         let prefs = AppPrefs::load(&path, "PC");
-        assert_eq!(prefs.receiver, ReceiverSettings { name: "Den".into(), pin_mode: true, h265: false });
+        assert_eq!(prefs.receiver, ReceiverSettings { name: "Den".into(), pin_mode: true, ..Default::default() });
     }
 
     #[test]
@@ -134,9 +147,31 @@ mod tests {
     }
 
     #[test]
+    fn files_from_before_the_full_view_was_removed_still_load() {
+        let path = temp_path("full-view");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"receiver": {"name": "Den"}, "open_full_view_on_mirror": true, "start_at_login": true}"#).unwrap();
+        let prefs = AppPrefs::load(&path, "PC");
+        assert_eq!(prefs.receiver.name, "Den");
+        assert!(prefs.start_at_login);
+    }
+
+    #[test]
+    fn added_devices_are_remembered_in_order() {
+        let path = temp_path("added");
+        let added = vec![
+            AddedDevice { host: "192.168.1.20".into(), port: Some(7100), name: Some("Den".into()), cast_id: Some("AA:BB".into()) },
+            AddedDevice { host: "office.local".into(), ..AddedDevice::default() },
+        ];
+        AppPrefs { added_devices: added.clone(), ..AppPrefs::load(&path, "PC") }.save(&path).unwrap();
+        assert_eq!(AppPrefs::load(&path, "PC").added_devices, added);
+        assert!(AppPrefs::load(&temp_path("added-none"), "PC").added_devices.is_empty());
+    }
+
+    #[test]
     fn a_blank_saved_name_uses_the_pc_name() {
         let path = temp_path("blank");
-        AppPrefs { receiver: ReceiverSettings { name: "  ".into(), pin_mode: false, h265: false }, ..AppPrefs::default() }
+        AppPrefs { receiver: ReceiverSettings { name: "  ".into(), ..Default::default() }, ..AppPrefs::default() }
             .save(&path)
             .unwrap();
         assert_eq!(AppPrefs::load(&path, "PC").receiver.name, "PC");

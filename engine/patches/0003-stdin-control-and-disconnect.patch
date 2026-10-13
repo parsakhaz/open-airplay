@@ -1,0 +1,304 @@
+diff --git a/renderers/oap_control.h b/renderers/oap_control.h
+new file mode 100644
+index 0000000..3bc6c6d
+--- /dev/null
++++ b/renderers/oap_control.h
+@@ -0,0 +1,56 @@
++/* open-airplay: control lines a supervising process writes to the engine's stdin, one per line.
++ * Pure helpers (no I/O, no globals) so they can be unit-tested; the reader thread lives in uxplay.cpp.
++ *   disconnect   end the current client session; the receiver stays advertised and running */
++#ifndef OAP_CONTROL_H
++#define OAP_CONTROL_H
++
++#include <stddef.h>
++#include <string.h>
++
++typedef enum {
++    OAP_CONTROL_NONE = 0,     /* empty or unknown line: ignored */
++    OAP_CONTROL_DISCONNECT
++} oap_control_cmd;
++
++static inline int oap_control_is_space(char c) {
++    return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
++}
++
++/* Parses one line (len bytes, no terminator needed); surrounding whitespace and CR are ignored. */
++static inline oap_control_cmd oap_control_parse(const char *line, size_t len) {
++    if (!line) return OAP_CONTROL_NONE;
++    while (len > 0 && oap_control_is_space(line[0])) { line++; len--; }
++    while (len > 0 && oap_control_is_space(line[len - 1])) len--;
++    if (len == strlen("disconnect") && memcmp(line, "disconnect", len) == 0) return OAP_CONTROL_DISCONNECT;
++    return OAP_CONTROL_NONE;
++}
++
++/* Splits a byte stream into lines. Lines longer than the buffer are dropped whole. */
++#define OAP_CONTROL_LINE_MAX 256
++typedef struct {
++    char buf[OAP_CONTROL_LINE_MAX];
++    size_t len;
++    int overflow;
++} oap_control_reader;
++
++/* Feeds n bytes; calls on_cmd(cmd, ctx) for every complete line that parses to a command. */
++static inline void oap_control_feed(oap_control_reader *r, const char *data, size_t n,
++                                    void (*on_cmd)(oap_control_cmd cmd, void *ctx), void *ctx) {
++    for (size_t i = 0; i < n; i++) {
++        char c = data[i];
++        if (c == '\n') {
++            if (!r->overflow) {
++                oap_control_cmd cmd = oap_control_parse(r->buf, r->len);
++                if (cmd != OAP_CONTROL_NONE && on_cmd) on_cmd(cmd, ctx);
++            }
++            r->len = 0;
++            r->overflow = 0;
++        } else if (r->len < sizeof(r->buf)) {
++            r->buf[r->len++] = c;
++        } else {
++            r->overflow = 1;
++        }
++    }
++}
++
++#endif
+diff --git a/renderers/oap_window.c b/renderers/oap_window.c
+index 7c068c5..e8f74fb 100644
+--- a/renderers/oap_window.c
++++ b/renderers/oap_window.c
+@@ -26,6 +26,7 @@ static int last_w = 0, last_h = 0;
+ static bool fullscreen = false;
+ static WINDOWPLACEMENT windowed_placement = { .length = sizeof(WINDOWPLACEMENT) };
+ static LONG_PTR windowed_style = 0;
++static void (*close_handler)(void) = NULL;
+ 
+ /* Borderless full screen on the window's current monitor; leaving it restores the exact previous placement. */
+ static void set_fullscreen(HWND hwnd, bool on) {
+@@ -59,15 +60,19 @@ static bool handle_input(HWND hwnd, UINT msg, WPARAM wp) {
+     return false;
+ }
+ 
++/* A stream starting must not take keyboard focus from what the user is doing: show the window
++ * above other normal windows without activating it. */
++static void show_without_focus(HWND hwnd, int cmd) {
++    ShowWindow(hwnd, cmd);
++    SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
++}
++
+ static void fit_to_video(HWND hwnd, int vw, int vh) {
+     bool visible = IsWindowVisible(hwnd);
+     if (IsZoomed(hwnd) || fullscreen) {
+         /* maximized: the sink letterboxes inside it, so no resize. A maximized window that was
+          * hidden at the end of the last stream must still come back for this one. */
+-        if (!visible) {
+-            ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+-            SetForegroundWindow(hwnd);
+-        }
++        if (!visible) show_without_focus(hwnd, SW_SHOWNA);   /* keeps its maximized / full-screen state */
+         return;
+     }
+     if (visible && vw == last_w && vh == last_h) return;
+@@ -99,10 +104,7 @@ static void fit_to_video(HWND hwnd, int vw, int vh) {
+     oap_size client = oap_fit(vw, vh, (int) (work.w * OAP_MAX_SCREEN_SHARE) - fw, (int) (work.h * OAP_MAX_SCREEN_SHARE) - fh);
+     oap_rect r = oap_place(client.w + fw, client.h + fh, work, centre.x, centre.y);
+     SetWindowPos(hwnd, NULL, r.x, r.y, r.w, r.h, SWP_NOZORDER | SWP_NOACTIVATE);
+-    if (!visible) {
+-        ShowWindow(hwnd, SW_SHOWNORMAL);
+-        SetForegroundWindow(hwnd);
+-    }
++    if (!visible) show_without_focus(hwnd, SW_SHOWNOACTIVATE);
+ }
+ 
+ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+@@ -121,8 +123,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+         ShowWindow(hwnd, SW_HIDE);
+         last_w = last_h = 0;
+         return 0;
+-    case WM_CLOSE:   /* closing hides; the sender stops the stream from the phone */
++    case WM_CLOSE:   /* closing hides the window and ends the client session (see oap_window_set_close_handler) */
+         ShowWindow(hwnd, SW_HIDE);
++        if (close_handler) close_handler();
+         return 0;
+     case WM_DPICHANGED: {
+         RECT *s = (RECT *) lp;
+@@ -202,6 +205,10 @@ void oap_window_toggle_fullscreen(void) {
+     if (window) PostMessageW(window, OAP_WM_FULLSCREEN, 0, 0);
+ }
+ 
++void oap_window_set_close_handler(void (*handler)(void)) {
++    close_handler = handler;
++}
++
+ #else  /* not Windows */
+ 
+ void oap_window_init(const char *server_name) { (void) server_name; }
+@@ -209,9 +216,20 @@ uintptr_t oap_window_handle(void) { return 0; }
+ void oap_window_video_size(int w, int h) { (void) w; (void) h; }
+ void oap_window_hide(void) {}
+ void oap_window_toggle_fullscreen(void) {}
++void oap_window_set_close_handler(void (*handler)(void)) { (void) handler; }
+ 
+ #endif
+ 
++/* 1 while a video stream is showing (set on the streaming thread, cleared by whoever stops it) */
++static gint video_active = 0;
++
++void oap_window_video_stopped(void) {
++    oap_window_hide();
++    if (g_atomic_int_compare_and_exchange(&video_active, 1, 0)) {
++        printf("open-airplay: video stopped\n");   /* machine-readable, for the supervising shell */
++    }
++}
++
+ static void on_caps_changed(GObject *pad, GParamSpec *pspec, gpointer user_data) {
+     (void) pspec; (void) user_data;
+     GstCaps *caps = gst_pad_get_current_caps(GST_PAD(pad));
+@@ -221,6 +239,7 @@ static void on_caps_changed(GObject *pad, GParamSpec *pspec, gpointer user_data)
+         int w = info.width;
+         if (info.par_n > 0 && info.par_d > 0) w = (int) ((gint64) info.width * info.par_n / info.par_d);
+         oap_window_video_size(w, info.height);
++        g_atomic_int_set(&video_active, 1);
+         /* machine-readable line for the supervising shell: video is flowing, at this size */
+         printf("open-airplay: video %dx%d\n", w, info.height);
+     }
+diff --git a/renderers/oap_window.h b/renderers/oap_window.h
+index fb2a628..3ff963d 100644
+--- a/renderers/oap_window.h
++++ b/renderers/oap_window.h
+@@ -7,6 +7,10 @@
+ #include <stdint.h>
+ #include <gst/gst.h>
+ 
++#ifdef __cplusplus
++extern "C" {
++#endif
++
+ /* Creates the (hidden) window. Title: $OAP_WINDOW_TITLE, else server_name. Icon: $OAP_WINDOW_ICON (.ico). */
+ void oap_window_init(const char *server_name);
+ /* 0 when there is no engine-owned window (non-Windows, or creation failed). */
+@@ -17,7 +21,17 @@ void oap_window_attach_sink(GstElement *sink);
+ void oap_window_video_size(int w, int h);
+ /* Thread-safe: hide the window (stream ended). */
+ void oap_window_hide(void);
++/* Thread-safe: the mirrored video stopped. Hides the window and prints "open-airplay: video stopped"
++ * once per stream (only if a video had started). */
++void oap_window_video_stopped(void);
++/* Called on the window's thread when the user closes the window (after it hides). The handler must
++ * not block or reset the session itself; it should post the work to the main loop. */
++void oap_window_set_close_handler(void (*handler)(void));
+ /* Thread-safe: toggle borderless full screen (also F11 / double-click; Esc leaves it). */
+ void oap_window_toggle_fullscreen(void);
+ 
++#ifdef __cplusplus
++}
++#endif
++
+ #endif
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index 64cdf06..01b58de 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -716,7 +716,7 @@ void video_renderer_hls_ready() {
+ }
+ 
+ void video_renderer_stop() {
+-    oap_window_hide();   /* open-airplay */
++    oap_window_video_stopped();   /* open-airplay: hides the window, prints "video stopped" once */
+     if (renderer) {
+         logger_log(logger, LOGGER_DEBUG,"video_renderer_stop");
+         if (renderer->appsrc) {
+diff --git a/uxplay.cpp b/uxplay.cpp
+index a0310ad..ddc39f0 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -38,6 +38,7 @@
+ #include <stdarg.h>
+ #include <math.h>
+ #include <inttypes.h>
++#include <errno.h>
+ 
+ #ifdef _WIN32  /*modifications for Windows compilation */
+ #include <glib.h>
+@@ -70,6 +71,8 @@
+ #include "renderers/video_renderer.h"
+ #include "renderers/audio_renderer.h"
+ #include "renderers/mux_renderer.h"
++#include "renderers/oap_window.h"    /* open-airplay */
++#include "renderers/oap_control.h"   /* open-airplay */
+ #ifdef DBUS
+ #include <dbus/dbus.h>
+ #endif
+@@ -2672,6 +2675,53 @@ extern "C" void conn_reset (void *cls, int reason) {
+     reset_loop = true;
+ }
+ 
++/* open-airplay: "disconnect" (a stdin control line, or the mirror window's close button) ends only the
++ * current client session: the same reset as conn_reset(), but the mirror window closes instead of
++ * freezing. The mDNS registration is kept, so the receiver stays in the sender's list.
++ * Always runs on the main loop thread (scheduled with g_idle_add). */
++static bool oap_disconnect_pending = false;
++
++static gboolean oap_disconnect_idle(gpointer data) {
++    oap_window_video_stopped();
++    close_window = true;
++    full_video_reset = true;
++    preserve_connections = false;   /* drop every connection of this client, HLS ones included */
++    reset_httpd = true;
++    relaunch_video = true;
++    oap_disconnect_pending = true;
++    reset_loop = true;   /* reset_callback quits the main loop; main() then resets the session */
++    return G_SOURCE_REMOVE;
++}
++
++static void oap_request_disconnect(void) {
++    g_idle_add(oap_disconnect_idle, NULL);   /* thread-safe: runs on the default main context */
++}
++
++static void oap_control_command(oap_control_cmd cmd, void *ctx) {
++    if (cmd == OAP_CONTROL_DISCONNECT) {
++        oap_request_disconnect();
++    }
++}
++
++/* Reads control lines from stdin. EOF or a read error (stdin closed, or NUL) just ends this thread. */
++static gpointer oap_control_thread(gpointer data) {
++    oap_control_reader reader = {};
++    char buf[256];
++    for (;;) {
++#ifdef _WIN32
++        /* raw ReadFile, not stdio: a thread blocked in fgets() holds the CRT stdin lock and can hang exit() */
++        DWORD n = 0;
++        if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), buf, sizeof(buf), &n, NULL) || n == 0) break;
++#else
++        ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
++        if (n < 0 && errno == EINTR) continue;
++        if (n <= 0) break;
++#endif
++        oap_control_feed(&reader, buf, (size_t) n, oap_control_command, NULL);
++    }
++    return NULL;
++}
++
+ extern "C" void report_client_request(void *cls, char *deviceid, char * model, char *name, bool * admit) {
+     LOGI("connection request from %s (%s) with deviceID = %s\n", name, model, deviceid);
+     if (restrict_clients) {
+@@ -3674,6 +3724,10 @@ int main (int argc, char *argv[]) {
+         stop_dnssd();
+         cleanup();
+     }
++    /* open-airplay: stdin control lines and the mirror window's close button */
++    oap_window_set_close_handler(oap_request_disconnect);
++    g_thread_unref(g_thread_new("oap-control", oap_control_thread, NULL));
++
+     reconnect:
+     compression_type = 0;
+     close_window = new_window_closing_behavior;
+@@ -3707,6 +3761,10 @@ int main (int argc, char *argv[]) {
+         if (mux_to_file) {
+             mux_renderer_stop();
+         }
++        if (oap_disconnect_pending) {
++            oap_disconnect_pending = false;
++            printf("open-airplay: disconnected\n");   /* machine-readable ack for the supervising shell */
++        }
+         goto reconnect;
+     } else {
+         LOGI("Stopping RAOP Server...");

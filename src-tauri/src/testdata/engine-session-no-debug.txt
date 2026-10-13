@@ -1,0 +1,59 @@
+UxPlay 1.74: An Open-Source AirPlay mirroring and audio-streaming server.
+using system MAC address 02:00:00:00:00:01
+Initialized server socket(s)
+register_dnssd: advertised AirPlay service with "Features" code = 0x527FFEE6
+Accepted IPv6 client on socket 7784, port 59446
+Local : 0000:0000:0000:0000:0000:0000:0000:0001
+Remote: 0000:0000:0000:0000:0000:0000:0000:0001
+Open connections: 1
+ignoring AirPlay video streaming request (use option -hls to activate HLS support)
+*** WARNING: httpd didn't get response
+Accepted IPv4 client on socket 7744, port 59446
+Local : 127.0.0.1
+Remote: 127.0.0.1
+Open connections: 2
+Open connections: 1
+Connection closed on socket 7784
+connection request from Test Sender (Linux) with deviceID = 02:00:00:00:00:02
+
+Client identified as User-Agent: AirPlay/935.7.1
+*** Windows support for kernel timestamps on NetAdapter "Loopback Pseudo-Interface 1" is "Disabled":
+To enable it, use the Windows PowerShell (Administrator) command:
+   Set-NetAdapterAdvancedProperty -Name "Loopback Pseudo-Interface 1" -DisplayName "Software Timestamp" -DisplayValue  "RxAll"
+Accepted IPv6 client on socket 3812, port 59446
+Local : 0000:0000:0000:0000:0000:0000:0000:0001
+Remote: 0000:0000:0000:0000:0000:0000:0000:0001
+Open connections: 2
+ignoring AirPlay video streaming request (use option -hls to activate HLS support)
+*** WARNING: httpd didn't get response
+Open connections: 1
+Connection closed on socket 3812
+*** ERROR:   3 seconds since last client feedback request (expected every two seconds); client may be offline
+ct=8 spf=480 usingScreen=1 isMedia=0  audioFormat=0x1000000
+start audio connection, format AAC-ELD 44100/2
+raop_rtp starting audio
+raop_rtp_mirror starting mirroring
+Begin streaming to GStreamer video pipeline
+open-airplay: video 1920x1080
+Accepted IPv6 client on socket 2244, port 59446
+Local : 0000:0000:0000:0000:0000:0000:0000:0001
+Remote: 0000:0000:0000:0000:0000:0000:0000:0001
+Open connections: 2
+ignoring AirPlay video streaming request (use option -hls to activate HLS support)
+*** WARNING: httpd didn't get response
+Open connections: 1
+Connection closed on socket 2244
+Accepted IPv6 client on socket 2244, port 59446
+Local : 0000:0000:0000:0000:0000:0000:0000:0001
+Remote: 0000:0000:0000:0000:0000:0000:0000:0001
+Open connections: 2
+ignoring AirPlay video streaming request (use option -hls to activate HLS support)
+*** WARNING: httpd didn't get response
+Open connections: 1
+Connection closed on socket 2244
+*** ERROR: httpd: recv error 10054 on socket 7744: An existing connection was forcibly closed by the remote host.
+Open connections: 0
+*** ERROR: raop_rtp_mirror error  in header recv: 10054 An existing connection was forcibly closed by the remote host.
+GStreamer error (audio): autoaudiosink0-actual-sink-wasapi2 The stream is in the wrong format.
+*** ERROR lost connection with client (network problem?)
+Connection closed on socket 7744

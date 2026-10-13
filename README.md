@@ -38,7 +38,7 @@ flowchart LR
 
 | | Direction | Status |
 |---|---|---|
-| **Receive** | iPhone / iPad / Mac to your PC | Screen mirroring, audio, and video. Working, verified on-device. |
+| **Receive** | iPhone / iPad / Mac to your PC | Screen mirroring and audio. Working, verified on-device. Videos sent from the YouTube app are a beta setting; photos aren't supported. |
 | **Mirror (send)** | your Windows desktop to an Apple TV | Real FairPlay screen mirroring, near-instant latency. Working, verified on an Apple TV 4K. |
 | **Cast media** | your PC to an Apple TV | Send a video or audio URL via pyatv. Working. |
 
@@ -48,16 +48,14 @@ The headline feature is **sender-side FairPlay mirroring**: pushing your live de
 
 <div align="center">
 
-<img src="docs/screenshots/full-view.png" alt="open-airplay full view: Ready to receive" width="100%">
-
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshots/popover.png" alt="Tray popover: Ready to receive and Send to" width="100%"><br><sub><b>Tray popover</b>: status, device list, one click to expand.</sub></td>
-<td width="50%"><img src="docs/screenshots/settings.png" alt="Settings: name, PIN, codec, autostart" width="100%"><br><sub><b>Settings</b>: device name, PIN, codec, and launch options.</sub></td>
+<td width="50%"><img src="docs/screenshots/popover.png" alt="Tray panel: Ready to receive and Send to" width="100%"><br><sub><b>Tray panel</b>: the receiving switch, status, and devices to send to.</sub></td>
+<td width="50%"><img src="docs/screenshots/settings.png" alt="Settings: name, PIN, high-efficiency video, start at login" width="100%"><br><sub><b>Settings</b>: name, PIN, high-efficiency video, and start at login.</sub></td>
 </tr>
 </table>
 
-<sub>Light and dark aware. The app lives in the tray and expands to the full media view on demand.</sub>
+<sub>Light and dark aware. The app lives in the tray: one panel that opens above the tray icon, and the mirrored video in its own window.</sub>
 
 </div>
 
@@ -78,7 +76,7 @@ flowchart TD
     class G tv;
 ```
 
-- **Receiver**: a supervised [UxPlay](https://github.com/FDH2/UxPlay) engine with built-in device discovery, wrapped in a clean [Tauri](https://tauri.app) app (a compact tray popover that expands to a full-screen media view).
+- **Receiver**: a supervised [UxPlay](https://github.com/FDH2/UxPlay) engine with built-in device discovery, wrapped in a clean [Tauri](https://tauri.app) app (one tray panel; the mirrored video plays in its own window).
 - **Sender (mirroring)**: captures the chosen display via the Windows Desktop Duplication API, encodes H.264 live, runs the AirPlay 2 and FairPlay SAP pairing and handshake, and streams the encrypted mirror in real time. The protocol core is ported from [doubletake](https://github.com/omarroth/doubletake).
 - **Sender (media)**: hands a video or audio URL to the receiver's AirPlay playback via [pyatv](https://github.com/postlund/pyatv).
 
@@ -101,6 +99,8 @@ go run ./cmd/open-airplay -receiver "Living Room" -display 0
 
 Credentials are saved in Windows Credential Manager, so you pair only once. Press `Ctrl+C` to stop and tear down cleanly. Only ever target a receiver you own.
 
+The mirror carries this PC's sound, captured from the default output device and kept in sync with the picture. It follows you when you switch output devices. To mirror another device's sound, pick it from `-list-audio-devices` with `-audio-device "<name>"`. Add `-no-audio` for video only. The capture follows the Windows volume, so leave the PC's volume up and set the TV's volume to taste. If the sound runs ahead of or behind the picture on your TV, nudge it with `-audio-offset-ms` (positive delays the sound).
+
 **Receive AirPlay on your PC**
 
 ```console
@@ -115,7 +115,7 @@ This stands on years of open reverse-engineering by others. See the **[reverse-e
 
 ## What's next
 
-- [ ] **Audio for mirroring**: WASAPI capture so the desktop mirror carries sound (currently video-only).
+- [x] **Audio for mirroring**: WASAPI loopback capture so the desktop mirror carries sound, in sync with the video.
 - [ ] **Higher fidelity by default**: native-resolution capture, 60fps, hardware encoding (NVENC / QSV / AMF), and adaptive bitrate tuned to the link.
 - [ ] **One-click UI for the mirror**: device picker, PIN flow, and a quality / latency settings panel, folded into the same app as the receiver.
 - [ ] **FairPlay provenance review**: document and isolate the FairPlay constants (see doubletake [#59](https://github.com/omarroth/doubletake/issues/59)) before any binary release.

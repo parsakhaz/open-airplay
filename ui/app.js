@@ -1,56 +1,55 @@
-// open-airplay UI: one window, two modes.
-//   compact: a frameless, frosted tray popover (the primary surface)
-//   full:    the "big-screen media" view with a device sidebar and a large stage (on demand)
+// open-airplay UI: the tray panel, the app's only window.
+//
+// Rendering is by region: each region's markup is rebuilt from state, and the DOM is touched only
+// when that markup changed. Inputs live in static markup and are never re-created, so typing,
+// focus and clicks survive status updates. Busy state and the mirroring clock are patched in place.
 const T = window.__TAURI__;
 const { invoke } = T.core;
 const { listen } = T.event;
-const appWindow = T.window ? T.window.getCurrentWindow() : null;
-const dpi = T.dpi || T.window || {};
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const use = (id) => `<svg><use href="#${id}"/></svg>`;
 
-const COMPACT = { w: 340, h: 540 };
-const FULL = { w: 1100, h: 700 };
-
 // ---------- app preferences (saved by the Rust side in the app's config folder) ----------
-const prefs = { openFullOnMirror: false, startAtLogin: false };
+// prefs.js: a failure at start keeps the defaults; after a change it is reported (see refreshAddedDevices).
+const prefStore = OapPrefs.createPrefs(invoke);
+const prefs = prefStore.values;
+const loadPrefs = () => prefStore.load();
 
-async function loadPrefs() {
-  try {
-    const p = await invoke("get_prefs");
-    prefs.openFullOnMirror = !!p.open_full_view_on_mirror;
-    prefs.startAtLogin = !!p.start_at_login;
-  } catch { /* keep defaults */ }
-}
+/** After a device is added or removed by address: reload the list of added devices (strictly: a
+ *  failure rejects, and the add or remove step shows it) and redraw. */
+const refreshAddedDevices = OapPrefs.refresher(prefStore, () => render());
 
 async function savePrefs() {
-  const p = await invoke("set_prefs", { openFullViewOnMirror: prefs.openFullOnMirror, startAtLogin: prefs.startAtLogin });
-  prefs.openFullOnMirror = !!p.open_full_view_on_mirror;
+  const p = await invoke("set_prefs", { startAtLogin: prefs.startAtLogin });
   prefs.startAtLogin = !!p.start_at_login;
 }
 
 // ---------- state ----------
 const ui = {
-  mode: "compact",          // "compact" | "full"
-  status: { running: false },
-  view: "receive",          // full view: "receive" | "settings" | "send"
-  page: "home",             // compact view: "home" | "settings" | "cast"
+  status: { seq: 0, running: false },
+  page: "home",             // "home" | "settings" | "cast" | "add-device"
   target: null,
   devices: [],
   scanned: false,
   scanning: false,
   scanError: null,
-  busy: null,
+  lastScan: 0,              // when the device list was last refreshed (ms)
+  busy: new Set(),          // actions in flight; only their own controls show busy
+  errors: {},               // action -> plain message shown next to its control
+  findings: [],
   mirrorSince: null,
-  lastPhase: null,
-  cast: { state: "idle", message: "" },
-  castUrl: "",
-  castFile: "",
+  settingsNote: null,       // { ok, text } under the settings form
+  art: { id: null, url: null }, // the cover art shown, by the status's art number
+  speakers: [],             // the PC's sound outputs: [{ id, name }]
 };
 
+// The header says the status once; the body never repeats it.
+const HEADER = { stopped: "Off", starting: "Starting…", ready: "Ready", connecting: "Connecting…", audio: "Playing audio", pin: "Enter the code", restarting: "Restarting…", error: "Needs attention" };
+const LIVE_HEADER = { mirroring: "Mirroring from", audio: "Playing audio from", video: "Playing video from" };
+
 // ---------- receiver phase ----------
-// The shell may send `phase`; otherwise derive it the same way from the raw fields.
+// The shell sends `phase`; otherwise derive it the same way from the raw fields.
 function phaseOf(s) {
   if (s.phase) return s.phase;
   if (s.pin) return "pin";
@@ -63,10 +62,29 @@ function phaseOf(s) {
 const nameOf = (s) => (s.settings && s.settings.name) || "this PC";
 const deviceOf = (s) => (s.last_device ? s.last_device.replace(/ \(.*\)$/, "") : null);
 const isOn = (phase) => phase !== "stopped" && phase !== "error";
+const inSession = (phase) => phase === "connecting" || phase === "mirroring" || phase === "audio" || phase === "video" || phase === "pin";
+const capitalise = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
+/** Takes a status snapshot unless it's older than the one shown (pushes and replies can cross). */
+function acceptStatus(s) {
+  if (!s || (s.seq || 0) < (ui.status.seq || 0)) return false;
+  ui.status = s;
+  return true;
+}
+
+/** The saved receiver settings, every field filled in. */
 function currentSettings() {
   const s = ui.status.settings || {};
-  return { name: s.name || "", pin_mode: !!s.pin_mode, h265: !!s.h265 };
+  return {
+    name: s.name || "",
+    pin_mode: !!s.pin_mode,
+    h265: !!s.h265,
+    remember_pin: !!s.remember_pin,
+    video_links: !!s.video_links,
+    switch_to_new: !!s.switch_to_new,
+    blocked: s.blocked || [],
+    speaker: s.speaker || null,
+  };
 }
 
 function elapsed(since) {
@@ -77,479 +95,437 @@ function elapsed(since) {
 }
 
 function deviceIcon(d) {
-  if (!d.services.includes("AirPlay") || /speaker|homepod|five/i.test(d.model || "")) return "i-speaker";
+  // No services at all: added by address and never answered a cast scan, so it's offered for mirroring.
+  const audioOnly = d.services.length > 0 && !d.services.includes("AirPlay");
+  if (audioOnly || /speaker|homepod|five/i.test(d.model || "")) return "i-speaker";
   if (/mac/i.test(d.model || "")) return "i-laptop";
   return "i-tv";
 }
 const deviceKind = (d) => ({ "i-tv": "Apple TV", "i-laptop": "Mac", "i-speaker": "Speaker" })[deviceIcon(d)];
-
-function btn(name, label, cls = "") {
-  const busy = ui.busy === name;
-  return `<button class="oai-btn ${cls} ${busy ? "is-busy" : ""}" data-action="${name}" ${ui.busy ? "disabled" : ""}>${esc(label)}</button>`;
+const isSpeaker = (d) => deviceIcon(d) === "i-speaker";
+/** A friendly type: the model's name, unless it's a model id (Mac17,9) or unknown. */
+const friendlyType = (d) => (d.model && !/^[A-Za-z]+\d+,\d+$/.test(d.model) && !/unknown/i.test(d.model) ? d.model : deviceKind(d));
+const canCast = (d) => d.services.includes("AirPlay") || d.services.includes("RAOP");
+/** The Send to rows: scanned devices, joined with devices added by address when that code is present. */
+const sendRows = () => (window.AddDevice ? AddDevice.merge(ui.devices, prefs.addedDevices) : ui.devices);
+/** A row's state line: what's being sent to it, else how it was added, else its type. */
+function rowSub(d) {
+  const mirror = OapMirror.rowStatus(d.address);
+  if (mirror) return { html: mirror.html, cls: mirror.cls };
+  const live = OapCast.rowStatus(d.identifier);
+  if (live) return { html: live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.text)}`, cls: live.kind === "busy" ? "s-busy" : "s-live" };
+  return { html: esc(d.added ? "Added by address" : friendlyType(d)), cls: "" };
 }
 
-// ---------- window modes ----------
-async function win(fn) {
-  if (!appWindow) return;
-  try { await fn(appWindow); } catch (err) { console.warn("[open-airplay] window op failed", err); }
+// Busy and disabled states are applied by syncBusy(), not baked into region markup.
+const btn = (name, label, cls = "") => `<button class="oai-btn ${cls}" data-action="${name}">${esc(label)}</button>`;
+const errorLine = (action) => (ui.errors[action] ? `<p class="inline-error" role="alert">${esc(ui.errors[action])}</p>` : "");
+
+// ---------- regions ----------
+const shown = new Map();
+/** Replaces a region's content only when its markup changed. */
+function patch(id, html) {
+  if (shown.get(id) === html) return false;
+  shown.set(id, html);
+  $(id).innerHTML = html;
+  return true;
 }
 
-function setMode(mode) {
-  ui.mode = mode;
-  document.documentElement.dataset.mode = mode;
-  render();
+function noticeHtml() {
+  const n = ui.status.notice;
+  if (!n) return "";
+  return `<div class="oai-banner is-info"><p class="oai-grow">${esc(n)}</p><button class="oai-icon-btn is-small" data-action="dismiss-notice" aria-label="Dismiss" title="Dismiss">${use("i-x")}</button></div>${errorLine("dismiss-notice")}`;
 }
 
-async function expand(fullscreen = false) {
-  setMode("full");
-  await win(async (w) => {
-    await w.setSkipTaskbar(false);
-    await w.setAlwaysOnTop(false);
-    await w.setResizable(true);
-    if (dpi.LogicalSize) await w.setSize(new dpi.LogicalSize(FULL.w, FULL.h));
-    await w.center();
-    await w.show();
-    await w.setFocus();
-    if (fullscreen) await w.setFullscreen(true);
-  });
+/** The "Playing audio" card: what's playing, the phone's volume, its controls and Disconnect. */
+function audioHtml(s) {
+  const a = s.audio || {};
+  const art = ui.art.url && ui.art.id === a.art ? `<img src="${esc(ui.art.url)}" alt="">` : use("i-music");
+  const title = a.title || (a.playing ? "Playing" : "Nothing playing");
+  const detail = [a.artist, a.album].filter(Boolean).join(" — ");
+  const ctl = (cmd, icon, label) => `<button class="oai-btn is-icon" data-action="control:${cmd}" aria-label="${label}" title="${label}">${use(icon)}</button>`;
+  const controls = s.can_control ? `<div class="controls">${ctl("previous", "i-prev", "Previous")}${ctl("play_pause", "i-playpause", "Play or pause")}${ctl("next", "i-next", "Next")}</div>` : "";
+  const volume = s.volume == null ? "" : `<div class="volume" role="meter" aria-label="Volume on the phone" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${s.volume}" title="Volume: ${s.volume}% (change it on the phone)">${use("i-volume")}<span class="bar"><i style="width:${s.volume}%"></i></span></div>`;
+  const controlError = ["previous", "play_pause", "next"].map((c) => errorLine("control:" + c)).join("");
+  return `<div class="oai-live is-audio"><div class="oai-media"><span class="oai-art">${art}</span><div><b>${esc(title)}</b>${detail ? `<small>${esc(detail)}</small>` : ""}</div></div><div class="bottom">${controls}${volume}${btn("disconnect", "Disconnect", "is-danger is-small")}</div>${controlError}${errorLine("disconnect")}</div>`;
 }
 
-async function toggleFullscreen() {
-  if (ui.mode !== "full") return expand(true);
-  await win(async (w) => {
-    if (await w.isFullscreen()) {
-      await w.setFullscreen(false);
-      await collapse();       // leaving full screen returns to the compact popover
-    } else {
-      await w.setFullscreen(true);
-    }
-  });
-}
+// The receive block: a dot (or a spinner while something is happening) next to one sentence and a hint.
+const rxBlock = (lead, text, hint) => `<div class="oai-rx">${lead}<div>${text}<small>${hint}</small></div></div>`;
+const DOT_ON = '<span class="oai-dot is-live"></span>', DOT_OFF = '<span class="oai-dot"></span>', SPINNER = '<span class="oai-spinner is-small"></span>';
 
-async function collapse() {
-  await win(async (w) => {
-    if (await w.isFullscreen()) await w.setFullscreen(false);
-    await w.setResizable(false);
-    if (dpi.LogicalSize) await w.setSize(new dpi.LogicalSize(COMPACT.w, COMPACT.h));
-    // Bottom-right of the work area, just above the tray.
-    if (dpi.LogicalPosition) {
-      const x = Math.max(0, (screen.availLeft || 0) + screen.availWidth - COMPACT.w - 8);
-      const y = Math.max(0, (screen.availTop || 0) + screen.availHeight - COMPACT.h - 8);
-      await w.setPosition(new dpi.LogicalPosition(x, y));
-    }
-    await w.setAlwaysOnTop(true);
-    await w.setSkipTaskbar(true);
-  });
-  setMode("compact");
-}
-
-if (appWindow) {
-  // The compact popover behaves like a tray flyout: it goes away when you click elsewhere.
-  if (appWindow.onFocusChanged) {
-    appWindow.onFocusChanged(({ payload: focused }) => {
-      if (!focused && ui.mode === "compact") win((w) => w.hide());
-    });
-  }
-  const syncMax = () => win(async (w) => {
-    const max = await w.isMaximized();
-    $("win-max-icon").setAttribute("href", max ? "#i-restore" : "#i-max");
-    $("win-max").setAttribute("aria-label", max ? "Restore" : "Maximize");
-  });
-  window.addEventListener("resize", () => { if (ui.mode === "full") syncMax(); });
-}
-
-$("win-min").addEventListener("click", () => win((w) => w.minimize()));
-$("win-max").addEventListener("click", () => win((w) => w.toggleMaximize()));
-// Closing the full view tucks the app back into the tray; Quit lives in the tray menu.
-$("win-close").addEventListener("click", async () => { await collapse(); win((w) => w.hide()); });
-$("win-collapse").addEventListener("click", () => collapse());
-$("win-fullscreen").addEventListener("click", () => toggleFullscreen());
-$("pop-expand").addEventListener("click", () => expand(false));
-$("pop-settings").addEventListener("click", () => { ui.page = ui.page === "settings" ? "home" : "settings"; render(); });
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "F11") { e.preventDefault(); toggleFullscreen(); }
-  else if (e.key === "Escape") {
-    if (ui.mode === "full") collapse();
-    else if (ui.page !== "home") { ui.page = "home"; render(); }
-    else win((w) => w.hide());
-  }
-});
-
-// ---------- full view rendering ----------
-let lastKey = "";
-function setStage(key, html) {
-  const stage = $("stage");
-  stage.innerHTML = html;
-  // Re-animate only when the screen actually changes.
-  if (key === lastKey) stage.querySelectorAll(".oai-view").forEach((el) => el.classList.remove("oai-view"));
-  lastKey = key;
-}
-
-function setToolbar(title, sub, tools = "") {
-  $("tb-title").textContent = title;
-  $("tb-sub").textContent = sub;
-  $("tb-tools").innerHTML = tools;
-}
-
-function renderSidebar() {
-  const s = ui.status, phase = phaseOf(s);
-  $("receive-dot").className = "oai-dot " + ({ ready: "is-live", mirroring: "is-live", connecting: "is-busy", pin: "is-busy", starting: "is-busy", error: "is-bad" }[phase] || "");
-  const session = (phase === "mirroring" || phase === "connecting") && deviceOf(s);
-  $("receive-label").textContent = session || "This PC";
-  $("receive-icon").setAttribute("href", session ? "#i-phone" : "#i-pc");
-  $("foot-name").textContent = nameOf(s);
-  document.querySelectorAll("#full .oai-sidebar-item[data-view]").forEach((b) => {
-    b.setAttribute("aria-current", String(b.dataset.view === ui.view));
-  });
-  $("devices").innerHTML = ui.devices.map((d, i) => {
-    const current = ui.view === "send" && ui.target && ui.target.identifier === d.identifier;
-    const kind = deviceIcon(d) === "i-tv" ? "TV" : deviceIcon(d) === "i-laptop" ? "Mac" : "";
-    return `<button class="oai-sidebar-item" data-device="${i}" aria-current="${current}">${use(deviceIcon(d))}<span class="oai-label">${esc(d.name)}</span><span class="oai-meta">${kind}</span></button>`;
-  }).join("");
-  const empty = $("devices-empty");
-  empty.hidden = ui.devices.length > 0 && !ui.scanning;
-  empty.innerHTML = devicesEmptyText();
-  $("scan").classList.toggle("is-busy", ui.scanning);
-  $("scan").disabled = ui.scanning;
-}
-
-function devicesEmptyText() {
-  if (ui.scanning) return '<span class="oai-spinner is-small" style="display:inline-block;vertical-align:-2px;margin-right:6px"></span>Searching…';
-  if (ui.scanError) return `Couldn't search: ${esc(ui.scanError)}`;
-  return ui.scanned ? "No AirPlay devices found on this network." : "Press ↻ to find Apple TVs and speakers.";
-}
-
-function renderReceive() {
-  const s = ui.status, phase = phaseOf(s), name = nameOf(s), device = deviceOf(s) || "An iPhone";
+function statusHtml() {
+  const s = ui.status, phase = phaseOf(s), name = `<b>${esc(nameOf(s))}</b>`, device = esc(deviceOf(s) || "An iPhone");
+  const phone = `<span class="oai-art">${use("i-phone")}</span>`;
+  // Only a device that said who it is can be blocked.
+  const block = s.device_id ? `<button class="oai-ghost block-link" data-action="block">Block this device</button>${errorLine("block")}` : "";
   switch (phase) {
     case "starting":
-      setToolbar("This PC", "Starting the receiver…");
-      setStage("starting", `<div class="oai-hero oai-view"><div class="oai-spinner" style="margin:0 auto 18px"></div><h2>Starting…</h2><p>Getting ${esc(name)} ready for AirPlay.</p></div>`);
-      break;
+      return rxBlock(SPINNER, `Getting ready to receive as ${name}`, "This takes a few seconds.");
     case "ready":
-      setToolbar("This PC", `Visible as ${name}`);
-      setStage("ready", `<div class="oai-hero oai-view">
-        <div class="rings"><span></span><span></span><span></span><svg><use href="#i-app"/></svg></div>
-        <h2>Ready to receive</h2>
-        <p>${esc(name)} is visible to iPhones, iPads and Macs on this network.</p>
-        <div class="oai-chips"><span class="oai-chip">Control Center</span>→<span class="oai-chip">Screen Mirroring</span>→<span class="oai-chip"><b>${esc(name)}</b></span></div>
-        ${s.settings && s.settings.pin_mode ? `<p class="note">A PIN is required for every connection.</p>` : ""}
-      </div>`);
-      break;
+      return rxBlock(DOT_ON, `Ready to receive as ${name}`, "On your iPhone, open Control Center → Screen Mirroring, or pick it as the speaker to play music.");
     case "connecting":
-      setToolbar("This PC", "Incoming connection");
-      setStage("connecting", `<div class="oai-hero oai-view">
-        <div class="pair"><div class="dev">${use("i-phone")}</div><div class="dots"><i></i><i></i><i></i></div><div class="dev">${use("i-pc")}</div></div>
-        <h2 style="font-size:var(--oai-text-xl)">${esc(device)} is connecting</h2>
-        <p>The video window opens as soon as the picture arrives.</p></div>`);
-      break;
+      return `<div class="oai-live"><div class="oai-media">${phone}<div><b>${device}</b><small>The video window opens in a moment.</small></div></div>${btn("disconnect", "Disconnect", "is-danger is-wide")}${errorLine("disconnect")}</div>${block}`;
     case "mirroring":
-      setToolbar(`Mirroring ${device}`, "Video plays in its own open-airplay window", btn("stop", "Stop receiving", "is-danger is-small"));
-      setStage("mirroring", `<div class="oai-view" style="width:100%">
-        <div class="now">
-          <div class="art"><div class="screen ${orientation()}"><svg><use href="#i-app"/></svg></div></div>
-          <div class="bar"><div class="who"><b>${esc(device)}</b><small data-elapsed>Mirroring · ${elapsed(ui.mirrorSince)}</small>${videoSize()}</div>${btn("show-video", "Show video window", "is-small")}</div>
-        </div>
-        <p class="note">The video plays in its own open-airplay window, sized to the phone's screen. It follows rotation. Stop mirroring from the phone, or with Stop.</p></div>`);
-      break;
+      // The clock's text is filled in by tick(), outside the compared markup.
+      return `<div class="oai-live"><div class="oai-media">${phone}<div><b>${device}</b><small class="is-live"><span class="oai-pulse"></span><span data-elapsed></span></small></div></div><div class="oai-btns">${btn("show-video", "Show video")}${btn("disconnect", "Disconnect", "is-danger")}</div>${errorLine("show-video")}${errorLine("disconnect")}</div>${block}`;
+    case "audio":
+      return audioHtml(s) + block;
+    case "video": {
+      // A YouTube video the phone sent: the same card as mirroring, once the first frame is in.
+      const playing = !!s.video;
+      const sub = playing ? '<small class="is-live"><span class="oai-pulse"></span><span data-elapsed></span></small>' : "<small>Loading the video…</small>";
+      const show = playing ? btn("show-video", "Show video") : "";
+      return `<div class="oai-live"><div class="oai-media">${phone}<div><b>${device}</b>${sub}</div></div><div class="oai-btns">${show}${btn("disconnect", "Disconnect", "is-danger")}</div>${errorLine("show-video")}${errorLine("disconnect")}</div>${block}`;
+    }
     case "pin": {
       const digits = String(s.pin).split("").map((d) => `<span>${esc(d)}</span>`).join("");
-      setToolbar("This PC", "PIN required");
-      setStage("pin", `<div class="oai-hero oai-view" style="max-width:520px"><h2 style="font-size:var(--oai-text-xl)">Enter this code on ${esc(deviceOf(s) || "your iPhone")}</h2>
-        <p style="margin:0">Your iPhone is asking for an AirPlay code.</p>
-        <div class="digits">${digits}</div>
-        <p class="note" style="margin:0">PIN is on in Settings, so every new connection needs a code.</p></div>`);
-      break;
+      return `<div class="oai-code"><h4>Enter this code on ${device}</h4><div class="oai-digits">${digits}</div><button class="oai-ghost" data-action="disconnect">Disconnect</button>${errorLine("disconnect")}</div>${block}`;
+    }
+    case "restarting": {
+      const why = s.restart_reason ? `${esc(capitalise(s.restart_reason))}, so receiving is restarting.` : "Receiving is restarting.";
+      return rxBlock(SPINNER, why, `${name} will be back in a moment.`);
     }
     case "error":
-      setToolbar("This PC", "The receiver hit a problem");
-      setStage("error", `<div class="oai-hero oai-view"><div class="glyph is-bad">${use("i-warn")}</div>
-        <h2 style="font-size:var(--oai-text-xl)">AirPlay receiver stopped</h2>
-        <p>iPhones can't see ${esc(name)} right now.</p>
-        <div class="detail">${esc(s.last_error)}</div>
-        <div class="oai-btn-row">${btn("settings", "Settings")}${btn("start", "Try again", "is-primary")}</div></div>`);
-      break;
+      return `<div class="oai-banner is-bad">${use("i-warn")}<div class="oai-grow">${esc(s.last_error || `iPhones can't see ${nameOf(s)} right now.`)}<div class="oai-mini">Turn receiving back on to retry.</div></div></div>`;
     default:
-      setToolbar("This PC", "Receiver off");
-      setStage("stopped", `<div class="oai-hero oai-view"><div class="glyph">${use("i-pc")}</div>
-        <h2 style="font-size:var(--oai-text-xl)">Receiving is off</h2>
-        <p>Turn it on to let iPhones mirror to ${esc(name)}.</p>
-        <div class="oai-btn-row">${btn("start", "Start receiving", "is-primary")}</div></div>`);
+      return rxBlock(DOT_OFF, `iPhones can't see ${name}`, "Turn on receiving to mirror an iPhone or play music here.");
   }
 }
 
-function settingsRows(rowClass) {
-  const s = currentSettings();
-  return `
-    <label class="${rowClass}"><span class="oai-grow"><span>Name</span><small class="oai-sub" style="display:block">Shown in Screen Mirroring</small></span><input class="oai-input" data-set="name" required maxlength="63" value="${esc(s.name)}"></label>
-    <label class="${rowClass}"><span class="oai-grow"><span>Require a PIN</span><small class="oai-sub" style="display:block">Every new connection enters a code</small></span><input type="checkbox" class="oai-switch" data-set="pin_mode" ${s.pin_mode ? "checked" : ""}></label>
-    <label class="${rowClass}"><span class="oai-grow"><span>Prefer H.265</span><small class="oai-sub" style="display:block">Try this if iOS 27 won't connect</small></span><input type="checkbox" class="oai-switch" data-set="h265" ${s.h265 ? "checked" : ""}></label>
-    <label class="${rowClass}"><span class="oai-grow"><span>Open full view when mirroring starts</span><small class="oai-sub" style="display:block">Otherwise the app stays in the tray</small></span><input type="checkbox" class="oai-switch" data-pref="openFullOnMirror" ${prefs.openFullOnMirror ? "checked" : ""}></label>
-    <label class="${rowClass}"><span class="oai-grow"><span>Start at login</span><small class="oai-sub" style="display:block">Open quietly in the tray when you sign in</small></span><input type="checkbox" class="oai-switch" data-pref="startAtLogin" ${prefs.startAtLogin ? "checked" : ""}></label>`;
-}
-
-function renderSettings() {
-  const running = isOn(phaseOf(ui.status));
-  setToolbar("Settings", "Receiver changes apply when it restarts");
-  setStage("settings", `<form class="form oai-view settings-form" autocomplete="off">
-    <div class="oai-group-label">Receiving</div>
-    <div class="oai-group">${settingsRows("oai-row")}</div>
-    <div class="actions">
-      ${running ? btn("stop", "Stop receiving") : ""}
-      <button type="submit" class="oai-btn is-primary ${ui.busy === "apply" ? "is-busy" : ""}" ${ui.busy ? "disabled" : ""}>${running ? "Apply and restart" : "Apply and start"}</button>
-    </div>
-    <div class="status-line" data-settings-status></div>
-  </form>`);
-}
-
-function castControls(compact) {
-  const d = ui.target, c = ui.cast, audioOnly = !d.services.includes("AirPlay");
-  const msg = c.state === "working" ? `<span class="oai-spinner is-small"></span>${esc(c.message)}`
-    : c.state === "error" ? `${esc(c.message)} ${btn("retry-cast", "Retry", "is-small")}`
-    : esc(c.message);
-  const cls = c.state === "error" ? "is-bad" : c.state === "ok" ? "is-ok" : "";
-  if (compact) {
-    return `<div class="pop-cast">
-      ${audioOnly ? "" : `<div class="row"><input class="oai-input" data-cast="url" type="url" placeholder="Video or audio link" value="${esc(ui.castUrl)}">${btn("play-url", "Play", "is-primary is-small")}</div>`}
-      <div class="row"><input class="oai-input" data-cast="file" placeholder="C:\\Music\\song.mp3" value="${esc(ui.castFile)}">${btn("stream-file", "Stream", (audioOnly ? "is-primary " : "") + "is-small")}</div>
-      <div class="msg ${cls}">${msg}</div></div>`;
-  }
-  return `
-    ${audioOnly ? "" : `<div class="oai-group-label">Play a video or audio link</div>
-    <div class="oai-group"><div class="cast-row"><input class="oai-input" data-cast="url" type="url" placeholder="https://example.com/video.mp4" value="${esc(ui.castUrl)}">${btn("play-url", "Play", "is-primary")}</div></div>`}
-    <div class="oai-group-label">Stream an audio file from this PC</div>
-    <div class="oai-group"><div class="cast-row"><input class="oai-input" data-cast="file" placeholder="C:\\Users\\me\\Music\\song.mp3" value="${esc(ui.castFile)}">${btn("stream-file", "Stream", audioOnly ? "is-primary" : "")}</div></div>
-    <div class="status-line ${cls}">${msg}</div>`;
-}
-
-function renderSend() {
-  const d = ui.target;
-  if (!d) { ui.view = "receive"; return renderReceive(); }
-  const audioOnly = !d.services.includes("AirPlay");
-  setToolbar(d.name, [d.model, d.address].filter(Boolean).join(" · "));
-  setStage("send:" + d.identifier, `<div class="form oai-view">
-    <div class="target"><div class="dev">${use(audioOnly ? "i-speaker" : "i-tv")}</div><div><b>Cast to ${esc(d.name)}</b><small>${audioOnly ? "Audio only" : "Video, photos and audio"}</small></div></div>
-    ${castControls(false)}</div>`);
-}
-
-// ---------- network doctor findings ----------
-ui.findings = [];
 function findingsHtml() {
-  if (!ui.findings.length) return "";
   const card = (f) => {
     switch (f.kind) {
       case "public_network":
-        return [`Windows treats “${esc(f.network)}” as a public network, so iPhones may not find this PC.`, btn("fix:public_network", "Open network settings", "is-small")];
+        return [`Windows treats “${esc(f.network)}” as a public network, so iPhones may not find this PC.`, "fix:public_network", btn("fix:public_network", "Open network settings", "is-small")];
       case "firewall_blocks":
-        return ["Windows Firewall is blocking the receiver, so iPhones can't connect.", btn("fix:firewall_blocks", "Allow (needs admin)", "is-small is-primary")];
+        return ["Windows Firewall is blocking open-airplay, so iPhones can't connect. Windows will ask for permission.", "fix:firewall_blocks", btn("fix:firewall_blocks", "Allow in Windows Firewall", "is-small is-primary")];
       case "guest_network":
-        return [`“${esc(f.network)}” looks like a guest Wi-Fi. Guest networks often stop devices from seeing each other; if your iPhone can't find this PC, put both on your main Wi-Fi.`, ""];
+        return [`“${esc(f.network)}” looks like a guest Wi-Fi. Guest networks often stop devices from seeing each other; if your iPhone can't find this PC, put both on your main Wi-Fi.`, null, ""];
       case "other_receiver":
-        return [`${esc(f.name)} is also running and may take the connection. Quit it if your iPhone connects to the wrong one.`, ""];
+        return [`${esc(f.name)} is also running and may take the connection. Quit it if your iPhone connects to the wrong one.`, null, ""];
       default:
         return null;
     }
   };
-  const items = ui.findings.map(card).filter(Boolean)
-    .map(([text, action]) => `<div class="oai-banner doctor"><div class="oai-grow"><p style="margin:0">${text}</p>${action ? `<div class="oai-btn-row" style="margin-top:8px">${action}</div>` : ""}</div></div>`);
-  return `<div class="doctor-list">${items.join("")}<button class="oai-ghost recheck" data-action="doctor-check">Check again</button></div>`;
+  const items = ui.findings.map(card).filter(Boolean).map(([text, action, button]) =>
+    `<div class="oai-banner doctor">${use("i-warn")}<div class="oai-grow"><p>${text}</p>${button ? `<div class="oai-btn-row">${button}</div>` : ""}${action ? errorLine(action) : ""}</div></div>`);
+  if (!items.length && !ui.errors["doctor-check"]) return "";
+  return `<div class="doctor-list">${items.join("")}<button class="oai-ghost recheck" data-action="doctor-check">Check again</button>${errorLine("doctor-check")}</div>`;
 }
 
-function renderFull() {
-  renderSidebar();
-  if (ui.view === "settings") renderSettings();
-  else if (ui.view === "send") renderSend();
-  else {
-    renderReceive();
-    $("stage").insertAdjacentHTML("afterbegin", findingsHtml());
-  }
+function devicesEmptyText() {
+  if (ui.scanning) return '<span class="oai-spinner is-small"></span>Searching…';
+  if (ui.scanError) return esc(ui.scanError);
+  return ui.scanned ? "No AirPlay devices found on this network." : "Looking for Apple TVs and speakers…";
 }
 
-// ---------- compact rendering ----------
-function compactStatus() {
-  const s = ui.status, phase = phaseOf(s), name = nameOf(s), device = deviceOf(s) || "An iPhone";
-  switch (phase) {
-    case "starting":
-      return `<div class="pop-hero"><div class="oai-spinner"></div><h3>Starting…</h3><p>Getting ${esc(name)} ready</p></div>`;
-    case "ready":
-      return `<div class="pop-status"><div class="line"><span class="oai-dot is-live"></span><div>Ready to receive, <b>${esc(name)}</b></div></div>
-        <div class="hint">On your iPhone, open Control Center → Screen Mirroring.</div></div>`;
-    case "connecting":
-      return `<div class="pop-hero"><div class="dots" style="justify-content:center;margin:6px 0 10px"><i></i><i></i><i></i></div><h3>${esc(device)} is connecting</h3><p>The video window opens in a moment.</p></div>`;
-    case "mirroring":
-      return `<div class="pop-hero is-live"><div class="who"><div class="badge"><i></i>MIRRORING</div><h3>${esc(device)}</h3><p data-elapsed>${elapsed(ui.mirrorSince)}</p></div><div class="acts">${btn("show-video", "Show", "is-small")}${btn("stop", "Stop", "is-danger is-small")}</div></div>`;
-    case "pin": {
-      const digits = String(s.pin).split("").map((d) => `<span>${esc(d)}</span>`).join("");
-      return `<div class="pop-hero"><h3>Enter this code on ${esc(deviceOf(s) || "your iPhone")}</h3><div class="pop-pin">${digits}</div><p>PIN mode is on</p></div>`;
-    }
-    case "error":
-      return `<div class="pop-hero is-bad"><h3>Receiver stopped</h3><p>iPhones can't see ${esc(name)} right now.</p><div class="detail">${esc(s.last_error)}</div><div class="oai-btn-row" style="justify-content:flex-start">${btn("start", "Try again", "is-primary is-small")}</div></div>`;
-    default:
-      return `<div class="pop-hero"><h3>Receiving is off</h3><p>Turn it on so iPhones can mirror here.</p><div class="oai-btn-row">${btn("start", "Start receiving", "is-primary is-small")}</div></div>`;
-  }
+function devicesHtml() {
+  // Rows carry the device's identifier, never its list position, so a click during a scan opens the right one.
+  const list = sendRows();
+  const rows = list.map((d) => {
+    const sub = rowSub(d);
+    return `<button class="oai-list-row send-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><b>${esc(d.name)}</b><small class="${sub.cls}">${sub.html}</small></span><svg class="chev"><use href="#i-chev"/></svg></button>`;
+  }).join("");
+  const empty = list.length && !ui.scanning ? "" : `<div class="devices-empty">${devicesEmptyText()}</div>`;
+  // The "Add device by address…" row (add-device.js) ends the list.
+  return `<div class="oai-list-label">Send to <button class="oai-icon-btn ${ui.scanning ? "is-spinning" : ""}" data-action="scan" aria-label="Find devices" title="Find devices">${use("i-refresh")}</button></div>${rows}${empty}${AddDevice.addRowHtml()}`;
 }
 
-function compactDevices() {
-  const rows = ui.devices.map((d, i) => `<button class="oai-list-row" data-device="${i}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block">${esc(d.name)}</span></span><span class="oai-meta">${deviceKind(d)}</span></button>`).join("");
-  const empty = ui.devices.length && !ui.scanning ? "" : `<div class="oai-list-row oai-sub" style="color:var(--oai-ink-2)">${devicesEmptyText()}</div>`;
-  return `<div class="oai-list-label">Send to <button class="oai-ghost scan-btn ${ui.scanning ? "is-busy" : ""}" data-action="scan" style="height:22px;padding:0 6px" aria-label="Find AirPlay devices" ${ui.scanning ? "disabled" : ""}>${use("i-refresh")}</button></div>${rows}${empty}`;
+/** The neutral header of a device page: back, the device, its type or what's being sent to it. */
+function sendHeadHtml() {
+  const d = ui.target, live = OapCast.rowStatus(d.identifier), mirror = OapMirror.rowStatus(d.address);
+  const sub = mirror ? mirror.short : live ? (live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.short || live.text)}`) : esc(friendlyType(d));
+  return `<button class="send-back" data-action="home" aria-label="Back">${use("i-back")}</button><span class="dico">${use(deviceIcon(d))}</span><div class="tt"><div class="t">${esc(d.name)}</div><div class="s">${sub}</div></div>`;
 }
 
-const lastPage = { key: "" };
-function renderCompact() {
-  const s = ui.status, phase = phaseOf(s);
-  $("pop-sub").textContent = ({ starting: "Starting…", ready: "Ready to receive", connecting: "Connecting…", mirroring: "Mirroring", pin: "Waiting for PIN", error: "Problem", stopped: "Off" })[phase];
-  const sw = $("rx-switch");
-  sw.checked = isOn(phase);
-  sw.disabled = !!ui.busy;
-  let html;
-  if (ui.page === "settings") {
-    html = `<div class="pop-page"><button class="oai-ghost oai-back" data-action="home">‹ Settings</button>
-      <form class="settings-form" autocomplete="off">${settingsRows("oai-list-row")}
-      <div class="oai-btn-row" style="justify-content:flex-end;padding:6px 10px 2px"><button type="submit" class="oai-btn is-primary is-small ${ui.busy === "apply" ? "is-busy" : ""}" ${ui.busy ? "disabled" : ""}>${isOn(phase) ? "Apply and restart" : "Apply and start"}</button></div>
-      <div class="status-line" data-settings-status style="padding:0 10px;font-size:var(--oai-text-sm)"></div></form></div>`;
-  } else if (ui.page === "cast" && ui.target) {
-    const d = ui.target;
-    html = `<div class="pop-page"><button class="oai-ghost oai-back" data-action="home">‹ Back</button>
-      <div class="oai-list-row"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><span style="display:block;font-weight:600">${esc(d.name)}</span><span class="oai-sub" style="display:block">${esc(d.model || deviceKind(d))}</span></span></div>
-      ${castControls(true)}</div>`;
-  } else {
-    ui.page = "home";
-    html = `<div class="pop-page">${compactStatus()}${findingsHtml()}<div class="oai-sep"></div>${compactDevices()}</div>`;
-  }
-  const body = $("pop-body");
-  body.innerHTML = html;
-  const key = ui.page + ":" + (ui.page === "home" ? phase : ui.target && ui.target.identifier);
-  if (key === lastPage.key) body.querySelectorAll(".pop-page").forEach((el) => el.classList.remove("pop-page"));
-  lastPage.key = key;
+/** What the sub-page header shows: an icon, a title and a subtitle. Home has its own header; a device page has send-head. */
+function subHead() {
+  if (ui.page === "settings") return { icon: "i-gear", title: "Settings", sub: "AirPlay Receiver" };
+  return null;
 }
 
-// Shape and size of the mirrored picture, from the engine's "video WxH" report.
-function orientation() {
-  const v = ui.status.video;
-  return v && v[0] > v[1] ? "is-landscape" : "is-portrait";
+function blockedHtml() {
+  const list = currentSettings().blocked;
+  if (!list.length) return "";
+  const rows = list.map((d) => `<div class="oai-list-row"><span class="oai-grow"><span>${esc(d.name || d.id)}</span></span><button type="button" class="oai-btn is-small" data-action="unblock" data-id="${esc(d.id)}">Unblock</button></div>`).join("");
+  return `<div class="oai-list-label">Blocked devices</div>${rows}`;
 }
-function videoSize() {
-  const v = ui.status.video;
-  return v ? `<small class="size">${v[0]} × ${v[1]}</small>` : "";
+
+/** The Speaker choices: the Windows default, the PC's outputs, and a saved one that is unplugged. */
+function speakerOptions(saved) {
+  const options = [["", "Windows default"], ...ui.speakers.map((sp) => [sp.id, sp.name])];
+  if (saved && !ui.speakers.some((sp) => sp.id === saved)) options.push([saved, "A speaker that isn't connected"]);
+  return options.map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`).join("");
+}
+
+/** The Mirror sheet's header: back to where it was opened from, and what mirroring is doing. */
+function mirrorHeadHtml() {
+  const h = OapMirror.head();
+  return `<button class="send-back" data-action="back" aria-label="Back">${use("i-back")}</button><span class="dico is-accent">${use("i-mirror")}</span><div class="tt"><div class="t">${esc(h.title)}</div><div class="s">${h.sub}</div></div>`;
+}
+
+/** TVs the Mirror sheet offers: everything in Send to except speakers, joined by address. */
+const mirrorTargets = () => sendRows().filter((d) => !isSpeaker(d) && d.address)
+  .map((d) => ({ ip: d.address, port: d.port ?? null, name: d.name, type: friendlyType(d), icon: deviceIcon(d) }));
+
+/** Copies saved values into the static settings inputs, except the one being edited. */
+function syncSettingsInputs() {
+  const s = currentSettings();
+  const set = (sel, apply) => {
+    const el = document.querySelector(sel);
+    if (el && el !== document.activeElement) apply(el);
+  };
+  set('[data-set="name"]', (el) => { el.value = s.name; });
+  set('[data-set="pin_mode"]', (el) => { el.checked = s.pin_mode; });
+  set('[data-set="remember_pin"]', (el) => { el.checked = s.remember_pin; });
+  set('[data-set="h265"]', (el) => { el.checked = s.h265; });
+  set('[data-set="video_links"]', (el) => { el.checked = s.video_links; });
+  set('[data-set="switch_to_new"]', (el) => { el.value = s.switch_to_new ? "1" : ""; });
+  set('[data-set="speaker"]', (el) => {
+    const html = speakerOptions(s.speaker);
+    if (el.dataset.options !== html) { el.innerHTML = html; el.dataset.options = html; }
+    el.value = s.speaker || "";
+  });
+  set('[data-pref="startAtLogin"]', (el) => { el.checked = prefs.startAtLogin; });
+  // The PIN's options show only with a PIN; "Forget" only while devices are remembered.
+  $("pin-options").hidden = !s.pin_mode;
+  document.querySelector('[data-action="forget-paired"]').hidden = !s.remember_pin;
+}
+
+function syncBusy() {
+  document.querySelectorAll("[data-action]").forEach((el) => {
+    const busy = ui.busy.has(el.dataset.action);
+    el.classList.toggle("is-busy", busy && el.classList.contains("oai-btn"));
+    el.disabled = busy;
+  });
+  // The switch is only busy while turning receiving on or off.
+  $("rx-switch").disabled = ui.busy.has("start") || ui.busy.has("stop");
+  document.querySelectorAll("[data-set]").forEach((el) => { el.disabled = ui.busy.has("save-settings"); });
+}
+
+function tick() {
+  if (!ui.mirrorSince) return;
+  document.querySelectorAll("[data-elapsed]").forEach((el) => {
+    const text = elapsed(ui.mirrorSince);
+    if (el.textContent !== text) el.textContent = text;
+  });
 }
 
 function render() {
-  const phase = phaseOf(ui.status);
-  if (phase === "mirroring" && ui.status.mirroring_since_ms) ui.mirrorSince = ui.status.mirroring_since_ms;
-  if (phase === "mirroring" && !ui.mirrorSince) ui.mirrorSince = Date.now();
-  if (phase !== "mirroring") ui.mirrorSince = null;
-  if (ui.mode === "full") renderFull(); else renderCompact();
+  const s = ui.status, phase = phaseOf(s);
+  if (phase === "mirroring" || (phase === "video" && s.video)) ui.mirrorSince = s.mirroring_since_ms || ui.mirrorSince || Date.now();
+  else ui.mirrorSince = null;
+
+  const sub = LIVE_HEADER[phase] ? `${LIVE_HEADER[phase]} ${deviceOf(s) || "an iPhone"}` : HEADER[phase];
+  loadArt(s);
+  if ($("pop-sub").textContent !== sub) $("pop-sub").textContent = sub;
+  const sw = $("rx-switch");
+  if (sw.checked !== isOn(phase)) sw.checked = isOn(phase);
+  const tip = isOn(phase) ? "Turn off receiving" : "Turn on receiving";
+  if ($("rx-switch-hit").title !== tip) $("rx-switch-hit").title = tip;
+  const switchError = ui.errors.start || ui.errors.stop || "";
+  const swErr = $("r-switch-error");
+  swErr.hidden = !switchError;
+  if (swErr.textContent !== switchError) swErr.textContent = switchError;
+
+  if (ui.page === "cast" && !ui.target) ui.page = "home";
+  for (const page of ["home", "settings", "cast", "mirror", "add-device"]) $("page-" + page).hidden = ui.page !== page;
+  // Sub-pages swap the home header (and its switch) for back, an icon and a title, and drop the footer.
+  // Send pages (a device page, the Mirror sheet) have their own header, send-head. The Add a device form carries its own header.
+  const sendPage = ui.page === "cast" || ui.page === "mirror", head = subHead();
+  $("panel-head").hidden = sendPage || !!head || ui.page === "add-device";
+  $("panel-subhead").hidden = !head;
+  $("send-head").hidden = !sendPage;
+  $("panel-foot").hidden = sendPage || !!head || ui.page === "add-device";
+  if (head) {
+    patch("sub-ico", use(head.icon));
+    if ($("sub-title").textContent !== head.title) $("sub-title").textContent = head.title;
+    if ($("sub-sub").textContent !== head.sub) $("sub-sub").textContent = head.sub;
+  }
+
+  if (ui.page === "home") {
+    patch("r-notice", noticeHtml());
+    patch("r-status", statusHtml());
+    patch("r-findings", findingsHtml());
+    patch("r-devices", devicesHtml());
+  } else if (ui.page === "settings") {
+    const note = ui.settingsNote || (s.settings_pending && inSession(phase) ? { ok: true, text: "Applies when this session ends." } : null);
+    patch("r-settings-status", note ? `<span class="${note.ok ? "" : "is-bad"}">${esc(note.text)}</span>` : "");
+    patch("r-blocked", blockedHtml());
+    syncSettingsInputs();
+  } else if (ui.page === "cast") {
+    patch("send-head", sendHeadHtml());
+    patch("device-extra", deviceExtraHtml());
+  } else if (ui.page === "mirror") {
+    patch("send-head", mirrorHeadHtml());
+    OapMirror.render();
+  }
+  syncBusy();
+  tick();
+  OapMirror.tick();
+  reportHeight();
+}
+
+/** Fetches the cover art when the status names a new picture; the card shows it once it's here. */
+async function loadArt(s) {
+  const id = (s.audio && s.audio.art) || null;
+  if (id === ui.art.id) return;
+  ui.art = { id, url: null };
+  if (!id) return;
+  let url = null;
+  try { url = await invoke("receiver_art"); } catch { /* no picture */ }
+  if (ui.art.id !== id) return;   // a newer picture arrived meanwhile
+  ui.art = { id, url };
+  render();
 }
 
 // Keep the mirroring clock ticking without re-rendering.
-setInterval(() => {
-  if (!ui.mirrorSince) return;
-  document.querySelectorAll("[data-elapsed]").forEach((el) => {
-    el.textContent = (ui.mode === "full" ? "Mirroring · " : "") + elapsed(ui.mirrorSince);
-  });
-}, 1000);
+setInterval(tick, 1000);
 
-// ---------- receiver commands ----------
-async function runCommand(name, fn) {
-  ui.busy = name;
+// ---------- the panel's size follows its content ----------
+let reportedHeight = 0;
+function reportHeight() {
+  const body = $("pop-body"), cs = getComputedStyle(body);
+  const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  const height = (id) => $(id).getBoundingClientRect().height;   // fractional: the footer has a half-pixel border
+  const h = Math.ceil(height("panel-head") + height("panel-subhead") + height("send-head") + height("pop-content") + pad + height("panel-foot"));
+  if (Math.abs(h - reportedHeight) < 1) return;
+  reportedHeight = h;
+  invoke("panel_fit", { height: h }).catch(() => {});
+}
+new ResizeObserver(reportHeight).observe($("pop-content"));
+
+function goTo(page) {
+  ui.page = page;
+  render();
+}
+
+// ---------- actions ----------
+/** Runs one action: only its own control shows busy, and a failure is shown next to it. */
+async function run(action, fn) {
+  if (ui.busy.has(action)) return;
+  ui.busy.add(action);
+  delete ui.errors[action];
   render();
   try {
-    const status = await fn();
-    if (status) ui.status = status;
-    return true;
+    return await fn();
   } catch (err) {
-    ui.status = { ...ui.status, running: false, phase: "error", last_error: String(err) };
-    return false;
+    ui.errors[action] = String(err);
   } finally {
-    ui.busy = null;
+    ui.busy.delete(action);
     render();
   }
 }
-const startReceiver = (settings) => runCommand("start", () => invoke("receiver_start", { settings }));
-const stopReceiver = () => runCommand("stop", () => invoke("receiver_stop"));
 
-// ---------- sender ----------
-let nextId = 1;
-const pending = new Map();
+const startReceiver = (settings) => run("start", async () => { acceptStatus(await invoke("receiver_start", { settings })); });
+const stopReceiver = () => run("stop", async () => { acceptStatus(await invoke("receiver_stop")); });
 
-function request(cmd) {
-  const id = nextId++;
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    invoke("sender_send", { command: { id, ...cmd } }).catch((err) => {
-      pending.delete(id);
-      reject(err);
-    });
-  });
-}
+// ---------- devices (casting itself lives in cast.js) ----------
+const RESCAN_AFTER_MS = 60000;
 
 async function scan() {
+  if (ui.scanning) return;
   ui.scanning = true;
   ui.scanError = null;
   render();
   try {
-    const { devices } = await request({ cmd: "scan", timeout: 5 });
-    ui.devices = devices.filter((d) => d.services.includes("AirPlay") || d.services.includes("RAOP"));
+    ui.devices = await OapCast.scan();
     ui.scanned = true;
+    // Keep the open device page pointing at the fresh entry for the same device.
+    if (ui.target) ui.target = sendRows().find((d) => d.identifier === ui.target.identifier) || ui.target;
   } catch (err) {
     ui.scanError = String(err);
   } finally {
     ui.scanning = false;
+    ui.lastScan = Date.now();
     render();
   }
 }
 
-let lastCast = null;
-async function cast(cmd) {
-  if (!ui.target) return;
-  lastCast = cmd;
-  ui.cast = { state: "working", message: `Connecting to ${ui.target.name}…` };
-  render();
-  try {
-    await request({ ...cmd, identifier: ui.target.identifier });
-    ui.cast = { state: "ok", message: (cmd.cmd === "play_url" ? "Playing on " : "Streaming to ") + ui.target.name };
-  } catch (err) {
-    ui.cast = { state: "error", message: `Couldn't cast: ${err}` };
-  }
-  render();
+/** Devices appear by themselves: on start, when the panel opens (if the list is old), after a network change. */
+function scanIfStale() {
+  if (Date.now() - ui.lastScan > RESCAN_AFTER_MS) scan();
 }
 
-function selectDevice(i) {
-  ui.target = ui.devices[i];
-  ui.cast = { state: "idle", message: "" };
-  if (ui.mode === "full") ui.view = "send"; else ui.page = "cast";
+function selectDevice(identifier) {
+  const d = sendRows().find((x) => x.identifier === identifier);
+  if (!d) return;
+  ui.target = d;
+  showDevicePage();
+  goTo("cast");
+}
+
+// ---------- add device by address (add-device.js) ----------
+$("page-add-device").innerHTML = AddDevice.pageHtml();
+AddDevice.mount($("page-add-device"), {
+  invoke,
+  scanHosts: (host) => OapCast.scan([host]),
+  open: () => goTo("add-device"),
+  done: () => goTo("home"),
+  refresh: refreshAddedDevices,
+});
+
+/** Fills the device page. The Mirror screen tile comes from the mirror code (window.OapMirror) for a
+ *  device that can take a mirror; until that code is present the page is Cast media alone. */
+function showDevicePage() {
+  const d = ui.target;
+  const mirrorTile = !isSpeaker(d) && window.OapMirror && OapMirror.tile ? OapMirror.tile(d) : null;
+  // A device that can't take a cast clears the cast part, so nothing (a drop) still goes to the last one.
+  if (canCast(d)) OapCast.show(d, { speaker: isSpeaker(d), mirrorTile });
+  else OapCast.show(null);
+  $("cast-media").hidden = !canCast(d);
+}
+
+/** Below the cast part: the Mirror tile alone for a device that can mirror but not cast (added by
+ *  address, and no cast scan answered), then Remove for a device added by address. */
+function deviceExtraHtml() {
+  const d = ui.target;
+  const mirrorOnly = !canCast(d) && !isSpeaker(d) && window.OapMirror && OapMirror.tile;
+  return (mirrorOnly ? `<div class="send-body"><div class="send-tiles">${OapMirror.tile(d)}</div></div>` : "") + AddDevice.removeHtml(d);
+}
+
+/** Opens the Mirror sheet from the open device page. */
+function openMirror() {
+  ui.mirrorFrom = ui.page;
+  OapMirror.open(ui.target);
+  goTo("mirror");
+}
+
+/** Back goes up one level: the Mirror sheet returns to the page it was opened from. */
+function back() {
+  goTo(ui.page === "mirror" && ui.mirrorFrom === "cast" && ui.target ? "cast" : "home");
+}
+
+/** A mirror status change: refresh the open device's tile (it carries the live state), then render.
+ *  Also while the sheet is open, so going back shows the tile as it is now. */
+function mirrorChanged() {
+  if (ui.target) showDevicePage();
   render();
 }
 
 // ---------- events ----------
-document.addEventListener("click", async (e) => {
+document.addEventListener("click", (e) => {
   const dev = e.target.closest("[data-device]");
-  if (dev) return selectDevice(Number(dev.dataset.device));
-  const item = e.target.closest("#full .oai-sidebar-item[data-view]");
-  if (item) { ui.view = item.dataset.view; return render(); }
-  if (e.target.closest("#scan")) return scan();
+  if (dev) return selectDevice(dev.dataset.device);
   const action = e.target.closest("[data-action]");
-  if (action && action.dataset.action.startsWith("fix:")) {
-    const kind = action.dataset.action.slice(4);
-    ui.busy = action.dataset.action; render();
-    try { await invoke("doctor_fix", { kind }); } catch (err) { ui.findingError = String(err); }
-    ui.busy = null; render();
-    return;
-  }
   if (!action || action.disabled) return;
-  switch (action.dataset.action) {
-    case "start": return startReceiver(currentSettings());
-    case "stop": return stopReceiver();
-    case "show-video": return invoke("show_video_window").catch(() => {});
+  const name = action.dataset.action;
+  if (name.startsWith("fix:")) return run(name, () => invoke("doctor_fix", { kind: name.slice(4) }));
+  if (name.startsWith("control:")) return run(name, () => invoke("receiver_control", { command: name.slice(8) }));
+  switch (name) {
+    case "disconnect": return run("disconnect", () => invoke("receiver_disconnect"));
+    case "dismiss-notice": return run("dismiss-notice", async () => { acceptStatus(await invoke("receiver_dismiss_notice")); });
+    case "show-video": return run("show-video", () => invoke("show_video_window"));
     case "scan": return scan();
-    case "home": ui.page = "home"; return render();
-    case "doctor-check": return invoke("doctor_check").catch(() => {});
-    case "settings": if (ui.mode === "full") ui.view = "settings"; else ui.page = "settings"; return render();
-    case "play-url": return ui.castUrl.trim() && cast({ cmd: "play_url", url: ui.castUrl.trim() });
-    case "stream-file": return ui.castFile.trim() && cast({ cmd: "stream_file", path: ui.castFile.trim() });
-    case "retry-cast": return lastCast && cast(lastCast);
+    case "home": return goTo("home");
+    case "settings": return ui.page === "settings" ? goTo("home") : openSettings();
+    case "block": return run("block", async () => { acceptStatus(await invoke("receiver_block_device")); });
+    case "unblock": return saveSettings({ blocked: currentSettings().blocked.filter((d) => d.id !== action.dataset.id) });
+    case "forget-paired": return forgetPaired();
+    case "back": return back();
+    case "mirror": return openMirror();
+    case "doctor-check": return run("doctor-check", () => invoke("doctor_check"));
   }
 });
 
@@ -557,75 +533,99 @@ $("rx-switch").addEventListener("change", (e) => {
   if (e.target.checked) startReceiver(currentSettings()); else stopReceiver();
 });
 
-document.addEventListener("input", (e) => {
-  if (e.target.dataset.cast === "url") ui.castUrl = e.target.value;
-  if (e.target.dataset.cast === "file") ui.castFile = e.target.value;
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (ui.page !== "home") back();
+  else invoke("panel_hide").catch(() => {});
 });
 
 document.addEventListener("change", async (e) => {
+  if (e.target.dataset.set) return saveSettings();
   const key = e.target.dataset.pref;
   if (!key) return;
   const before = prefs[key];
   prefs[key] = e.target.checked;
   try {
     await savePrefs();
+    ui.settingsNote = null;
   } catch (err) {
     prefs[key] = before;
     e.target.checked = before;
-    const line = document.querySelector("[data-settings-status]");
-    if (line) line.textContent = String(err);
-  }
-});
-
-document.addEventListener("submit", async (e) => {
-  const form = e.target.closest(".settings-form");
-  if (!form) return;
-  e.preventDefault();
-  const val = (k) => form.querySelector(`[data-set="${k}"]`);
-  const settings = { name: val("name").value.trim(), pin_mode: val("pin_mode").checked, h265: val("h265").checked };
-  if (!settings.name) return;
-  ui.status = { ...ui.status, settings };
-  const ok = await runCommand("apply", () => invoke("receiver_start", { settings }));
-  const line = document.querySelector("[data-settings-status]");
-  if (line) {
-    line.className = "status-line " + (ok ? "is-ok" : "is-bad");
-    line.textContent = ok ? "Saved. The receiver restarted." : `Couldn't restart: ${ui.status.last_error}`;
-  }
-});
-
-listen("receiver-status", (e) => {
-  ui.status = e.payload;
-  const phase = phaseOf(ui.status);
-  if (phase === "mirroring" && ui.lastPhase !== "mirroring" && prefs.openFullOnMirror && ui.mode === "compact") {
-    ui.lastPhase = phase;
-    expand(false);
-    return;
-  }
-  ui.lastPhase = phase;
-  // Don't clobber a settings form the user is typing in.
-  if (document.activeElement && document.activeElement.closest(".settings-form")) {
-    if (ui.mode === "full") renderSidebar();
-    return;
+    ui.settingsNote = { ok: false, text: String(err) };
   }
   render();
 });
 
-listen("sender-event", (e) => {
-  const msg = e.payload;
-  const p = pending.get(msg.id);
-  if (!p) return;
-  pending.delete(msg.id);
-  msg.event === "error" ? p.reject(msg.message) : p.resolve(msg);
+/** The form's values for the settings it holds. */
+function formSettings() {
+  const val = (k) => document.querySelector(`.settings-form [data-set="${k}"]`);
+  return {
+    name: val("name").value.trim(),
+    pin_mode: val("pin_mode").checked,
+    remember_pin: val("remember_pin").checked,
+    h265: val("h265").checked,
+    video_links: val("video_links").checked,
+    switch_to_new: val("switch_to_new").value === "1",
+    speaker: val("speaker").value || null,
+  };
+}
+
+/** Settings save as you go: the name when you press Enter or leave the field, the rest at once.
+ *  `change` sets what the form doesn't hold (the blocked list). */
+async function saveSettings(change = {}) {
+  const saved = currentSettings();
+  const settings = { ...saved, ...formSettings(), ...change };
+  if (JSON.stringify(settings) === JSON.stringify(saved)) return;
+  if (!settings.name) {
+    document.querySelector('[data-set="name"]').value = saved.name;
+    ui.settingsNote = { ok: false, text: "Enter a name. iPhones show it in Screen Mirroring." };
+    return render();
+  }
+  ui.settingsNote = null;
+  await run("save-settings", async () => { acceptStatus(await invoke("receiver_save_settings", { settings })); });
+  if (ui.errors["save-settings"]) {
+    ui.settingsNote = { ok: false, text: ui.errors["save-settings"] };
+    delete ui.errors["save-settings"];
+  }
+  render();
+}
+
+async function forgetPaired() {
+  ui.settingsNote = null;
+  await run("forget-paired", async () => { acceptStatus(await invoke("receiver_forget_paired")); });
+  const err = ui.errors["forget-paired"];
+  delete ui.errors["forget-paired"];
+  ui.settingsNote = err ? { ok: false, text: err } : { ok: true, text: "Forgotten. Those devices will be asked for the code again." };
+  render();
+}
+
+/** Opens Settings with a fresh list of the PC's speakers (one may have been plugged in since). */
+async function openSettings() {
+  goTo("settings");
+  try { ui.speakers = await invoke("list_speakers"); } catch { ui.speakers = []; }
+  if (ui.page === "settings") render();
+}
+
+// Enter in the name field saves it (there is no Apply button).
+document.addEventListener("submit", (e) => {
+  if (!e.target.closest(".settings-form")) return;
+  e.preventDefault();
+  const name = e.target.querySelector('[data-set="name"]');
+  if (document.activeElement === name) name.blur(); else saveSettings();
 });
 
-// The sender sidecar died: fail everything in flight; the next request starts a fresh one.
+listen("receiver-status", (e) => {
+  if (acceptStatus(e.payload)) render();
+});
+
 listen("doctor-findings", (e) => { ui.findings = e.payload || []; render(); });
 
-listen("sender-exit", (e) => {
-  const message = (e.payload && e.payload.message) || "The sender stopped unexpectedly.";
-  for (const p of pending.values()) p.reject(message);
-  pending.clear();
-});
+listen("panel-shown", scanIfStale);
+listen("network-changed", () => { ui.lastScan = 0; scan(); });
+
+OapCast.mount($("cast-media"), render, { shown: () => ui.page === "cast" });
+OapMirror.mount($("mirror-sheet"), { changed: mirrorChanged, devices: mirrorTargets, back });
+MirrorAdvanced.mount($("mirror-sheet").querySelector('[data-slot="mirror-advanced"]'));
 
 (async () => {
   await loadPrefs();
@@ -633,10 +633,10 @@ listen("sender-exit", (e) => {
   try {
     const status = await invoke("receiver_status");
     if (!status.settings) status.settings = await invoke("default_settings");
-    ui.status = status;
+    acceptStatus(status);
   } catch (err) {
-    ui.status = { running: false, last_error: String(err) };
+    ui.errors.start = String(err);
   }
-  ui.lastPhase = phaseOf(ui.status);
   render();
+  scan();
 })();

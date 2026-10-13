@@ -1,0 +1,23 @@
+/* Advanced in the Mirror sheet. Rules copied from the approved device page (APPROVED.html);
+   only --oai-* tokens, so light and dark follow the theme. */
+.disclose { display: flex; align-items: center; gap: 6px; width: 100%; height: 32px; padding: 0 4px; border: 0; background: transparent; color: var(--oai-ink-2); font: inherit; font-size: var(--oai-text-md); cursor: default; }
+.disclose svg { width: 12px; height: 12px; transition: transform var(--oai-dur) var(--oai-ease); }
+.disclose.open svg { transform: rotate(90deg); }
+.disclose .sp { flex: 1; }
+.disclose em { font-style: normal; font-size: var(--oai-text-sm); color: var(--oai-ink-3); }
+
+.group { background: var(--oai-panel); border-radius: var(--oai-radius-lg); box-shadow: 0 0 0 0.5px var(--oai-hairline); overflow: hidden; }
+.grow-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 40px; padding: 6px 10px 6px 12px; border-top: 0.5px solid var(--oai-hairline); font-size: var(--oai-text-md); }
+.grow-row:first-child { border-top: 0; }
+.grow-row small { display: block; font-size: var(--oai-text-xs); color: var(--oai-ink-2); line-height: 1.3; }
+
+/* The design's .sel pill around a native select, which stays keyboard and screen-reader friendly. */
+.sel { position: relative; display: inline-flex; align-items: center; height: 28px; border-radius: var(--oai-radius-sm); background: var(--oai-fill); }
+.sel select { appearance: none; -webkit-appearance: none; height: 100%; padding: 0 22px 0 10px; border: 0; border-radius: inherit; background: transparent; color: var(--oai-ink); font: inherit; font-size: var(--oai-text-sm); white-space: nowrap; }
+.sel svg { position: absolute; right: 8px; width: 10px; height: 10px; color: var(--oai-ink-2); pointer-events: none; }
+.sel.dim select { color: var(--oai-ink-3); opacity: 1; }
+.sel option { color: initial; }
+
+.oai-switch.sm { width: 34px; height: 20px; }
+.oai-switch.sm::after { width: 16px; height: 16px; }
+.oai-switch.sm:checked::after { transform: translateX(14px); }

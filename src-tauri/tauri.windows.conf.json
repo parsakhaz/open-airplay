@@ -6,6 +6,7 @@
     ],
     "resources": {
       "../engine/runtime/": "engine/",
+      "../sender/dist/oap-sender/": "sender/",
       "icons/icon.ico": "icons/icon.ico",
       "../LICENSE": "LICENSE",
       "../NOTICE": "NOTICE"

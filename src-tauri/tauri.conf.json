@@ -14,7 +14,7 @@
         "label": "main",
         "title": "open-airplay",
         "width": 340,
-        "height": 540,
+        "height": 420,
         "decorations": false,
         "transparent": false,
         "shadow": true,
@@ -22,11 +22,12 @@
         "alwaysOnTop": true,
         "resizable": false,
         "visible": false,
-        "center": false
+        "center": false,
+        "focus": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     }
   },
   "bundle": {

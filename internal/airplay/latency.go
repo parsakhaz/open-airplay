@@ -136,17 +136,34 @@ var targetLatencyNS atomic.Int64
 // flag for both; applying the same explicit value preserves that contract. A
 // non-positive value restores the automatic policy.
 func SetTargetLatency(d time.Duration) {
+	targetLatencyNS.Store(int64(clampTargetLatency(d)))
+}
+
+// clampTargetLatency keeps an explicit joint lead within 5 ms to 2 s. A
+// non-positive value stays zero, which means automatic.
+func clampTargetLatency(d time.Duration) time.Duration {
 	if d <= 0 {
-		targetLatencyNS.Store(0)
-		return
+		return 0
 	}
 	if d < 5*time.Millisecond {
-		d = 5 * time.Millisecond
+		return 5 * time.Millisecond
 	}
 	if d > 2*time.Second {
-		d = 2 * time.Second
+		return 2 * time.Second
 	}
-	targetLatencyNS.Store(int64(d))
+	return d
+}
+
+// sessionScreenLatencies is the playout policy for one mirror session. A
+// positive override (StreamConfig.TargetLatency) is that session's explicit
+// joint lead and wins over the process-wide SetTargetLatency; explicit reports
+// whether either one replaced the automatic policy.
+func sessionScreenLatencies(hint connectionLatencyHint, override time.Duration) (targets screenLatencyTargets, explicit bool) {
+	targets = screenLatenciesForHint(hint)
+	if override = clampTargetLatency(override); override > 0 {
+		return screenLatencyTargets{video: override, audio: override}, true
+	}
+	return targets, targetLatencyIsExplicit()
 }
 
 // TargetLatency returns the video lead for an ordinary connection. It remains
