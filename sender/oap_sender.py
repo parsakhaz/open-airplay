@@ -330,12 +330,19 @@ class Sidecar:
         protocol = Protocol.__members__.get(cmd.get("protocol") or "AirPlay")
         if protocol not in (Protocol.AirPlay, Protocol.RAOP):
             raise Refused("bad_request", f"can't pair {cmd.get('protocol')}")
-        await self.pair_cancel(identifier)  # a fresh start replaces one left open
-        attempt = self.pair_attempts[identifier]
+        # This attempt's number is taken before anything is awaited, so a Cancel that arrives while
+        # the pairing left open is closing (or at any later wait) is seen.
+        attempt = self.pair_attempts.get(identifier, 0) + 1
+        self.pair_attempts[identifier] = attempt
 
         def cancelled():
             return self.pair_attempts.get(identifier) != attempt
 
+        left_open = self.pairings.pop(identifier, None)  # a fresh start replaces one left open
+        if left_open and left_open.handler:
+            await self.close_pairing(left_open.handler)
+        if cancelled():
+            raise Refused("cancelled", "Pairing was cancelled.")
         conf = await asyncio.wait_for(self.find(identifier, cmd.get("address")), CONNECT_SECONDS)
         if cancelled():
             raise Refused("cancelled", "Pairing was cancelled.")

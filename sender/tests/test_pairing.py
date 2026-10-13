@@ -144,6 +144,34 @@ class Pairing(unittest.TestCase):
             self.assertEqual(h.sidecar.pairings, {}, "no pairing is left open")
         run(go())
 
+    def test_cancel_while_an_earlier_pairing_is_closing_leaves_nothing_open(self):
+        async def go():
+            h = Harness([device()])
+            await h.ask({"id": 1, "cmd": "pair_begin", "identifier": "tv", "name": "Den TV"})
+            first = h.handlers[0]
+            release = asyncio.Event()
+            closing = asyncio.Event()
+
+            async def slow_close():
+                closing.set()
+                await release.wait()  # the earlier pairing takes its time to close
+                first.closed = True
+
+            first.close = slow_close
+            # Casting again starts a new pairing, which first closes the one left open...
+            again = asyncio.create_task(h.ask({"id": 2, "cmd": "pair_begin", "identifier": "tv", "name": "Den TV"}))
+            await closing.wait()
+            # ...and the user cancels while that close is still going.
+            cancelled = await h.ask({"id": 3, "cmd": "pair_cancel", "identifier": "tv"})
+            self.assertEqual(cancelled["event"], "ok")
+            release.set()
+            late = await again
+            self.assertEqual((late["event"], late.get("code")), ("error", "cancelled"))
+            self.assertTrue(first.closed)
+            self.assertTrue(all(handler.closed for handler in h.handlers), "every pairing opened is closed")
+            self.assertEqual(h.sidecar.pairings, {}, "no pairing is left open")
+        run(go())
+
     def test_cancel_closes_the_pairing(self):
         async def go():
             h = Harness([device()])
