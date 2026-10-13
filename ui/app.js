@@ -177,7 +177,7 @@ function statusHtml() {
       // The clock's text is filled in by tick(), outside the compared markup.
       return `<div class="oai-live"><div class="oai-media">${phone}<div><b>${device}</b><small class="is-live"><span class="oai-pulse"></span><span data-elapsed></span></small></div></div><div class="oai-btns">${btn("show-video", "Show video")}${btn("disconnect", "Disconnect", "is-danger")}</div>${errorLine("show-video")}${errorLine("disconnect")}</div>${block}`;
     case "audio":
-      return audioHtml(s);
+      return audioHtml(s) + block;
     case "video": {
       // A YouTube video the phone sent: the same card as mirroring, once the first frame is in.
       const playing = !!s.video;
