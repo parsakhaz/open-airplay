@@ -75,6 +75,8 @@ pub enum EngineEvent {
     Dacp { dacp_id: String, active_remote: String },
     /// A video link (YouTube) started playing (engine patch 0006).
     VideoLink,
+    /// The video link ended: the phone stopped it, it finished, or it was torn down (engine patch 0006).
+    VideoLinkStopped,
     /// A video link from an app other than YouTube, which the engine can't play.
     UnsupportedVideoLink,
     /// A second device was turned away because one is already connected.
@@ -164,6 +166,9 @@ pub fn parse_line(line: &str) -> Option<EngineEvent> {
     }
     if line == "open-airplay: video link" {
         return Some(EngineEvent::VideoLink);
+    }
+    if line == "open-airplay: video link stopped" {
+        return Some(EngineEvent::VideoLinkStopped);
     }
     if let Some(size) = line.strip_prefix("open-airplay: video ") {
         let (w, h) = size.split_once('x')?;
@@ -450,6 +455,7 @@ mod tests {
     #[test]
     fn parses_a_video_link_from_patched_engine() {
         assert_eq!(parse_line("open-airplay: video link"), Some(EngineEvent::VideoLink));
+        assert_eq!(parse_line("open-airplay: video link stopped"), Some(EngineEvent::VideoLinkStopped));
     }
 
     #[test]

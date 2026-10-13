@@ -245,6 +245,12 @@ pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
                 status.pin = None;
                 status.mirroring_since_ms = None;
             }
+            // Whether or not a frame arrived: a link stopped before playing must not hide the next mirror.
+            EngineEvent::VideoLinkStopped => {
+                status.video_link = false;
+                status.video = None;
+                status.mirroring_since_ms = None;
+            }
             EngineEvent::UnsupportedVideoLink => {
                 status.notice = Some("That video can't play here. Videos from the YouTube app work; for other apps, use Screen Mirroring.".into());
             }
@@ -553,6 +559,32 @@ mod tests {
         apply_event(&mut s, &engine(EngineEvent::Video { width: 1920, height: 1080 }));
         apply_event(&mut s, &engine(EngineEvent::VideoStopped));
         assert_eq!(s.phase, Phase::Connecting);
+        apply_event(&mut s, &engine(EngineEvent::Video { width: 886, height: 1920 }));
+        assert_eq!(s.phase, Phase::Mirroring);
+    }
+
+    #[test]
+    fn a_video_link_stopped_before_its_first_frame_does_not_hide_the_next_mirror() {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &request("Sam's iPhone", "1A:2B"));
+        apply_event(&mut s, &engine(EngineEvent::VideoLink));
+        apply_event(&mut s, &engine(EngineEvent::VideoStopped));
+        apply_event(&mut s, &engine(EngineEvent::VideoLinkStopped));
+        assert_eq!((s.phase, s.video_link), (Phase::Connecting, false), "the phone is still connected");
+        apply_event(&mut s, &engine(EngineEvent::Video { width: 886, height: 1920 }));
+        assert_eq!(s.phase, Phase::Mirroring);
+    }
+
+    #[test]
+    fn a_playing_video_link_the_phone_stops_ends_the_video_state() {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &request("Sam's iPhone", "1A:2B"));
+        apply_event(&mut s, &engine(EngineEvent::VideoLink));
+        apply_event(&mut s, &engine(EngineEvent::Video { width: 1920, height: 1080 }));
+        apply_event(&mut s, &engine(EngineEvent::VideoLinkStopped));
+        assert_eq!((s.phase, s.video_link, s.video), (Phase::Connecting, false, None));
         apply_event(&mut s, &engine(EngineEvent::Video { width: 886, height: 1920 }));
         assert_eq!(s.phase, Phase::Mirroring);
     }

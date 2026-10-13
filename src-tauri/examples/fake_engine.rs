@@ -16,6 +16,8 @@
 //! - `connect [name] [model]`    `Open connections: 1` + connection request (+ pin line if `-pin`)
 //! - `video [WxH]`               `open-airplay: video WxH` (default 886x1920)
 //! - `video-stop`                `open-airplay: video stopped`
+//! - `link`                      `open-airplay: video link` (a YouTube video link starts)
+//! - `link-stop`                 `open-airplay: video link stopped`
 //! - `pin <code>`                `open-airplay: pin = <code>`
 //! - `end`                       video stopped (if video) + `Open connections: 0`
 //! - `lost`                      client-lost error + `Open connections: 0`
@@ -128,6 +130,8 @@ fn handle(ctx: &Ctx, raw: &str) {
             lock(ctx).video = false;
             emit("open-airplay: video stopped");
         }
+        "link" => emit("open-airplay: video link"),
+        "link-stop" => emit("open-airplay: video link stopped"),
         "pin" => {
             let code = if rest.is_empty() { DEFAULT_PIN } else { rest };
             emit(&format!("open-airplay: pin = {code}"));
