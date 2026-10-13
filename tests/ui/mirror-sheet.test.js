@@ -49,11 +49,21 @@ test("Add a device lists the TVs not already in the mirror, ticked as the user p
   assert.deepEqual(m.add.button, { label: "Add Study Mac", action: "add", disabled: false });
 });
 
+test("a code that couldn't be sent says why on the code sheet", () => {
+  const snapshot = { targets: [t(atv, "code", { credential: "pin" })] };
+  let m = mirrorSheet({ snapshot, devices, ticked: [], error: "Mirroring stopped. Try again." });
+  assert.equal(m.mode, "code");
+  assert.equal(m.code.error, "Mirroring stopped. Try again.");
+  // A password works the same way, and without an error the TV's own message shows.
+  m = mirrorSheet({ snapshot: { targets: [t(atv, "code", { credential: "password", message: "That password didn't work. Try again." })] }, devices, ticked: [] });
+  assert.deepEqual([m.code.message, m.code.error], ["That password didn't work. Try again.", null]);
+});
+
 test("a TV asking for a code takes over the sheet; the code goes to that TV", () => {
   const snapshot = { targets: [t(atv, "mirroring", { since_ms: 1 }), t(bed, "code", { credential: "password" })] };
   const m = mirrorSheet({ snapshot, devices, ticked: [] });
   assert.equal(m.mode, "code");
-  assert.deepEqual(m.code, { target: bed.ip, name: "Bedroom", credential: "password", message: null });
+  assert.deepEqual(m.code, { target: bed.ip, name: "Bedroom", credential: "password", message: null, error: null });
   assert.deepEqual(m.button, { label: "Cancel", action: "remove", target: bed.ip, disabled: false });
   assert.equal(m.rows.find((r) => r.target === bed.ip).sub, "Password needed");
 });

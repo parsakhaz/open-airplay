@@ -18,7 +18,8 @@
     }
   }
 
-  function mirrorSheet({ snapshot, devices, ticked, adding }) {
+  // `error`: the last command that failed (a code that couldn't be sent), in plain words.
+  function mirrorSheet({ snapshot, devices, ticked, adding, error }) {
     const targets = (snapshot && snapshot.targets) || [];
     const list = devices || [];
     const tickedSet = new Set(ticked || []);
@@ -62,7 +63,8 @@
         banner,
         rows,
         live,
-        code: { target: asking.target, name: nameOf(asking), credential: asking.credential || "pin", message: asking.message || null },
+        // A code that couldn't even be sent says so here, where the user is looking, not in a hidden banner.
+        code: { target: asking.target, name: nameOf(asking), credential: asking.credential || "pin", message: asking.message || null, error: error || null },
         button: { label: "Cancel", action: "remove", target: asking.target, disabled: false },
       };
     }

@@ -77,7 +77,7 @@ window.OapMirror = (() => {
 
   function model() {
     const devices = offered().map((d) => ({ name: d.name, ip: d.ip }));
-    return MirrorSheet.mirrorSheet({ snapshot: state.snapshot, devices, ticked: state.ticked, adding: state.adding });
+    return MirrorSheet.mirrorSheet({ snapshot: state.snapshot, devices, ticked: state.ticked, adding: state.adding, error: state.error });
   }
 
   /** The sheet's header: { icon, title, sub } (sub is markup). */
@@ -264,8 +264,9 @@ window.OapMirror = (() => {
     set("[data-m-code-title]", password ? `${c.name} needs its password` : `Enter the code shown on ${c.name}`);
     set("[data-m-code-help]", password ? "The one set under AirPlay → Require Password on the TV." : "You only need it the first time. It continues by itself after the last digit.");
     const msg = root.querySelector("[data-m-code-msg]");
-    set("[data-m-code-msg]", c.message || "");
-    msg.hidden = !c.message;
+    // The TV's own message, or a code that couldn't be sent; only the TV's message starts a new prompt.
+    set("[data-m-code-msg]", c.error || c.message || "");
+    msg.hidden = !(c.error || c.message);
     root.querySelector("[data-m-digits]").hidden = password;
     root.querySelector("[data-m-pin-cancel]").hidden = password;
     root.querySelector("[data-m-password]").hidden = !password;
@@ -281,15 +282,18 @@ window.OapMirror = (() => {
   }
 
   // ---------- actions ----------
+  /** Runs a command; resolves to false when it failed (the error is in state.error). */
   async function act(name, fn) {
-    if (state.busy.has(name)) return;
+    if (state.busy.has(name)) return false;
     state.busy.add(name);
     state.error = null;
     host.changed();
     try {
       await fn();
+      return true;
     } catch (err) {
       state.error = String(err);
+      return false;
     } finally {
       state.busy.delete(name);
       host.changed();
@@ -300,7 +304,11 @@ window.OapMirror = (() => {
     const m = model();
     if (m.mode !== "code" || state.busy.has("code")) return;
     root.querySelectorAll(".m-digit").forEach((d) => { d.disabled = true; });
-    act("code", () => actions.sendCode(m.code.target, code));
+    act("code", () => actions.sendCode(m.code.target, code)).then((sent) => {
+      // No new prompt comes after a code that couldn't be sent: open the boxes again to retry.
+      if (!sent) state.codeKey = null;
+      host.changed();
+    });
   }
 
   function onClick(e) {
