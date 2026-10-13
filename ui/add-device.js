@@ -85,6 +85,22 @@ const AddDevice = (() => {
   //   open()               shows the form page (the host's goTo)
   //   done()               after a save, a remove or Cancel: back to Send to (the host's goTo)
   //   refresh()            reloads prefs.added_devices and re-renders the list
+  /** Removes an added device and reloads the list. Resolves to null when both worked, or to the
+   *  plain sentence to show on the device page (which stays open so the user can try again). */
+  async function remove(addedHost, { invoke, refresh }) {
+    try {
+      await invoke("added_device_remove", { host: addedHost });
+    } catch (err) {
+      return `Couldn't remove this device. ${String(err && err.message ? err.message : err)}`;
+    }
+    try {
+      await refresh();
+    } catch (_) {
+      return "Removed, but the list didn't update. Go back to see it.";
+    }
+    return null;
+  }
+
   function mount(root, host) {
     const form = root.querySelector('[data-add-device="form"]');
     const field = (name) => form.elements[name];
@@ -143,21 +159,28 @@ const AddDevice = (() => {
         case "advanced":
           setAdvanced(el.getAttribute("aria-expanded") !== "true");
           return;
-        case "remove":
+        case "remove": {
           el.disabled = true;
-          try {
-            await host.invoke("added_device_remove", { host: el.dataset.host });
-            await host.refresh();
-            host.done();
-          } finally {
-            el.disabled = false;
+          const problem = await remove(el.dataset.host, host);
+          el.disabled = false;
+          // The error sits under the link; it goes when the page is drawn again.
+          let line = el.nextElementSibling;
+          if (!line || !line.classList.contains("ad-remove-error")) {
+            line = document.createElement("div");
+            line.className = "inline-error ad-remove-error";
+            line.setAttribute("role", "alert");
+            el.after(line);
           }
+          line.textContent = problem || "";
+          line.hidden = !problem;
+          if (!problem) host.done();
           return;
+        }
       }
     });
   }
 
-  return { merge, add, addRowHtml, pageHtml, removeHtml, mount, SUBTITLE };
+  return { merge, add, remove, addRowHtml, pageHtml, removeHtml, mount, SUBTITLE };
 })();
 
 // A top-level const isn't a window property; the panel's list looks for window.AddDevice.

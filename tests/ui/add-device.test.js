@@ -101,6 +101,25 @@ test("a scan that answers with other devices too only names the one at that addr
   assert.deepEqual([none.name, none.cast_id], [null, null], "several answers and none at that address: none of them");
 });
 
+test("removing an added device that the shell refuses says so, and stays on the page", async () => {
+  let refreshed = 0;
+  const problem = await AddDevice.remove("192.168.1.20", { invoke: () => Promise.reject("The list couldn't be saved."), refresh: async () => { refreshed++; } });
+  assert.equal(problem, "Couldn't remove this device. The list couldn't be saved.");
+  assert.equal(refreshed, 0);
+});
+
+test("a remove that worked but whose list reload failed says so", async () => {
+  const problem = await AddDevice.remove("192.168.1.20", { invoke: async () => {}, refresh: () => Promise.reject(new Error("prefs")) });
+  assert.equal(problem, "Removed, but the list didn't update. Go back to see it.");
+});
+
+test("a remove that worked resolves to no problem", async () => {
+  const calls = [];
+  const problem = await AddDevice.remove("192.168.1.20", { invoke: async (cmd, args) => calls.push([cmd, args]), refresh: async () => {} });
+  assert.equal(problem, null);
+  assert.deepEqual(calls, [["added_device_remove", { host: "192.168.1.20" }]]);
+});
+
 test("in the panel it is on window, where the list's sendRows() looks for it", () => {
   const vm = require("node:vm");
   const fs = require("node:fs");
