@@ -11,6 +11,13 @@ test("an added device that discovery also found shows once, marked as added", ()
   assert.deepEqual(rows.map((r) => [r.name, r.added]), [["Den", "192.168.1.20"], ["Office", null]]);
 });
 
+test("an added device that discovery also found keeps the port it was added with", () => {
+  const rows = AddDevice.merge([den], [{ host: "192.168.1.20", port: 7100, name: "Den", cast_id: "AA" }]);
+  assert.equal(rows[0].port, 7100);
+  // Without a saved port, the discovered row's own port (if any) stays.
+  assert.equal(AddDevice.merge([{ ...den, port: 7000 }], [{ host: "192.168.1.20", port: null, cast_id: "AA" }])[0].port, 7000);
+});
+
 test("a match on the cast identifier counts even when the address changed", () => {
   const rows = AddDevice.merge([{ ...den, address: "192.168.1.99" }], [{ host: "den.local", port: null, name: null, cast_id: "AA" }]);
   assert.equal(rows.length, 1);

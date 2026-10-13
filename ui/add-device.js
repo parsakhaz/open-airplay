@@ -8,9 +8,13 @@ const AddDevice = (() => {
     const rest = [...added];
     const take = (d) => {
       const i = rest.findIndex((a) => (a.cast_id && a.cast_id === d.identifier) || a.host === d.address);
-      return i < 0 ? null : rest.splice(i, 1)[0].host;
+      return i < 0 ? null : rest.splice(i, 1)[0];
     };
-    const found = discovered.map((d) => ({ ...d, added: take(d) }));
+    // A port given when adding wins over discovery's (the cast scan reports none).
+    const found = discovered.map((d) => {
+      const a = take(d);
+      return { ...d, port: (a && a.port) ?? d.port, added: a ? a.host : null };
+    });
     const unseen = rest.map((a) => ({
       identifier: a.cast_id || `added:${a.host}`,
       name: a.name || a.host,
