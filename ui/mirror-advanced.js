@@ -3,6 +3,38 @@
 // Automatic; a change is saved at once with set_mirror_options and used by the next mirror_start.
 // Sound appears only when the sender says it can capture this PC's sound (hello.capabilities.audio).
 (function () {
+  /** Saves the options one at a time. A change made while a save is on its way is sent once that
+   *  one returns, together with any others (only the newest options go). Replies never replace the
+   *  choices on screen, so an older reply can't undo a newer choice. `done(err)` runs after the
+   *  last save, with its error or null. */
+  function createSaver(send, done) {
+    let running = false;
+    let next = null;
+    return function save(options) {
+      next = { ...options };
+      if (running) return;
+      running = true;
+      (async () => {
+        let error = null;
+        while (next) {
+          const options = next;
+          next = null;
+          try {
+            await send(options);
+            error = null;
+          } catch (err) {
+            error = err;
+          }
+        }
+        running = false;
+        done(error);
+      })();
+    };
+  }
+
+  if (typeof module !== "undefined" && module.exports) module.exports = { createSaver };
+  if (typeof window === "undefined" || !window.__TAURI__) return;
+
   const { invoke } = window.__TAURI__.core;
 
   const DOWN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"/></svg>';
@@ -31,7 +63,7 @@
     return `<div class="grow-row"><label for="adv-${row.field}">${esc(row.label)}${small}</label><span class="sel"><select id="adv-${row.field}" data-field="${row.field}">${options}</select>${DOWN}</span></div>`;
   }
 
-  function html(o, caps, open) {
+  function html(o, caps, open, error) {
     const head = `<button type="button" class="disclose${open ? " open" : ""}" aria-expanded="${open}">${CHEV}<span>Advanced</span><span class="sp"></span>${!open && allAutomatic(o) ? "<em>Automatic</em>" : ""}</button>`;
     if (!open) return head;
     return `${head}<div class="group">
@@ -39,7 +71,7 @@
       <div class="grow-row"><label for="adv-video_codec">Video format<small>The only one on Windows today</small></label><span class="sel dim"><select id="adv-video_codec" disabled><option>H.264</option></select>${DOWN}</span></div>
       <div class="grow-row"><label for="adv-show_cursor">Show the pointer</label><input type="checkbox" class="oai-switch sm" id="adv-show_cursor" data-switch="show_cursor"${o.show_cursor !== false ? " checked" : ""}></div>
       ${caps.audio ? `<div class="grow-row"><label for="adv-audio">Sound</label><input type="checkbox" class="oai-switch sm" id="adv-audio" data-switch="audio"${o.audio !== false ? " checked" : ""}></div>` : ""}
-    </div>`;
+    </div>${error ? `<div class="inline-error" role="alert">${esc(error)}</div>` : ""}`;
   }
 
   let current = null;   // the mounted state, for sendsSound()
@@ -48,13 +80,13 @@
   const sendsSound = () => !!current && current.caps.audio && current.options.audio !== false;
 
   async function mount(container) {
-    const state = { options: {}, caps: { audio: false }, open: false };
+    const state = { options: {}, caps: { audio: false }, open: false, error: null };
     current = state;
     try {
       state.options = (await invoke("get_prefs")).mirror || {};
     } catch (_) {}
     const render = () => {
-      container.innerHTML = html(state.options, state.caps, state.open);
+      container.innerHTML = html(state.options, state.caps, state.open, state.error);
     };
     render();
     // The sender may still be starting; Sound shows once it has said hello.
@@ -65,12 +97,14 @@
       })
       .catch(() => {});
 
-    const save = async () => {
-      try {
-        state.options = (await invoke("set_mirror_options", { options: state.options })).mirror || state.options;
-      } catch (_) {}
-      render();
-    };
+    const saver = createSaver(
+      (options) => invoke("set_mirror_options", { options }),
+      (err) => {
+        state.error = err ? "Couldn't save this choice. Try again." : null;
+        render();
+      },
+    );
+    const save = () => saver(state.options);
     container.addEventListener("click", (e) => {
       if (e.target.closest(".disclose")) {
         state.open = !state.open;
