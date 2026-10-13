@@ -566,8 +566,16 @@ fn apply_settings(app: &AppHandle, settings: ReceiverSettings) -> Result<Receive
     let state = app.state::<AppState>();
     match settings_change(&state.status.snapshot()) {
         SettingsChange::RestartNow => start_receiver_inner(app, settings, None),
-        SettingsChange::AfterSession => Ok(update_status(app, |st| st.settings_pending = true)),
-        SettingsChange::SaveOnly => Ok(update_status(app, |st| st.settings = Some(settings))),
+        change => Ok(update_status(app, |st| record_saved(st, change, settings))),
+    }
+}
+
+/// Shows saved settings that wait (for the session to end, or for receiving to be turned on) as the
+/// current ones. Settings edits start from the status, so the next edit keeps this one.
+fn record_saved(st: &mut ReceiverStatus, change: SettingsChange, settings: ReceiverSettings) {
+    st.settings = Some(settings);
+    if change == SettingsChange::AfterSession {
+        st.settings_pending = true;
     }
 }
 
@@ -1474,6 +1482,30 @@ mod tests {
         let plugged = [speakers::Speaker { id: id.into(), name: "Speakers".into() }];
         assert_eq!(engine_settings(chosen.clone(), &plugged).speaker.as_deref(), Some(id));
         assert_eq!(engine_settings(chosen, &[]).speaker, None);
+    }
+
+    #[test]
+    fn settings_saved_during_a_session_are_what_the_next_edit_starts_from() {
+        let running = ReceiverSettings { name: "Studio PC".into(), ..Default::default() };
+        let mut st = ReceiverStatus { wanted: true, settings: Some(running), ..Default::default() };
+        // Require a PIN while a phone is connected, then (after leaving and reopening Settings) HEVC.
+        let pin = ReceiverSettings { pin_mode: true, ..st.settings.clone().unwrap() };
+        record_saved(&mut st, SettingsChange::AfterSession, pin);
+        let hevc = ReceiverSettings { h265: true, ..st.settings.clone().unwrap() };
+        record_saved(&mut st, SettingsChange::AfterSession, hevc);
+        let shown = st.settings.clone().unwrap();
+        assert!(shown.pin_mode && shown.h265, "both queued changes are kept: {shown:?}");
+        assert!(st.settings_pending);
+        // A restart (network change) before the session ends uses them too.
+        assert_eq!(settings_to_restart(&st), Some(shown));
+    }
+
+    #[test]
+    fn settings_saved_while_off_are_shown_and_not_pending() {
+        let mut st = ReceiverStatus::default();
+        record_saved(&mut st, SettingsChange::SaveOnly, ReceiverSettings { h265: true, ..Default::default() });
+        assert!(st.settings.unwrap().h265);
+        assert!(!st.settings_pending);
     }
 
     #[test]
