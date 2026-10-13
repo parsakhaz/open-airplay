@@ -5,7 +5,16 @@
 // tile, drop zone, link fallback, the casting card with one Stop). app.js mounts it into the page,
 // tells it which device is open, and re-renders when it says something changed.
 // Each device keeps its own cast state, so casting to one never shows on or blocks another.
-window.OapCast = (() => {
+
+/** Where a file dropped on the panel goes: the open device page's device, and only while that page
+ *  is on screen and not already casting. Anywhere else (home, Settings, the Mirror sheet) a drop
+ *  goes nowhere, so a file never goes to a device the user can't see. */
+function castDropTarget(current, pageShown, casting) {
+  return current && pageShown && !casting ? current : null;
+}
+if (typeof module !== "undefined" && module.exports) module.exports = { castDropTarget };
+
+if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
   const T = window.__TAURI__;
   const { invoke } = T.core;
   const { listen } = T.event;
@@ -162,8 +171,11 @@ window.OapCast = (() => {
   };
 
   /** Builds the page body once inside `container`. `onChange` runs whenever any cast changes. */
-  function mount(container, onChange) {
+  let pageShown = () => true; // set by mount: whether the device page is on screen
+
+  function mount(container, onChange, options = {}) {
     changed = onChange || (() => {});
+    if (options.shown) pageShown = options.shown;
     container.innerHTML = `
       <div class="send-body">
         <div data-r="ban"></div>
@@ -206,7 +218,10 @@ window.OapCast = (() => {
     const webview = T.webview && T.webview.getCurrentWebview && T.webview.getCurrentWebview();
     if (!webview || !webview.onDragDropEvent) return;
     webview.onDragDropEvent(({ payload }) => {
-      if (!current || !acceptsCast()) return;
+      if (!castDropTarget(current, pageShown(), !acceptsCast())) {
+        if (dragging) { dragging = null; renderPage(); }
+        return;
+      }
       if (payload.type === "enter") {
         dragging = { name: mediaName((payload.paths || [])[0]) };
         setPage(current.identifier, { open: true });

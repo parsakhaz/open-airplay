@@ -478,7 +478,9 @@ AddDevice.mount($("page-add-device"), {
 function showDevicePage() {
   const d = ui.target;
   const mirrorTile = !isSpeaker(d) && window.OapMirror && OapMirror.tile ? OapMirror.tile(d) : null;
+  // A device that can't take a cast clears the cast part, so nothing (a drop) still goes to the last one.
   if (canCast(d)) OapCast.show(d, { speaker: isSpeaker(d), mirrorTile });
+  else OapCast.show(null);
   $("cast-media").hidden = !canCast(d);
 }
 
@@ -628,7 +630,7 @@ listen("doctor-findings", (e) => { ui.findings = e.payload || []; render(); });
 listen("panel-shown", scanIfStale);
 listen("network-changed", () => { ui.lastScan = 0; scan(); });
 
-OapCast.mount($("cast-media"), render);
+OapCast.mount($("cast-media"), render, { shown: () => ui.page === "cast" });
 OapMirror.mount($("mirror-sheet"), { changed: mirrorChanged, devices: mirrorTargets, back });
 MirrorAdvanced.mount($("mirror-sheet").querySelector('[data-slot="mirror-advanced"]'));
 
