@@ -147,6 +147,8 @@ button.m-row:focus-visible, .m-row .x:focus-visible, .m-disp:focus-visible { out
 .m-hero .mini b { color: var(--oai-ink); font-weight: 500; }
 .m-note { font-size: var(--oai-text-sm); color: var(--oai-ink-2); display: flex; gap: 6px; align-items: center; }
 .m-note svg { width: 13px; height: 13px; flex: none; }
+.m-note.is-bad { color: var(--oai-bad); align-items: flex-start; }
+.m-note.is-bad svg { margin-top: 2px; }
 
 .m-code { display: grid; justify-items: center; gap: 10px; padding: 6px 4px 2px; text-align: center; }
 .m-code h4 { margin: 0; font: 600 var(--oai-text-lg)/1.3 var(--oai-font-display); }

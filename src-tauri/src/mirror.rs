@@ -46,6 +46,8 @@ pub struct MirrorStatus {
     pub reason: Option<String>,
     /// Unix time in ms when video started flowing.
     pub since_ms: Option<u64>,
+    /// While mirroring: this PC's sound was meant to go but isn't reaching the TV (video goes on).
+    pub no_sound: bool,
 }
 
 /// What the app publishes ("mirror-status" event, mirror_status command): one entry per TV this PC
@@ -98,6 +100,9 @@ pub struct SenderStream {
     pub state: String,
     #[serde(default)]
     pub credential_kind: String,
+    /// Why sound isn't reaching the TV, when it was meant to (for the log; the panel says it plainly).
+    #[serde(default)]
+    pub audio_error: String,
 }
 
 /// A display this PC can mirror, in the sender's capture order.
@@ -194,6 +199,7 @@ impl MirrorSession {
                     self.status.credential = None;
                     self.status.message = None;
                     self.status.since_ms.get_or_insert(now_ms);
+                    self.status.no_sound = !stream.audio_error.is_empty();
                 }
                 _ => {
                     if self.status.phase != MirrorPhase::Code {
@@ -647,7 +653,7 @@ mod tests {
                 .unwrap_or_default(),
             streams: streams
                 .iter()
-                .map(|(ip, st, kind)| SenderStream { device: "Den TV".into(), device_ip: (*ip).into(), state: (*st).into(), credential_kind: (*kind).into() })
+                .map(|(ip, st, kind)| SenderStream { device: "Den TV".into(), device_ip: (*ip).into(), state: (*st).into(), credential_kind: (*kind).into(), ..Default::default() })
                 .collect(),
         }
     }
@@ -671,6 +677,18 @@ mod tests {
         s.on_state(&line("streaming", None, &[(TV, "streaming", "")]), 42);
         let st = s.status();
         assert_eq!((st.phase, st.since_ms, st.device.as_deref()), (MirrorPhase::Mirroring, Some(42), Some("Living Room")));
+    }
+
+    #[test]
+    fn sound_that_fails_while_video_goes_on_is_flagged_on_that_tv() {
+        let mut s = started();
+        s.on_state(&line("streaming", None, &[(TV, "streaming", "")]), 1);
+        assert!(!s.status().no_sound);
+        let mut failed = line("streaming", None, &[(TV, "streaming", "")]);
+        failed.streams[0].audio_error = "this PC's sound couldn't be captured: no output device".into();
+        s.on_state(&failed, 2);
+        assert_eq!((s.status().phase, s.status().no_sound), (MirrorPhase::Mirroring, true));
+        assert_eq!(s.status().message, None, "the raw error stays in the log");
     }
 
     #[test]

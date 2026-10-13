@@ -77,6 +77,8 @@
       rows,
       live,
       add,
+      // TVs getting video but not this PC's sound (it couldn't be captured or its stream failed).
+      noSound: targets.filter((s) => s.phase === "mirroring" && s.no_sound).map(nameOf),
       button: { label: sending.length > 1 ? "Stop all" : "Stop", action: "stop_all", disabled: false },
     };
   }

@@ -96,11 +96,14 @@ type TargetError struct {
 
 // StreamInfo describes one active (or connecting) mirror stream.
 type StreamInfo struct {
-	Device         string         `json:"device"`
-	DeviceIP       string         `json:"device_ip"`
-	State          State          `json:"state"`
-	HasAudio       bool           `json:"has_audio"`
-	AudioMuted     bool           `json:"audio_muted"`
+	Device     string `json:"device"`
+	DeviceIP   string `json:"device_ip"`
+	State      State  `json:"state"`
+	HasAudio   bool   `json:"has_audio"`
+	AudioMuted bool   `json:"audio_muted"`
+	// AudioError says why this PC's sound isn't reaching the receiver (capture
+	// couldn't start, or the audio stream failed) while video keeps going.
+	AudioError     string         `json:"audio_error,omitempty"`
 	CredentialKind CredentialKind `json:"credential_kind,omitempty"`
 }
 
@@ -326,6 +329,7 @@ type activeStream struct {
 	deviceID       string
 	state          State
 	audioMuted     bool
+	audioError     string // why sound isn't reaching the receiver; empty while it is (or isn't wanted)
 	session        *airplay.MirrorSession
 	client         *airplay.AirPlayClient
 	sink           *airplay.BroadcastSink // fan-out video sink (nil when no broadcast)
@@ -735,6 +739,7 @@ func (d *Daemon) statusResponseLocked(ok bool, errMsg string) Response {
 			State:          s.state,
 			HasAudio:       s.session != nil && s.session.HasAudio(),
 			AudioMuted:     s.audioMuted,
+			AudioError:     s.audioError,
 			CredentialKind: waitingCredentialKind(s),
 		})
 	}
@@ -1496,12 +1501,14 @@ func (d *Daemon) connectAndStream(ctx context.Context, entry *activeStream, targ
 		audioCapture, audioErr = airplay.StartAudioCaptureWithOptions(ctx, session.AudioCodec(), audioOptions)
 		if audioErr != nil {
 			log.Printf("[daemon] audio capture failed: %v (continuing without audio)", audioErr)
+			d.recordAudioError(entry, "this PC's sound couldn't be captured: "+audioErr.Error())
 		} else {
 			audioDone = make(chan error, 1)
 			go func() {
 				aerr := session.StreamAudio(ctx, audioCapture, session.AudioStream())
 				if aerr != nil && ctx.Err() == nil {
 					log.Printf("[daemon] audio streaming error: %v", aerr)
+					d.recordAudioError(entry, "the sound stream stopped: "+aerr.Error())
 				}
 				audioDone <- aerr
 			}()
@@ -2074,6 +2081,17 @@ func (d *Daemon) handleSetMute(req Request, muted bool) Response {
 	}
 	defer d.mu.Unlock()
 	return d.statusResponseLocked(true, "")
+}
+
+// recordAudioError notes on a stream that its sound isn't reaching the
+// receiver; video goes on. The status (and the next stdio state line) carries
+// it. A stream that already ended is left alone.
+func (d *Daemon) recordAudioError(entry *activeStream, message string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.streams[entry.deviceIP] == entry {
+		entry.audioError = message
+	}
 }
 
 // detachAllLocked removes every active stream and capture group atomically and

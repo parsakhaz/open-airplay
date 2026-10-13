@@ -108,7 +108,7 @@ mod tests {
             state: String::new(),
             streams: streams
                 .iter()
-                .map(|(ip, st)| SenderStream { device: String::new(), device_ip: (*ip).into(), state: (*st).into(), credential_kind: if *st == "pin_required" { "pin".into() } else { String::new() } })
+                .map(|(ip, st)| SenderStream { device: String::new(), device_ip: (*ip).into(), state: (*st).into(), credential_kind: if *st == "pin_required" { "pin".into() } else { String::new() }, ..Default::default() })
                 .collect(),
             errors: errors.iter().map(|(t, k)| crate::mirror::SenderError { target: (*t).into(), kind: (*k).into(), message: "detail".into() }).collect(),
         }

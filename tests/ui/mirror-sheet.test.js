@@ -58,6 +58,14 @@ test("the first mirror status, answered after a newer push, doesn't replace it",
   assert.equal(later(), true, "with no push in between, the reply is used");
 });
 
+test("a TV mirroring without this PC's sound is named, and the others aren't", () => {
+  const snapshot = { targets: [t(atv, "mirroring", { since_ms: 1, no_sound: true }), t(bed, "mirroring", { since_ms: 1 })] };
+  const m = mirrorSheet({ snapshot, devices, ticked: [] });
+  assert.equal(m.mode, "live");
+  assert.deepEqual(m.noSound, ["Living Room"]);
+  assert.deepEqual(mirrorSheet({ snapshot: { targets: [t(bed, "mirroring", { since_ms: 1 })] }, devices, ticked: [] }).noSound, []);
+});
+
 test("a code that couldn't be sent says why on the code sheet", () => {
   const snapshot = { targets: [t(atv, "code", { credential: "pin" })] };
   let m = mirrorSheet({ snapshot, devices, ticked: [], error: "Mirroring stopped. Try again." });

@@ -51,6 +51,7 @@ A `state` line written after a `response` always reflects that request. For exam
   - `state`: `connecting`, `pin_required` or `streaming`.
   - `credential_kind` (only while `pin_required`): `pin` means the TV shows a one-time code. `password` means the TV has "Require Password" set. Both are answered the same way (see `connect` with `pin`).
   - `device` is the TV's own name. It is empty until the TV has answered.
+  - `audio_error` (only when set): this PC's sound was meant to go to that TV but isn't reaching it, because capture couldn't start or the audio stream failed. Video goes on. Like `message`, it is technical detail for logs; tell the user only that there is no sound.
 - **`errors`**: each target's latest failure, sorted by `target`. An entry stays until that target is connected again, so a client that missed a line can still see it. A target the user disconnected gets no entry.
   - `kind`: see the table below. Choose the words for the user from `kind`. `message` is technical detail for logs; never show it as is.
 - **`state`**: the aggregate. It is `pin_required` if any target waits, else `streaming` if any streams, else `connecting` if any connects, else `idle`.

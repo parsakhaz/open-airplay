@@ -208,7 +208,9 @@ window.OapMirror = (() => {
       region("hero", `<div class="m-hero"><div class="m-flow"><span class="end">${use("i-pc")}</span><span class="dots3"><i></i><i></i><i></i></span><span class="end ${live ? "is-live" : ""}">${use(tv)}</span></div><div class="mini">${live ? `<b>Mirroring this screen</b> · ${clock(m.live.since_ms)}` : "<b>Connecting…</b>"}</div></div>`);
       // With Sound on (Advanced), the TV plays this PC's sound, so the note would be wrong.
       const soundStays = !(window.MirrorAdvanced && MirrorAdvanced.sendsSound());
-      region("note", live && soundStays ? `<div class="m-note">${use("i-sound")}Sound stays on this PC.</div>` : "");
+      // Sound meant for a TV that isn't reaching it says so; video goes on.
+      const noSound = m.noSound.length ? `<div class="m-note is-bad" role="status">${use("i-sound")}No sound on ${esc(m.noSound.join(" and "))}. This PC's sound couldn't be sent; the picture goes on.</div>` : "";
+      region("note", noSound || (live && soundStays ? `<div class="m-note">${use("i-sound")}Sound stays on this PC.</div>` : ""));
     } else {
       region("hero", "");
       region("note", "");
