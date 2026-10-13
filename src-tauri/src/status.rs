@@ -216,7 +216,11 @@ pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
                 status.mirroring_since_ms = None;
             }
             EngineEvent::Disconnected => end_session(status),
-            EngineEvent::AudioStart => status.audio.get_or_insert_with(NowPlaying::default).playing = true,
+            EngineEvent::AudioStart => {
+                // Playing means the phone got past the code, like the first frame of a mirror.
+                status.pin = None;
+                status.audio.get_or_insert_with(NowPlaying::default).playing = true;
+            }
             EngineEvent::AudioStopped => {
                 if let Some(audio) = status.audio.as_mut() {
                     audio.playing = false;
@@ -238,6 +242,7 @@ pub fn apply_event(status: &mut ReceiverStatus, event: &SupervisorEvent) {
             }
             EngineEvent::VideoLink => {
                 status.video_link = true;
+                status.pin = None;
                 status.mirroring_since_ms = None;
             }
             EngineEvent::UnsupportedVideoLink => {
@@ -586,6 +591,34 @@ mod tests {
         apply_event(&mut s, &request("Old iPad", "AA:BB"));
         apply_event(&mut s, &engine(EngineEvent::Blocked { device_id: "AA:BB".into() }));
         assert_eq!((s.phase, s.last_device.clone(), s.device_id.clone()), (Phase::Ready, None, None));
+    }
+
+    /// A phone in PIN mode that entered the code; the engine has not reported what it plays yet.
+    fn after_the_pin() -> ReceiverStatus {
+        let mut s = running(true);
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 1 }));
+        apply_event(&mut s, &request("Sam's iPhone", "1A:2B"));
+        apply_event(&mut s, &engine(EngineEvent::Pin { code: "1234".into() }));
+        assert_eq!(s.phase, Phase::Pin);
+        s
+    }
+
+    #[test]
+    fn music_after_the_pin_shows_playing_audio() {
+        let mut s = after_the_pin();
+        apply_event(&mut s, &engine(EngineEvent::AudioStart));
+        assert_eq!((s.phase, s.pin.clone()), (Phase::Audio, None));
+        apply_event(&mut s, &engine(EngineEvent::OpenConnections { count: 0 }));
+        assert_eq!(s.phase, Phase::Ready);
+    }
+
+    #[test]
+    fn a_video_link_after_the_pin_shows_the_video() {
+        let mut s = after_the_pin();
+        apply_event(&mut s, &engine(EngineEvent::VideoLink));
+        assert_eq!((s.phase, s.pin.clone()), (Phase::Video, None));
+        apply_event(&mut s, &engine(EngineEvent::Disconnected));
+        assert_eq!(s.phase, Phase::Ready);
     }
 
     #[test]
