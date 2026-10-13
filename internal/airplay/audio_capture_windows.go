@@ -297,14 +297,28 @@ func runWASAPILoopback(ctx context.Context, sink audioPacketSink, fixedID string
 	}
 	defer enum.release()
 	clock := newQPCClock()
+	resolve := func() (string, error) {
+		if fixedID != "" {
+			return fixedID, nil
+		}
+		return defaultRenderDeviceID(enum)
+	}
+	capture := func(id string) error {
+		return captureLoopback(ctx, enum, id, fixedID == "", sink, clock)
+	}
+	return reopenLoopback(ctx, sink, resolve, capture)
+}
+
+// reopenLoopback runs capture attempts until ctx ends: it resolves the device,
+// captures until that fails, and after a failure keeps silence flowing for
+// wasapiReopenDelay before resolving and opening the device again.
+func reopenLoopback(ctx context.Context, sink audioPacketSink, resolve func() (string, error), capture func(id string) error) error {
 	failures := 0
 	for ctx.Err() == nil {
-		id := fixedID
-		if id == "" {
-			id, err = defaultRenderDeviceID(enum)
-		}
+		// Each attempt starts clean: an earlier failure must not skip opening the device again.
+		id, err := resolve()
 		if err == nil {
-			err = captureLoopback(ctx, enum, id, fixedID == "", sink, clock)
+			err = capture(id)
 		}
 		switch {
 		case ctx.Err() != nil:

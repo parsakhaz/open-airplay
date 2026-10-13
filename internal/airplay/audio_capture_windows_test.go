@@ -105,3 +105,52 @@ func TestListAudioDevicesMarksDefault(t *testing.T) {
 		t.Fatalf("%d default devices among %d, want exactly 1", defaults, len(devices))
 	}
 }
+
+type countingSink struct{ idles int }
+
+func (s *countingSink) setFormat(deviceAudioFormat) error   { return nil }
+func (s *countingSink) packet([]byte, int, time.Time) error { return nil }
+func (s *countingSink) silence(int, time.Time)              {}
+func (s *countingSink) idle(time.Time)                      { s.idles++ }
+
+// A chosen device that goes away (unplugged headphones) is opened again once it
+// is back, instead of sending silence for the rest of the mirror.
+func TestReopenLoopbackReopensAChosenDeviceAfterItFails(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	attempts := 0
+	capture := func(id string) error {
+		attempts++
+		if id != "headphones" {
+			t.Fatalf("captured %q, want the chosen device", id)
+		}
+		if attempts == 1 {
+			return hresultError{op: "start", hr: audclntEDeviceInvalidated}
+		}
+		cancel() // the second attempt captures until the mirror ends
+		return nil
+	}
+	sink := &countingSink{}
+	if err := reopenLoopback(ctx, sink, func() (string, error) { return "headphones", nil }, capture); err != nil {
+		t.Fatalf("reopenLoopback = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("capture attempts = %d, want the device reopened (2)", attempts)
+	}
+	if sink.idles == 0 {
+		t.Fatal("no silence was sent while the device was away")
+	}
+}
+
+// Other errors are retried with a fresh capture each time, and give up after five.
+func TestReopenLoopbackRetriesOtherErrorsThenGivesUp(t *testing.T) {
+	attempts := 0
+	capture := func(string) error {
+		attempts++
+		return hresultError{op: "start", hr: 0x80004005}
+	}
+	err := reopenLoopback(context.Background(), &countingSink{}, func() (string, error) { return "speakers", nil }, capture)
+	if err == nil || attempts != 5 {
+		t.Fatalf("reopenLoopback = %v after %d attempts, want an error after 5", err, attempts)
+	}
+}
