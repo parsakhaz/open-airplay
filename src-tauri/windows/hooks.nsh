@@ -15,6 +15,31 @@
   !define OAP_CREDENTIAL_PREFIXES "open-airplay-cast: open-airplay:"
 !endif
 
+; An upgrade never deletes settings or pairings, and never offers to. A newer installer's "uninstall before
+; installing" runs this uninstaller in place (from $INSTDIR, with _?=), without /UPDATE or /P; a standalone
+; uninstall always re-runs itself from %TEMP% first. So in place, or with /UPDATE, it is an upgrade: the
+; uninstaller goes passive, which makes Tauri skip the confirm page that holds the "Also delete my settings
+; and saved pairings" box, and NSIS_HOOK_PREUNINSTALL forces the box's state off as well.
+; Tauri declares $UpdateMode and $PassiveMode after including this file, so the function is a macro that
+; English.nsh (included after them) inserts.
+Var OapUpgrade
+!define MUI_CUSTOMFUNCTION_UNGUIINIT un.OapGuiInit
+!macro OAP_UNINSTALL_GUIINIT
+  Function un.OapGuiInit
+    StrCpy $OapUpgrade 0
+    StrCpy $R9 "$INSTDIR"
+    StrCpy $R8 "$R9" "" -1
+    ${If} $R8 == "\"
+      StrCpy $R9 "$R9" -1
+    ${EndIf}
+    ${If} $UpdateMode = 1
+    ${OrIf} "$EXEDIR" == "$R9"
+      StrCpy $OapUpgrade 1
+      StrCpy $PassiveMode 1
+    ${EndIf}
+  FunctionEnd
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
   nsExec::Exec 'netsh advfirewall firewall delete rule name="${OAP_FW_RULE}"'
   Pop $0
@@ -42,6 +67,9 @@
   ; config and local data folders (settings, pairing keys, logs) after this hook; here, while the bundled
   ; script is still installed, the saved pairings in Credential Manager go too: cast devices
   ; (open-airplay-cast:) and the mirror sender's TVs (open-airplay:). Never on an update.
+  ${If} $OapUpgrade = 1
+    StrCpy $DeleteAppDataCheckboxState 0 ; Tauri's folder removal checks it after this hook
+  ${EndIf}
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     ; This runs as the account the uninstaller runs as. If that isn't the account signed in (a standard

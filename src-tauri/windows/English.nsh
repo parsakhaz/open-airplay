@@ -28,3 +28,7 @@ LangString webview2Downloading ${LANG_ENGLISH} "Downloading WebView2 bootstrappe
 LangString webview2InstallError ${LANG_ENGLISH} "Error: Installing WebView2 failed with exit code $1"
 LangString webview2InstallSuccess ${LANG_ENGLISH} "WebView2 installed successfully"
 LangString deleteAppData ${LANG_ENGLISH} "Also delete my settings and saved pairings"
+
+; Not a string: the uninstaller's upgrade check (defined in hooks.nsh), inserted here because this file is
+; included after Tauri declares the variables it uses.
+!insertmacro OAP_UNINSTALL_GUIINIT
