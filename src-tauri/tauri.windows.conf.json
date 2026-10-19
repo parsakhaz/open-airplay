@@ -10,7 +10,8 @@
       "icons/icon.ico": "icons/icon.ico",
       "../LICENSE": "LICENSE",
       "../NOTICE": "NOTICE",
-      "windows/forget-credentials.ps1": "forget-credentials.ps1"
+      "windows/forget-credentials.ps1": "forget-credentials.ps1",
+      "windows/uninstall-context.ps1": "uninstall-context.ps1"
     },
     "windows": {
       "nsis": {

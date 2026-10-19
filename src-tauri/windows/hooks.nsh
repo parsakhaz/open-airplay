@@ -15,9 +15,11 @@
   !define OAP_CREDENTIAL_PREFIXES "open-airplay-cast: open-airplay:"
 !endif
 
-; An upgrade never deletes settings or pairings, and never offers to. A newer installer's "uninstall before
-; installing" runs this uninstaller in place (from $INSTDIR, with _?=), without /UPDATE or /P; a standalone
-; uninstall always re-runs itself from %TEMP% first. So in place, or with /UPDATE, it is an upgrade: the
+; An upgrade never deletes settings or pairings, and never offers to. A standalone uninstall always re-runs
+; itself from %TEMP% first; a setup runs it in place (from $INSTDIR, with _?=), without /UPDATE or /P, both
+; for another version's "uninstall before installing" (an upgrade or downgrade) and for the same version's
+; explicit Uninstall choice (a removal, which keeps the box). In place, uninstall-context.ps1 tells the two
+; apart by the launching setup's version; unknown counts as an upgrade. On an upgrade, or with /UPDATE, the
 ; uninstaller goes passive, which makes Tauri skip the confirm page that holds the "Also delete my settings
 ; and saved pairings" box, and NSIS_HOOK_PREUNINSTALL forces the box's state off as well.
 ; Tauri declares $UpdateMode and $PassiveMode after including this file, so the function is a macro that
@@ -26,6 +28,10 @@ Var OapUpgrade
 !define MUI_CUSTOMFUNCTION_UNGUIINIT un.OapGuiInit
 !macro OAP_UNINSTALL_GUIINIT
   Function un.OapGuiInit
+    Push $0
+    Push $1
+    Push $R8
+    Push $R9
     StrCpy $OapUpgrade 0
     StrCpy $R9 "$INSTDIR"
     StrCpy $R8 "$R9" "" -1
@@ -33,10 +39,24 @@ Var OapUpgrade
       StrCpy $R9 "$R9" -1
     ${EndIf}
     ${If} $UpdateMode = 1
-    ${OrIf} "$EXEDIR" == "$R9"
       StrCpy $OapUpgrade 1
+    ${ElseIf} "$EXEDIR" == "$R9"
+      System::Call 'kernel32::GetCurrentProcessId() i .r0'
+      nsExec::ExecToStack `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\uninstall-context.ps1" -UninstallerPid $0 -Version "${VERSION}"`
+      Pop $0 ; exit code
+      Pop $1 ; "remove" or "upgrade", then a line break
+      StrCpy $1 "$1" 6
+      ${If} $1 != "remove"
+        StrCpy $OapUpgrade 1
+      ${EndIf}
+    ${EndIf}
+    ${If} $OapUpgrade = 1
       StrCpy $PassiveMode 1
     ${EndIf}
+    Pop $R9
+    Pop $R8
+    Pop $1
+    Pop $0
   FunctionEnd
 !macroend
 
