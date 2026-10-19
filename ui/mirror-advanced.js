@@ -1,6 +1,7 @@
 // Advanced, folded in the Mirror sheet: the defaults for every mirror (approved device page, state 5).
-// Self-contained so the sheet only has to call MirrorAdvanced.mount(container). Every row starts on
-// Automatic; a change is saved at once with set_mirror_options and used by the next mirror_start.
+// Self-contained: the app calls MirrorAdvanced.mount(container) and the sheet calls
+// loadCapabilities() when it opens. Every row starts on Automatic; a change is saved at once with
+// set_mirror_options and used by the next mirror_start.
 // Sound appears only when the sender says it can capture this PC's sound (hello.capabilities.audio).
 (function () {
   /** Saves the options one at a time. A change made while a save is on its way is sent once that
@@ -32,11 +33,6 @@
     };
   }
 
-  if (typeof module !== "undefined" && module.exports) module.exports = { createSaver };
-  if (typeof window === "undefined" || !window.__TAURI__) return;
-
-  const { invoke } = window.__TAURI__.core;
-
   const DOWN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"/></svg>';
   const CHEV = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg>';
 
@@ -55,47 +51,64 @@
     return ROWS.every((r) => o[r.field] == null) && o.show_cursor == null && o.audio == null;
   }
 
-  function selectRow(row, value) {
+  function selectRow(row, value, off) {
     const options = row.choices
       .map(([v, text]) => `<option value="${esc(v)}"${String(v) === String(value ?? "") ? " selected" : ""}>${esc(text)}</option>`)
       .join("");
     const small = row.small ? `<small>${esc(row.small)}</small>` : "";
-    return `<div class="grow-row"><label for="adv-${row.field}">${esc(row.label)}${small}</label><span class="sel"><select id="adv-${row.field}" data-field="${row.field}">${options}</select>${DOWN}</span></div>`;
+    return `<div class="oai-group-row"><label for="adv-${row.field}">${esc(row.label)}${small}</label><span class="oai-sel"><select id="adv-${row.field}" data-field="${row.field}"${off}>${options}</select>${DOWN}</span></div>`;
   }
 
-  function html(o, caps, open, error) {
-    const head = `<button type="button" class="disclose${open ? " open" : ""}" aria-expanded="${open}">${CHEV}<span>Advanced</span><span class="sp"></span>${!open && allAutomatic(o) ? "<em>Automatic</em>" : ""}</button>`;
+  /** `ready`: the saved options have loaded; until then the rows can't be changed (a change would
+   *  save over the options it hasn't seen). */
+  function html(o, caps, open, error, ready) {
+    const off = ready ? "" : " disabled";
+    const head = `<button type="button" class="oai-disclose${open ? " is-open" : ""}" aria-expanded="${open}">${CHEV}<span>Advanced</span><span class="oai-spacer"></span>${!open && allAutomatic(o) ? "<em>Automatic</em>" : ""}</button>`;
     if (!open) return head;
-    return `${head}<div class="group">
-      ${ROWS.map((r) => selectRow(r, o[r.field])).join("")}
-      <div class="grow-row"><label for="adv-video_codec">Video format<small>The only one on Windows today</small></label><span class="sel dim"><select id="adv-video_codec" disabled><option>H.264</option></select>${DOWN}</span></div>
-      <div class="grow-row"><label for="adv-show_cursor">Show the pointer</label><input type="checkbox" class="oai-switch sm" id="adv-show_cursor" data-switch="show_cursor"${o.show_cursor !== false ? " checked" : ""}></div>
-      ${caps.audio ? `<div class="grow-row"><label for="adv-audio">Sound</label><input type="checkbox" class="oai-switch sm" id="adv-audio" data-switch="audio"${o.audio !== false ? " checked" : ""}></div>` : ""}
+    return `${head}<div class="oai-group is-flush">
+      ${ROWS.map((r) => selectRow(r, o[r.field], off)).join("")}
+      <div class="oai-group-row"><label for="adv-video_codec">Video format<small>The only one on Windows today</small></label><span class="oai-sel is-dim"><select id="adv-video_codec" disabled><option>H.264</option></select>${DOWN}</span></div>
+      <div class="oai-group-row"><label for="adv-show_cursor">Show the pointer</label><input type="checkbox" class="oai-switch is-small" id="adv-show_cursor" data-switch="show_cursor"${o.show_cursor !== false ? " checked" : ""}${off}></div>
+      ${caps.audio ? `<div class="oai-group-row"><label for="adv-audio">Sound</label><input type="checkbox" class="oai-switch is-small" id="adv-audio" data-switch="audio"${o.audio !== false ? " checked" : ""}${off}></div>` : ""}
     </div>${error ? `<div class="inline-error" role="alert">${esc(error)}</div>` : ""}`;
   }
 
-  let current = null;   // the mounted state, for sendsSound()
-
-  // True when the next mirror sends this PC's sound: the sender can capture it and Sound is on.
-  const sendsSound = () => !!current && current.caps.audio && current.options.audio !== false;
-
-  async function mount(container) {
-    const state = { options: {}, caps: { audio: false }, open: false, error: null };
-    current = state;
-    try {
-      state.options = (await invoke("get_prefs")).mirror || {};
-    } catch (_) {}
+  /** Mounts Advanced in `container`. The sender's capabilities are asked for only by
+   *  loadCapabilities() (when the Mirror sheet opens): asking starts the sender, and a boot launch
+   *  must stay idle. A failed ask is tried again on the next call. */
+  function create(container, invoke) {
+    const state = { options: {}, caps: { audio: false }, open: false, error: null, ready: false };
+    let asked = false;
     const render = () => {
-      container.innerHTML = html(state.options, state.caps, state.open, state.error);
+      container.innerHTML = html(state.options, state.caps, state.open, state.error, state.ready);
     };
     render();
-    // The sender may still be starting; Sound shows once it has said hello.
-    invoke("mirror_capabilities")
-      .then((caps) => {
-        state.caps = caps || { audio: false };
-        render();
+    invoke("get_prefs")
+      .then((prefs) => {
+        state.options = (prefs && prefs.mirror) || {};
       })
-      .catch(() => {});
+      .catch(() => {}) // unreadable prefs: every row starts on Automatic, as before
+      .then(() => {
+        state.ready = true;
+        render();
+      });
+
+    function loadCapabilities() {
+      if (asked) return;
+      asked = true;
+      // The sender may still be starting; Sound shows once it has said hello.
+      invoke("mirror_capabilities")
+        .then((caps) => {
+          state.caps = caps || { audio: false };
+          render();
+        })
+        .catch(() => {
+          asked = false;
+        });
+    }
+
+    // True when the next mirror sends this PC's sound: the sender can capture it and Sound is on.
+    const sendsSound = () => !!state.caps.audio && state.options.audio !== false;
 
     const saver = createSaver(
       (options) => invoke("set_mirror_options", { options }),
@@ -106,12 +119,13 @@
     );
     const save = () => saver(state.options);
     container.addEventListener("click", (e) => {
-      if (e.target.closest(".disclose")) {
+      if (e.target.closest(".oai-disclose")) {
         state.open = !state.open;
         render();
       }
     });
     container.addEventListener("change", (e) => {
+      if (!state.ready) return;
       const t = e.target;
       if (t.dataset.field) {
         const raw = t.value;
@@ -124,7 +138,18 @@
       }
       save();
     });
+    return { loadCapabilities, sendsSound };
   }
 
-  window.MirrorAdvanced = { mount, sendsSound };
+  if (typeof module !== "undefined" && module.exports) module.exports = { createSaver, create };
+  if (typeof window === "undefined" || !window.__TAURI__) return;
+
+  let current = null; // the mounted Advanced
+  const mount = (container) => {
+    current = create(container, window.__TAURI__.core.invoke);
+  };
+  const loadCapabilities = () => current && current.loadCapabilities();
+  const sendsSound = () => !!current && current.sendsSound();
+
+  window.MirrorAdvanced = { mount, loadCapabilities, sendsSound };
 })();

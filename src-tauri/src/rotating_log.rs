@@ -1,24 +1,45 @@
-//! The engine's log file (`engine.log`): capped in size, with a few older files kept beside it
-//! as `engine.1.log` (newest) to `engine.<keep>.log` (oldest).
+//! The app's log files (`engine.log`, `sender.log`, `mirror.log`): each capped in size, with a few
+//! older files kept beside it as `<name>.1.log` (newest) to `<name>.<keep>.log` (oldest).
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::{self, JoinHandle};
 
-/// Size cap for `engine.log`, and how many older files to keep beside it.
+/// Size cap for each log, and how many older files to keep beside it.
 pub const MAX_BYTES: u64 = 5 * 1024 * 1024;
 pub const KEEP: usize = 3;
 
-/// The app's engine log in `dir`, shared by every receiver run. The first call opens it,
-/// which moves the previous app run's log aside.
-pub fn shared(dir: &Path) -> Option<Arc<RotatingLog>> {
-    static LOG: OnceLock<Option<Arc<RotatingLog>>> = OnceLock::new();
-    LOG.get_or_init(|| {
-        fs::create_dir_all(dir).ok()?;
-        RotatingLog::open(&dir.join("engine.log"), MAX_BYTES, KEEP).ok().map(Arc::new)
+/// The log at `path`, shared by everything that writes to it during this app run. The first call
+/// for a path opens it, which moves the previous app run's log aside.
+pub fn shared(path: &Path) -> Option<Arc<RotatingLog>> {
+    static LOGS: OnceLock<Mutex<HashMap<PathBuf, Arc<RotatingLog>>>> = OnceLock::new();
+    let mut logs = LOGS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(log) = logs.get(path) {
+        return Some(log.clone());
+    }
+    fs::create_dir_all(path.parent()?).ok()?;
+    let log = Arc::new(RotatingLog::open(path, MAX_BYTES, KEEP).ok()?);
+    logs.insert(path.to_path_buf(), log.clone());
+    Some(log)
+}
+
+/// Copies a child process's output (its stderr) into `log` a line at a time, on its own thread,
+/// until the output ends. The child isn't handed the file itself, so the log can still rotate.
+pub fn copy_lines(output: impl Read + Send + 'static, log: Arc<RotatingLog>) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(output);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => log.write_line(String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n'])),
+            }
+        }
     })
-    .clone()
 }
 
 pub struct RotatingLog {
@@ -126,6 +147,40 @@ mod tests {
 
     fn read(dir: &Path, name: &str) -> Option<String> {
         fs::read_to_string(dir.join(name)).ok()
+    }
+
+    #[test]
+    fn one_log_per_path_is_shared_and_each_rotates_on_its_own() {
+        let dir = dir("shared");
+        fs::write(dir.join("sender.log"), "previous run
+").unwrap();
+        let a = shared(&dir.join("sender.log")).unwrap();
+        let b = shared(&dir.join("sender.log")).unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "the same file is opened once per app run");
+        let mirror = shared(&dir.join("mirror.log")).unwrap();
+        a.write_line("cast");
+        mirror.write_line("mirror");
+        assert_eq!(read(&dir, "sender.log").as_deref(), Some("cast
+"));
+        assert_eq!(read(&dir, "sender.1.log").as_deref(), Some("previous run
+"));
+        assert_eq!(read(&dir, "mirror.log").as_deref(), Some("mirror
+"));
+    }
+
+    #[test]
+    fn a_child_processes_output_is_copied_line_by_line_and_rotates() {
+        let dir = dir("copy");
+        let log = Arc::new(RotatingLog::open(&dir.join("mirror.log"), 12, 3).unwrap());
+        copy_lines(std::io::Cursor::new(b"line one
+line two
+no newline".to_vec()), log.clone()).join().unwrap();
+        assert_eq!(read(&dir, "mirror.2.log").as_deref(), Some("line one
+"));
+        assert_eq!(read(&dir, "mirror.1.log").as_deref(), Some("line two
+"));
+        assert_eq!(read(&dir, "mirror.log").as_deref(), Some("no newline
+"));
     }
 
     #[test]

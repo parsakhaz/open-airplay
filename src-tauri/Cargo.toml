@@ -23,4 +23,6 @@ mdns-sd = "0.21.5"
 base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
+# Cast pairings in Credential Manager. Windows only: elsewhere keyring would fall back to a store that keeps nothing.
+keyring = { version = "3", features = ["windows-native"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }

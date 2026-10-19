@@ -61,22 +61,22 @@ const AddDevice = (() => {
   // The form page's content; the host puts it in an empty page container and shows it with its own navigation.
   function pageHtml() {
     return `<form class="ad-page" data-add-device="form" autocomplete="off" novalidate>
-      <header class="ad-head"><button type="button" class="ad-back" data-add-device="cancel" aria-label="Back">${ICON.back}</button><span class="ad-dico">${ICON.net}</span><div class="ad-tt"><div class="ad-t">Add a device</div><div class="ad-s">For when it doesn’t show up by itself</div></div></header>
+      <header class="oai-popover-head is-sub"><button type="button" class="oai-icon-btn" data-add-device="cancel" aria-label="Back">${ICON.back}</button><span class="oai-dico">${ICON.net}</span><div class="oai-tt"><div class="oai-t">Add a device</div><div class="oai-s">For when it doesn’t show up by itself</div></div></header>
       <div class="ad-body">
-        <label class="ad-label" for="ad-input">IP address or name</label><input class="ad-input" id="ad-input" name="input" placeholder="192.168.1.40" spellcheck="false" autocapitalize="off">
-        <label class="ad-label" for="ad-name">Name in the list (optional)</label><input class="ad-input" id="ad-name" name="name" maxlength="63" placeholder="Office TV">
-        <button type="button" class="ad-disclose" data-add-device="advanced" aria-expanded="false">${ICON.chev}<span>Advanced</span><span class="ad-sp"></span><em>Port 7000</em></button>
-        <div class="ad-advanced" hidden><label class="ad-label" for="ad-port">Port</label><input class="ad-input" id="ad-port" name="port" inputmode="numeric" placeholder="7000"></div>
+        <label class="oai-flabel" for="ad-input">IP address or name</label><input class="oai-input" id="ad-input" name="input" placeholder="192.168.1.40" spellcheck="false" autocapitalize="off">
+        <label class="oai-flabel" for="ad-name">Name in the list (optional)</label><input class="oai-input" id="ad-name" name="name" maxlength="63" placeholder="Office TV">
+        <button type="button" class="oai-disclose" data-add-device="advanced" aria-expanded="false">${ICON.chev}<span>Advanced</span><span class="oai-spacer"></span><em>Port 7000</em></button>
+        <div class="ad-advanced" hidden><label class="oai-flabel" for="ad-port">Port</label><input class="oai-input" id="ad-port" name="port" inputmode="numeric" placeholder="7000"></div>
         <div class="ad-error" role="alert" hidden></div>
-        <div class="ad-btns"><button type="button" class="ad-btn" data-add-device="cancel">Cancel</button><button type="submit" class="ad-btn is-primary">Add</button></div>
-        <div class="ad-hint">Added devices are remembered and show in Send to with “${SUBTITLE}”. Remove one from its page.</div>
+        <div class="oai-btns"><button type="button" class="oai-btn" data-add-device="cancel">Cancel</button><button type="submit" class="oai-btn is-primary">Add</button></div>
+        <div class="oai-hint">Added devices are remembered and show in Send to with “${SUBTITLE}”. Remove one from its page.</div>
       </div>
     </form>`;
   }
 
   // For the device page, below the tiles or the drop zone: only for a device that was added by address.
   function removeHtml(row) {
-    return row && row.added ? `<button class="ad-link" data-add-device="remove" data-host="${esc(row.added)}">Remove from this list</button>` : "";
+    return row && row.added ? `<button class="oai-linkbtn ad-link" data-add-device="remove" data-host="${esc(row.added)}">Remove from this list</button>` : "";
   }
 
   // Wires the form, the Add row and Remove. Host seams:

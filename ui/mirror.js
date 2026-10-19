@@ -54,9 +54,9 @@ window.OapMirror = (() => {
     const s = ip && entryFor(ip);
     if (!s) return null;
     switch (s.phase) {
-      case "mirroring": return { html: `<span class="oai-dot is-live"></span>Mirroring · ${clock(s.since_ms)}`, short: `<span class="oai-dot is-live"></span>Mirroring`, cls: "s-live" };
-      case "connecting": return { html: `<span class="oai-spinner is-small"></span>Connecting…`, short: `<span class="oai-spinner is-small"></span>Connecting…`, cls: "s-busy" };
-      case "code": return { html: "Enter the code", short: "Enter the code", cls: "s-busy" };
+      case "mirroring": return { html: `<span class="oai-dot is-live"></span>Mirroring · ${clock(s.since_ms)}`, short: `<span class="oai-dot is-live"></span>Mirroring`, cls: "is-live" };
+      case "connecting": return { html: `<span class="oai-spinner is-small"></span>Connecting…`, short: `<span class="oai-spinner is-small"></span>Connecting…`, cls: "is-busy" };
+      case "code": return { html: "Enter the code", short: "Enter the code", cls: "is-busy" };
       default: return null;
     }
   }
@@ -68,7 +68,7 @@ window.OapMirror = (() => {
     if (s && s.phase === "mirroring") small = `<span class="m-tile-live"><span class="m-pulse"></span>Mirroring · ${clock(s.since_ms)}</span>`;
     else if (s && s.phase === "connecting") small = "Connecting…";
     else if (s && s.phase === "code") small = "Enter the code";
-    return `<button class="send-tile primary" data-action="mirror"><span class="ti">${use("i-mirror")}</span><span><b>Mirror screen</b><small>${small}</small></span></button>`;
+    return `<button class="oai-tile is-primary" data-action="mirror"><span class="oai-ti">${use("i-mirror")}</span><span><b>Mirror screen</b><small>${small}</small></span></button>`;
   }
 
   // ---------- the sheet ----------
@@ -160,6 +160,8 @@ window.OapMirror = (() => {
     state.from = device && device.address ? device.address : null;
     if (!sending()) state.ticked = state.from ? [state.from] : [];
     loadDisplays();
+    // Asking what the sender can do starts it, so Advanced asks only once the sheet opens.
+    if (window.MirrorAdvanced) MirrorAdvanced.loadCapabilities();
   }
 
   async function loadDisplays() {

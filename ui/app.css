@@ -11,38 +11,10 @@ body { overflow: hidden; }
 #pop-body { flex: 0 1 auto; padding: var(--oai-space-1-5); }
 #pop-content { display: flow-root; }   /* keeps child margins inside, so its height is the whole content */
 .pop-page { animation: oai-in var(--oai-dur) var(--oai-ease) both; }
-/* ---------- Send to rows and device pages (approved device-page design) ---------- */
-.send-row { min-height: 44px; }
-.send-row .oai-grow b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.send-row .oai-grow small { display: flex; align-items: center; gap: 5px; color: var(--oai-ink-2); font-size: var(--oai-text-sm); line-height: 1.3; font-variant-numeric: tabular-nums; }
-.send-row .oai-grow small.s-live { color: var(--oai-ok); }
-.send-row .oai-grow small.s-busy { color: var(--oai-accent); }
-.send-row .chev { width: 14px; height: 14px; color: var(--oai-ink-3); flex: none; }
-.send-row .oai-dot, .send-head .oai-dot { width: 7px; height: 7px; }
-
-.send-head { display: flex; align-items: center; gap: 10px; padding: 12px 12px 10px 6px; min-height: 56px; border-bottom: 0.5px solid var(--oai-hairline); }
-.send-head .tt { flex: 1; min-width: 0; }
-.send-head .t { font-weight: 600; letter-spacing: -0.01em; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.send-head .s { font-size: var(--oai-text-sm); color: var(--oai-ink-2); line-height: 1.3; display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
-.send-back { width: 32px; height: 32px; border: 0; border-radius: var(--oai-radius-md); background: transparent; color: var(--oai-ink-2); display: grid; place-items: center; flex: none; }
-.send-back:hover { background: var(--oai-fill); color: var(--oai-ink); }
-.send-back:focus-visible { outline: 2px solid var(--oai-accent); outline-offset: 1px; }
-.send-back svg { width: 16px; height: 16px; }
-.dico { width: 32px; height: 32px; border-radius: var(--oai-radius-md); background: var(--oai-fill); color: var(--oai-ink); display: grid; place-items: center; flex: none; }
-.dico svg { width: 17px; height: 17px; }
-
+/* ---------- device pages (approved device-page design) ---------- */
+/* Headers, tiles, the live card, links, Advanced: the shared oai-* components. Only what is particular to these pages is here. */
 .send-body { display: grid; gap: 10px; padding: 6px; }
 .send-body > [data-r]:empty { display: none; }
-.send-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.send-tile { display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 12px; min-height: 92px; border: 0; border-radius: var(--oai-radius-xl); background: var(--oai-panel); box-shadow: 0 0 0 0.5px var(--oai-hairline); color: var(--oai-ink); text-align: left; font: inherit; }
-.send-tile:hover { background: var(--oai-fill); }
-.send-tile:focus-visible { outline: 2px solid var(--oai-accent); outline-offset: 2px; }
-.send-tile .ti { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--oai-fill-strong); }
-.send-tile .ti svg { width: 17px; height: 17px; }
-.send-tile b { font-weight: 600; font-size: var(--oai-text-md); line-height: 1.25; display: block; }
-.send-tile small { display: block; font-size: var(--oai-text-sm); color: var(--oai-ink-2); line-height: 1.3; }
-.send-tile.primary .ti { background: var(--oai-accent); color: var(--oai-on-accent); }
-.send-tile.is-open { box-shadow: 0 0 0 1.5px var(--oai-accent); }
 
 .send-drop { display: grid; justify-items: center; gap: 8px; padding: 16px 12px 14px; border-radius: var(--oai-radius-lg); border: 1.5px dashed color-mix(in srgb, var(--oai-ink-3) 60%, transparent); text-align: center; color: var(--oai-ink-2); font-size: var(--oai-text-sm); }
 .send-drop .di { width: 36px; height: 36px; border-radius: 50%; background: var(--oai-fill); display: grid; place-items: center; color: var(--oai-ink-2); }
@@ -53,22 +25,9 @@ body { overflow: hidden; }
 .send-drop.is-hover .di { background: var(--oai-accent); color: var(--oai-on-accent); }
 .send-drop .oai-btn { min-height: 28px; }
 
-.linkbtn { border: 0; background: transparent; color: var(--oai-accent); font: inherit; font-size: var(--oai-text-sm); min-height: 32px; padding: 0 4px; border-radius: var(--oai-radius-md); }
-.linkbtn:hover { text-decoration: underline; }
-.linkbtn:focus-visible { outline: 2px solid var(--oai-accent); outline-offset: 1px; }
 .cast-link { display: grid; gap: 6px; }
-.cast-link .field { display: flex; gap: 6px; }
-.cast-link .field .oai-input { flex: 1; min-width: 0; }
-.cast-link .hint { font-size: var(--oai-text-sm); color: var(--oai-ink-2); line-height: 1.4; }
-
-.send-live { border-radius: var(--oai-radius-xl); background: var(--oai-panel); box-shadow: 0 0 0 0.5px var(--oai-hairline); padding: 12px; display: grid; gap: 10px; }
-.send-live .media { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.send-live .media > div { min-width: 0; }
-.send-live .art { width: 44px; height: 44px; border-radius: var(--oai-radius-md); background: var(--oai-accent-soft); color: var(--oai-accent); display: grid; place-items: center; flex: none; }
-.send-live .art svg { width: 20px; height: 20px; }
-.send-live .media b { display: block; font-weight: 600; font-size: var(--oai-text-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.send-live .media small { display: flex; align-items: center; gap: 6px; font-size: var(--oai-text-sm); color: var(--oai-ink-2); }
-.send-live .oai-btn.wide { width: 100%; }
+/* The casting card is .oai-live; its "Connecting to …" line keeps its 6 px gap after the spinner. */
+[data-r="live"] .oai-media small { gap: var(--oai-space-1-5); }
 
 .send-ban { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--oai-radius-lg); background: var(--oai-bad-soft); font-size: var(--oai-text-md); line-height: 1.4; }
 .send-ban svg { width: 16px; height: 16px; color: var(--oai-bad); margin-top: 2px; flex: none; }
@@ -94,7 +53,6 @@ body { overflow: hidden; }
 .oai-live .inline-error, .oai-code .inline-error { margin: 0; }
 
 /* ---------- Mirror screen: the tile's live line, the Mirror sheet, the code sheet (mirror.js) ---------- */
-.dico.is-accent { background: var(--oai-accent-soft); color: var(--oai-accent); }
 .m-tile-live { display: inline-flex; align-items: center; gap: 5px; color: var(--oai-ok); font-variant-numeric: tabular-nums; }
 .m-pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--oai-ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--oai-ok) 22%, transparent); flex: none; }
 .send-ban.is-info { background: var(--oai-accent-soft); }
@@ -163,7 +121,7 @@ button.m-row:focus-visible, .m-row .x:focus-visible, .m-disp:focus-visible { out
 .m-btns > * { flex: 1; }
 /* the code sheet on a device page, when a cast device asks to be paired (cast.js) */
 .cast-code { padding: 14px 4px 6px; }
-.send-head .s svg { width: 12px; height: 12px; flex: none; }
+#send-head .oai-s svg { width: 12px; height: 12px; flex: none; }   /* the lock beside "Password needed" */
 
 /* network doctor */
 .doctor-list { display: grid; gap: var(--oai-space-1-5); }

@@ -35,6 +35,7 @@ const ui = {
   scanning: false,
   scanError: null,
   lastScan: 0,              // when the device list was last refreshed (ms)
+  panelSeen: false,         // the panel has been shown this run; until then nothing scans
   busy: new Set(),          // actions in flight; only their own controls show busy
   errors: {},               // action -> plain message shown next to its control
   findings: [],
@@ -113,7 +114,7 @@ function rowSub(d) {
   const mirror = OapMirror.rowStatus(d.address);
   if (mirror) return { html: mirror.html, cls: mirror.cls };
   const live = OapCast.rowStatus(d.identifier);
-  if (live) return { html: live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.text)}`, cls: live.kind === "busy" ? "s-busy" : "s-live" };
+  if (live) return { html: live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.text)}`, cls: live.kind === "busy" ? "is-busy" : "is-live" };
   return { html: esc(d.added ? "Added by address" : friendlyType(d)), cls: "" };
 }
 
@@ -225,7 +226,7 @@ function devicesHtml() {
   const list = sendRows();
   const rows = list.map((d) => {
     const sub = rowSub(d);
-    return `<button class="oai-list-row send-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><b>${esc(d.name)}</b><small class="${sub.cls}">${sub.html}</small></span><svg class="chev"><use href="#i-chev"/></svg></button>`;
+    return `<button class="oai-list-row" data-device="${esc(d.identifier)}"><span class="oai-ico">${use(deviceIcon(d))}</span><span class="oai-grow"><b>${esc(d.name)}</b><small class="${sub.cls}">${sub.html}</small></span><svg class="oai-chev"><use href="#i-chev"/></svg></button>`;
   }).join("");
   const empty = list.length && !ui.scanning ? "" : `<div class="devices-empty">${devicesEmptyText()}</div>`;
   // The "Add device by address…" row (add-device.js) ends the list.
@@ -236,7 +237,7 @@ function devicesHtml() {
 function sendHeadHtml() {
   const d = ui.target, live = OapCast.rowStatus(d.identifier), mirror = OapMirror.rowStatus(d.address);
   const sub = mirror ? mirror.short : live ? (live.kind === "busy" ? `<span class="oai-spinner is-small"></span>${esc(live.text)}` : `<span class="oai-dot is-live"></span>${esc(live.short || live.text)}`) : esc(friendlyType(d));
-  return `<button class="send-back" data-action="home" aria-label="Back">${use("i-back")}</button><span class="dico">${use(deviceIcon(d))}</span><div class="tt"><div class="t">${esc(d.name)}</div><div class="s">${sub}</div></div>`;
+  return `<button class="oai-icon-btn" data-action="home" aria-label="Back">${use("i-back")}</button><span class="oai-dico">${use(deviceIcon(d))}</span><div class="oai-tt"><div class="oai-t">${esc(d.name)}</div><div class="oai-s">${sub}</div></div>`;
 }
 
 /** What the sub-page header shows: an icon, a title and a subtitle. Home has its own header; a device page has send-head. */
@@ -262,7 +263,7 @@ function speakerOptions(saved) {
 /** The Mirror sheet's header: back to where it was opened from, and what mirroring is doing. */
 function mirrorHeadHtml() {
   const h = OapMirror.head();
-  return `<button class="send-back" data-action="back" aria-label="Back">${use("i-back")}</button><span class="dico is-accent">${use("i-mirror")}</span><div class="tt"><div class="t">${esc(h.title)}</div><div class="s">${h.sub}</div></div>`;
+  return `<button class="oai-icon-btn" data-action="back" aria-label="Back">${use("i-back")}</button><span class="oai-dico is-accent">${use("i-mirror")}</span><div class="oai-tt"><div class="oai-t">${esc(h.title)}</div><div class="oai-s">${h.sub}</div></div>`;
 }
 
 /** TVs the Mirror sheet offers: everything in Send to except speakers, joined by address. */
@@ -443,9 +444,16 @@ async function scan() {
   }
 }
 
-/** Devices appear by themselves: on start, when the panel opens (if the list is old), after a network change. */
+/** Devices appear by themselves: the first time the panel opens, when it opens again (if the list is
+ *  old), and after a network change. A scan starts the cast sidecar, so nothing scans until the panel
+ *  has been shown: a boot launch stays idle. */
 function scanIfStale() {
-  if (Date.now() - ui.lastScan > RESCAN_AFTER_MS) scan();
+  if (ui.panelSeen && Date.now() - ui.lastScan > RESCAN_AFTER_MS) scan();
+}
+
+function panelShown() {
+  ui.panelSeen = true;
+  scanIfStale();
 }
 
 function selectDevice(identifier) {
@@ -482,7 +490,7 @@ function showDevicePage() {
 function deviceExtraHtml() {
   const d = ui.target;
   const mirrorOnly = !canCast(d) && !isSpeaker(d) && window.OapMirror && OapMirror.tile;
-  return (mirrorOnly ? `<div class="send-body"><div class="send-tiles">${OapMirror.tile(d)}</div></div>` : "") + AddDevice.removeHtml(d);
+  return (mirrorOnly ? `<div class="send-body"><div class="oai-tiles">${OapMirror.tile(d)}</div></div>` : "") + AddDevice.removeHtml(d);
 }
 
 /** Opens the Mirror sheet from the open device page. */
@@ -620,8 +628,8 @@ listen("receiver-status", (e) => {
 
 listen("doctor-findings", (e) => { ui.findings = e.payload || []; render(); });
 
-listen("panel-shown", scanIfStale);
-listen("network-changed", () => { ui.lastScan = 0; scan(); });
+listen("panel-shown", panelShown);
+listen("network-changed", () => { ui.lastScan = 0; scanIfStale(); });
 
 OapCast.mount($("cast-media"), render, { shown: () => ui.page === "cast" });
 OapMirror.mount($("mirror-sheet"), { changed: mirrorChanged, devices: mirrorTargets, back });
@@ -638,5 +646,6 @@ MirrorAdvanced.mount($("mirror-sheet").querySelector('[data-slot="mirror-advance
     ui.errors.start = String(err);
   }
   render();
-  scan();
+  // A manual launch may have shown the panel before "panel-shown" was listened for.
+  if (await invoke("panel_visible").catch(() => false)) panelShown();
 })();

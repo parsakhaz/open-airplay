@@ -3,7 +3,6 @@ pub mod cast_credentials;
 pub mod dacp;
 pub mod doctor;
 pub mod engine;
-pub mod engine_log;
 pub mod launch;
 pub mod mirror;
 pub mod mirror_options;
@@ -12,6 +11,7 @@ pub mod netwatch;
 pub mod panel;
 pub mod prefs;
 pub mod process_guard;
+pub mod rotating_log;
 pub mod sender;
 pub mod speakers;
 pub mod status;
@@ -89,7 +89,7 @@ struct AppState {
     /// Mirroring this PC to a TV; set during setup.
     mirror: std::sync::OnceLock<mirror::Mirror>,
     lifecycle: Lifecycle,
-    /// Cast pairings made this run, kept in memory too so they work even if the file can't be saved.
+    /// Cast pairings made this run, kept in memory too so they work even if they can't be saved.
     cast_pairings: Mutex<cast_credentials::CastCredentials>,
 }
 
@@ -398,8 +398,8 @@ fn start_receiver_locked(app: &AppHandle, settings: ReceiverSettings, reason: Op
     }
     let cmd = EngineCommand { program: engine, args, path_prepend, env, restart_delay: Duration::from_secs(2) };
     let handle = app.clone();
-    // Every engine line and lifecycle event goes to <app log dir>/engine.log (rotated, see engine_log) for diagnosis.
-    let log = app.path().app_log_dir().ok().and_then(|dir| engine_log::shared(&dir));
+    // Every engine line and lifecycle event goes to <app log dir>/engine.log (rotated, see rotating_log) for diagnosis.
+    let log = app.path().app_log_dir().ok().and_then(|dir| rotating_log::shared(&dir.join("engine.log")));
     // Runs on the supervisor's delivery thread, never on a thread that waits for the supervisor.
     // Every line goes to the log; only real status changes reach the UI.
     let sup = Supervisor::start(cmd, move |event| {
@@ -810,17 +810,14 @@ fn find_sender_program(app: &AppHandle) -> Option<sender::SenderProgram> {
     sender::find_sender(resources.as_deref(), override_exe, sender_python(), &repo_root())
 }
 
-/// <app log dir>/sender.log: the cast sidecar's own log (its stderr) and the app's notes about it.
-fn sender_log(app: &AppHandle) -> Option<std::fs::File> {
-    let dir = app.path().app_log_dir().ok()?;
-    std::fs::create_dir_all(&dir).ok()?;
-    std::fs::OpenOptions::new().create(true).append(true).open(dir.join("sender.log")).ok()
+/// <app log dir>/sender.log (rotated): the cast sidecar's own log (its stderr) and the app's notes about it.
+fn sender_log(app: &AppHandle) -> Option<std::sync::Arc<rotating_log::RotatingLog>> {
+    rotating_log::shared(&app.path().app_log_dir().ok()?.join("sender.log"))
 }
 
 fn sender_log_line(app: &AppHandle, line: &str) {
-    if let Some(mut f) = sender_log(app) {
-        use std::io::Write;
-        let _ = writeln!(f, "open-airplay: {line}");
+    if let Some(log) = sender_log(app) {
+        log.write_line(&format!("open-airplay: {line}"));
     }
 }
 
@@ -855,8 +852,7 @@ fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
         move |mut event| {
             let sidecars = &events.state::<AppState>().inner().sidecars;
             // A "paired" reply loses its credentials here; if they couldn't be saved it says so.
-            let path = cast_credentials_path(&events);
-            let note = cast_credentials::on_sidecar_event(path.as_deref(), &mut events.state::<AppState>().cast_pairings.lock().unwrap(), &mut event);
+            let note = cast_credentials::on_sidecar_event(cast_store(&events).as_ref(), &mut events.state::<AppState>().cast_pairings.lock().unwrap(), &mut event);
             if let Some(note) = note {
                 sender_log_line(&events, &note);
             }
@@ -914,17 +910,30 @@ fn send_to_sender(app: &AppHandle, command: &Value) -> Result<(), String> {
 async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut command = command;
-        let saved = cast_credentials::current(cast_credentials_path(&app).as_deref(), &app.state::<AppState>().cast_pairings.lock().unwrap());
-        cast_credentials::attach(&mut command, &saved);
+        let session = app.state::<AppState>().cast_pairings.lock().unwrap().clone();
+        cast_credentials::attach(&mut command, |id| cast_credentials::credentials_for(cast_store(&app).as_ref(), &session, id));
         send_to_sender(&app, &command)
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// <app config dir>/cast-credentials.json: what pairing a cast device gave us, per device.
-fn cast_credentials_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|d| d.join(cast_credentials::FILE_NAME))
+/// What pairing a cast device gave us, per device: in Windows Credential Manager, elsewhere in
+/// <app config dir>/cast-credentials.json. On Windows, a pairing an unfinished move left in that
+/// file still works (see cast_credentials::LegacyFallback).
+#[cfg(windows)]
+fn cast_store(app: &AppHandle) -> Box<dyn cast_credentials::Store> {
+    let keyring = cast_credentials::Keyring::new(cast_credentials::SERVICE);
+    match app.path().app_config_dir() {
+        Ok(dir) => Box::new(cast_credentials::LegacyFallback::new(keyring, dir.join(cast_credentials::FILE_NAME))),
+        Err(_) => Box::new(keyring),
+    }
+}
+
+#[cfg(not(windows))]
+fn cast_store(app: &AppHandle) -> Box<dyn cast_credentials::Store> {
+    let dir = app.path().app_config_dir().unwrap_or_default();
+    Box::new(cast_credentials::FileStore::new(dir.join(cast_credentials::FILE_NAME)))
 }
 
 /// Starts pairing with a cast device that asked for it: it shows a code, or wants its password.
@@ -1027,10 +1036,7 @@ fn mirror_sender(app: &AppHandle) -> mirror::SenderCommand {
     }
     let dev = (repo_root().join("bin").join(&name), vec![]);
     let (program, path_prepend) = candidates.into_iter().find(|(p, _)| p.is_file()).unwrap_or(dev);
-    let log = app.path().app_log_dir().ok().and_then(|dir| {
-        std::fs::create_dir_all(&dir).ok()?;
-        Some(dir.join("mirror.log"))
-    });
+    let log = app.path().app_log_dir().ok().map(|dir| dir.join("mirror.log"));
     mirror::SenderCommand { program, args: vec!["-stdio".into()], path_prepend, log }
 }
 
@@ -1280,6 +1286,13 @@ fn panel_fit(app: AppHandle, height: f64) {
     place_panel(&app);
 }
 
+/// Whether the panel is open now. The page asks once at load: a manual launch may show the panel
+/// before the page listens for "panel-shown".
+#[tauri::command]
+fn panel_visible(app: AppHandle) -> bool {
+    app.state::<AppState>().panel.visible.load(Ordering::SeqCst)
+}
+
 /// Esc on the home page.
 #[tauri::command]
 fn panel_hide(app: AppHandle) {
@@ -1369,6 +1382,15 @@ pub fn run() {
                 });
                 *state.prefs.lock().unwrap() = prefs;
                 *state.prefs_path.lock().unwrap() = path;
+                // Pairings an earlier version kept in <app config dir>/cast-credentials.json move to
+                // Credential Manager, once. (Off Windows that file is still the store.)
+                #[cfg(windows)]
+                if let Some(old) = app.path().app_config_dir().ok().map(|d| d.join(cast_credentials::FILE_NAME)) {
+                    let keyring = cast_credentials::Keyring::new(cast_credentials::SERVICE);
+                    if let Some(note) = cast_credentials::migrate(&old, &keyring) {
+                        sender_log_line(app.handle(), &note);
+                    }
+                }
                 let mut offered = false;
                 let prefs = state.update_prefs(|p| offered = p.offer_start_at_login());
                 let result = if offered {
@@ -1467,7 +1489,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, sender_pair_begin, sender_pair_code, sender_pair_cancel, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays, set_mirror_options, mirror_capabilities, added_device_check, added_device_save, added_device_remove])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, sender_pair_begin, sender_pair_code, sender_pair_cancel, panel_fit, panel_hide, panel_visible, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays, set_mirror_options, mirror_capabilities, added_device_check, added_device_save, added_device_remove])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
