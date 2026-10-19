@@ -314,7 +314,7 @@ pub struct SenderCommand {
     pub args: Vec<String>,
     /// Folders put in front of PATH (where the bundled ffmpeg.exe lives).
     pub path_prepend: Vec<PathBuf>,
-    /// The sender's log (stderr), appended to.
+    /// The sender's log (its stderr), rotated (see rotating_log).
     pub log: Option<PathBuf>,
 }
 
@@ -541,9 +541,9 @@ impl Mirror {
             inner.proc = None;
         }
         let mut c = Command::new(&sender.program);
+        let log = sender.log.as_deref().and_then(crate::rotating_log::shared);
         c.args(&sender.args).stdin(Stdio::piped()).stdout(Stdio::piped());
-        let log = sender.log.as_ref().and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
-        c.stderr(log.map(Stdio::from).unwrap_or_else(Stdio::null));
+        c.stderr(if log.is_some() { Stdio::piped() } else { Stdio::null() });
         if !sender.path_prepend.is_empty() {
             let rest = std::env::var_os("PATH").unwrap_or_default();
             let paths = sender.path_prepend.iter().cloned().chain(std::env::split_paths(&rest));
@@ -560,6 +560,9 @@ impl Mirror {
         crate::process_guard::tie_to_app(&child);
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
+        if let (Some(stderr), Some(log)) = (child.stderr.take(), log) {
+            crate::rotating_log::copy_lines(stderr, log);
+        }
         inner.generation += 1;
         let generation = inner.generation;
         inner.proc = Some(Proc { child, stdin, generation });

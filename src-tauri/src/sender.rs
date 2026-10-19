@@ -10,6 +10,8 @@ use std::thread;
 use std::time::Duration;
 
 use serde::Serialize;
+
+use crate::rotating_log::RotatingLog;
 use serde_json::Value;
 
 /// Where the cast sidecar comes from.
@@ -102,12 +104,12 @@ impl SenderSidecar {
     /// Starts `program`. Its stderr (the sidecar's own log) goes to `stderr_log` when given.
     pub fn spawn(
         program: &SenderProgram,
-        stderr_log: Option<std::fs::File>,
+        stderr_log: Option<Arc<RotatingLog>>,
         on_event: impl Fn(Value) + Send + 'static,
         on_exit: impl FnOnce(SenderExit) + Send + 'static,
     ) -> std::io::Result<Self> {
         let mut c = Command::new(&program.program);
-        let stderr = stderr_log.map(Stdio::from).unwrap_or_else(Stdio::null);
+        let stderr = if stderr_log.is_some() { Stdio::piped() } else { Stdio::null() };
         c.args(&program.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(stderr);
         #[cfg(windows)]
         {
@@ -118,6 +120,9 @@ impl SenderSidecar {
         crate::process_guard::tie_to_app(&child);
         let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
         let stdout = child.stdout.take().expect("piped stdout");
+        if let (Some(stderr), Some(log)) = (child.stderr.take(), stderr_log) {
+            crate::rotating_log::copy_lines(stderr, log);
+        }
         let child = Arc::new(Mutex::new(child));
         let running = Arc::new(AtomicBool::new(true));
         let stopping = Arc::new(AtomicBool::new(false));
@@ -311,14 +316,21 @@ mod tests {
     fn the_sidecars_log_goes_to_the_given_file() {
         let (python, script) = fake_sender("stderr", "import sys\nsys.stderr.write('something broke\\n')\n");
         let log = std::env::temp_dir().join(format!("oap-sender-log-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&log);
         let program = SenderProgram { program: python, args: vec![script.into_os_string()], source: SenderSource::Dev };
         let (exit_tx, exit_rx) = mpsc::channel();
-        let _sidecar = SenderSidecar::spawn(&program, Some(std::fs::File::create(&log).unwrap()), |_| {}, move |exit| {
+        let writer = Arc::new(RotatingLog::open(&log, 1024, 1).unwrap());
+        let _sidecar = SenderSidecar::spawn(&program, Some(writer), |_| {}, move |exit| {
             let _ = exit_tx.send(exit);
         })
         .unwrap();
         exit_rx.recv_timeout(Duration::from_secs(10)).expect("exit reported");
-        assert!(std::fs::read_to_string(&log).unwrap().contains("something broke"));
+        // The stderr copy runs on its own thread, so it may land just after the exit is reported.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !std::fs::read_to_string(&log).unwrap_or_default().contains("something broke") {
+            assert!(std::time::Instant::now() < deadline, "the sidecar's stderr never reached the log");
+            thread::sleep(Duration::from_millis(20));
+        }
         let _ = std::fs::remove_file(&log);
     }
 
