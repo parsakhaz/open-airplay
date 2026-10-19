@@ -919,10 +919,15 @@ async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
 }
 
 /// What pairing a cast device gave us, per device: in Windows Credential Manager, elsewhere in
-/// <app config dir>/cast-credentials.json.
+/// <app config dir>/cast-credentials.json. On Windows, a pairing an unfinished move left in that
+/// file still works (see cast_credentials::LegacyFallback).
 #[cfg(windows)]
-fn cast_store(_app: &AppHandle) -> Box<dyn cast_credentials::Store> {
-    Box::new(cast_credentials::Keyring::new(cast_credentials::SERVICE))
+fn cast_store(app: &AppHandle) -> Box<dyn cast_credentials::Store> {
+    let keyring = cast_credentials::Keyring::new(cast_credentials::SERVICE);
+    match app.path().app_config_dir() {
+        Ok(dir) => Box::new(cast_credentials::LegacyFallback::new(keyring, dir.join(cast_credentials::FILE_NAME))),
+        Err(_) => Box::new(keyring),
+    }
 }
 
 #[cfg(not(windows))]
@@ -1381,7 +1386,8 @@ pub fn run() {
                 // Credential Manager, once. (Off Windows that file is still the store.)
                 #[cfg(windows)]
                 if let Some(old) = app.path().app_config_dir().ok().map(|d| d.join(cast_credentials::FILE_NAME)) {
-                    if let Some(note) = cast_credentials::migrate(&old, cast_store(app.handle()).as_ref()) {
+                    let keyring = cast_credentials::Keyring::new(cast_credentials::SERVICE);
+                    if let Some(note) = cast_credentials::migrate(&old, &keyring) {
                         sender_log_line(app.handle(), &note);
                     }
                 }

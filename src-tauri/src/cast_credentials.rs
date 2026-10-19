@@ -36,6 +36,45 @@ pub trait Store: Send + Sync {
     fn set(&self, identifier: &str, credentials: &DeviceCredentials) -> Result<(), String>;
 }
 
+impl<T: Store + ?Sized> Store for &T {
+    fn get(&self, identifier: &str) -> Result<Option<DeviceCredentials>, String> {
+        (**self).get(identifier)
+    }
+    fn set(&self, identifier: &str, credentials: &DeviceCredentials) -> Result<(), String> {
+        (**self).set(identifier, credentials)
+    }
+}
+
+/// A store, with the old file's pairings under its own while that file is still there (a move into
+/// the store that hasn't finished): a pairing the move couldn't take yet still works. The store's
+/// pairings win; writes go to the store only.
+pub struct LegacyFallback<S> {
+    store: S,
+    legacy: PathBuf,
+}
+
+impl<S: Store> LegacyFallback<S> {
+    pub fn new(store: S, legacy: PathBuf) -> Self {
+        LegacyFallback { store, legacy }
+    }
+}
+
+impl<S: Store> Store for LegacyFallback<S> {
+    fn get(&self, identifier: &str) -> Result<Option<DeviceCredentials>, String> {
+        let saved = self.store.get(identifier)?;
+        // An unreadable file adds nothing; migrate reports it.
+        let Some(mut creds) = load_file(&self.legacy).ok().and_then(|mut all| all.remove(identifier)) else {
+            return Ok(saved);
+        };
+        creds.extend(saved.unwrap_or_default());
+        Ok(Some(creds))
+    }
+
+    fn set(&self, identifier: &str, credentials: &DeviceCredentials) -> Result<(), String> {
+        self.store.set(identifier, credentials)
+    }
+}
+
 /// The plaintext `cast-credentials.json`: where pairings live off Windows, where keyring has no
 /// persistent store this app enables (its fallback keeps nothing).
 pub struct FileStore {
@@ -246,6 +285,8 @@ mod tests {
         saved: Mutex<CastCredentials>,
         fail_get: Mutex<Option<String>>,
         fail_set: Mutex<Option<String>>,
+        /// Only this device's writes fail, when set.
+        fail_set_only: Mutex<Option<String>>,
     }
 
     impl Store for Memory {
@@ -258,6 +299,9 @@ mod tests {
         fn set(&self, identifier: &str, credentials: &DeviceCredentials) -> Result<(), String> {
             if let Some(e) = self.fail_set.lock().unwrap().clone() {
                 return Err(e);
+            }
+            if self.fail_set_only.lock().unwrap().as_deref() == Some(identifier) {
+                return Err("Credential Manager: write failed".into());
             }
             self.saved.lock().unwrap().insert(identifier.into(), credentials.clone());
             Ok(())
@@ -397,6 +441,32 @@ mod tests {
         on_sidecar_event(&store, &mut CastCredentials::new(), &mut event);
         assert_eq!(event["saved"], json!(false));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json", "the file is left as it was");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// TV A moves, TV B's write fails: the file stays, and TV B's pairing in it still works this run
+    /// (the store's and this run's pairings win over the file's).
+    #[test]
+    fn pairings_left_in_the_file_by_an_unfinished_move_still_work() {
+        let path = temp_file("fallback");
+        std::fs::write(&path, r#"{"tv-a": {"AirPlay": "a1"}, "tv-b": {"AirPlay": "b1", "RAOP": "r1"}}"#).unwrap();
+        let store = Memory::default();
+        *store.fail_set_only.lock().unwrap() = Some("tv-b".into());
+        assert!(migrate(&path, &store).unwrap().contains("kept"));
+        assert!(path.exists());
+
+        let with_file = LegacyFallback::new(&store, path.clone());
+        let mut session = CastCredentials::new();
+        assert_eq!(credentials_for(&with_file, &session, "tv-b"), creds(&[("AirPlay", "b1"), ("RAOP", "r1")]));
+        assert_eq!(credentials_for(&with_file, &session, "tv-a")["AirPlay"], "a1");
+        session.insert("tv-b".into(), creds(&[("AirPlay", "b2")]));
+        assert_eq!(credentials_for(&with_file, &session, "tv-b"), creds(&[("AirPlay", "b2"), ("RAOP", "r1")]));
+
+        // Once the move completes, the file is gone and the store answers alone.
+        *store.fail_set_only.lock().unwrap() = None;
+        migrate(&path, &store).unwrap();
+        assert!(!path.exists());
+        assert_eq!(credentials_for(&with_file, &CastCredentials::new(), "tv-b"), creds(&[("AirPlay", "b1"), ("RAOP", "r1")]));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
