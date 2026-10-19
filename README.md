@@ -18,6 +18,18 @@ Receive AirPlay from your iPhone, iPad, and Mac, and mirror your Windows desktop
 
 ---
 
+## Install
+
+Download the latest Windows installer (`open-airplay_<version>_x64-setup.exe`) from the [Releases page](https://github.com/parsakhaz/open-airplay/releases) and run it.
+
+- It bundles the UxPlay receiver engine and its GStreamer runtime, so the download is fairly large. Nothing else needs to be installed to receive AirPlay.
+- The installer is not code signed yet, so Windows SmartScreen may warn about an unrecognized app. Choose **More info**, then **Run anyway**.
+- Early releases (0.x) are marked as prereleases.
+
+To build from source instead, see [Quick start](#quick-start).
+
+---
+
 ## What it does
 
 ```mermaid
