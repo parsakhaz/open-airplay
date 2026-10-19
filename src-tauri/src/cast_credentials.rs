@@ -1,28 +1,87 @@
 //! Credentials from pairing a cast device (an Apple TV or speaker that asks for a code), kept per
-//! device in a per-user file in the app's config folder (`cast-credentials.json`, not settings.json).
+//! device in Windows Credential Manager (see `Keyring`), the store the mirror sender uses too.
 //! The shell adds them to each cast request and takes them out of the sidecar's "paired" reply, so
 //! they never reach the panel or a log.
 //!
-//! New credentials are kept in memory for this run first, so casting goes on even when the file
-//! can't be written. A file that exists but can't be read or parsed is never overwritten: that would
-//! lose the pairings in it. Either failure is reported on the "paired" reply (`saved: false`).
+//! New credentials are kept in memory for this run first, so casting goes on even when the store
+//! can't be written. A device whose saved entry can't be read is never overwritten: that would lose
+//! the pairings in it. Either failure is reported on the "paired" reply (`saved: false`).
+//!
+//! Earlier versions kept them in a plaintext file, `cast-credentials.json`; `migrate` moves its
+//! pairings into the store once, then deletes it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::Value;
 
-/// The file's name inside the app config folder.
+/// The old plaintext file's name inside the app config folder.
 pub const FILE_NAME: &str = "cast-credentials.json";
+
+/// Credential Manager entries are named `<SERVICE>:<device identifier>` (the uninstaller deletes
+/// them by this prefix). Not the mirror sender's "open-airplay": the two never share entries.
+pub const SERVICE: &str = "open-airplay-cast";
 
 /// One device's credentials: protocol name ("AirPlay", "RAOP", or "password") -> credentials.
 pub type DeviceCredentials = BTreeMap<String, String>;
 /// Every paired device: identifier -> its credentials.
 pub type CastCredentials = BTreeMap<String, DeviceCredentials>;
 
-/// Reads the file. A missing file means nothing is paired yet; one that can't be read or parsed is
+/// Where saved pairings live, one entry per device. Errors describe what failed, never the contents.
+pub trait Store: Send + Sync {
+    /// The device's saved credentials; Ok(None) when it was never paired.
+    fn get(&self, identifier: &str) -> Result<Option<DeviceCredentials>, String>;
+    /// Replaces the device's saved credentials.
+    fn set(&self, identifier: &str, credentials: &DeviceCredentials) -> Result<(), String>;
+}
+
+/// The per-user Windows Credential Manager (a generic credential per device).
+pub struct Keyring {
+    service: String,
+}
+
+impl Keyring {
+    pub fn new(service: &str) -> Self {
+        Keyring { service: service.to_string() }
+    }
+
+    fn entry(&self, identifier: &str) -> Result<keyring::Entry, String> {
+        keyring::Entry::new_with_target(&format!("{}:{identifier}", self.service), &self.service, identifier).map_err(describe)
+    }
+
+    /// Removes the device's entry, if any.
+    pub fn delete(&self, identifier: &str) -> Result<(), String> {
+        match self.entry(identifier)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(describe(e)),
+        }
+    }
+}
+
+impl Store for Keyring {
+    fn get(&self, identifier: &str) -> Result<Option<DeviceCredentials>, String> {
+        let text = match self.entry(identifier)?.get_password() {
+            Ok(text) => text,
+            Err(keyring::Error::NoEntry) => return Ok(None),
+            Err(e) => return Err(describe(e)),
+        };
+        serde_json::from_str(&text).map(Some).map_err(|e| format!("the saved entry for {identifier} isn't readable ({})", parse_problem(&e)))
+    }
+
+    fn set(&self, identifier: &str, credentials: &DeviceCredentials) -> Result<(), String> {
+        let text = serde_json::to_string(credentials).expect("strings always serialize");
+        self.entry(identifier)?.set_password(&text).map_err(describe)
+    }
+}
+
+/// A keyring error in words. keyring's own messages name the failure and never the secret.
+fn describe(e: keyring::Error) -> String {
+    format!("Credential Manager: {e}")
+}
+
+/// Reads the old file. A missing file means nothing to move; one that can't be read or parsed is
 /// an error (its pairings are still in it), described without its contents.
-pub fn load(path: &Path) -> Result<CastCredentials, String> {
+pub fn load_file(path: &Path) -> Result<CastCredentials, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CastCredentials::new()),
@@ -44,42 +103,58 @@ fn parse_problem(e: &serde_json::Error) -> String {
     format!("{kind} at line {} column {}", e.line(), e.column())
 }
 
-/// The credentials casts use: the saved ones plus this run's pairings (which win). When the file
-/// can't be read, this run's pairings still work.
-pub fn current(path: Option<&Path>, session: &CastCredentials) -> CastCredentials {
-    let mut all = path.and_then(|p| load(p).ok()).unwrap_or_default();
-    for (device, creds) in session {
-        all.entry(device.clone()).or_default().extend(creds.clone());
+/// Moves the old file's pairings into the store, then deletes the file. Pairings already in the
+/// store win over the file's. If the file can't be read, or any device can't be moved, the file is
+/// kept as it is and the move is tried again at the next launch. Returns a line for the log (never
+/// credentials), or None when there was no file.
+pub fn migrate(path: &Path, store: &dyn Store) -> Option<String> {
+    if !path.exists() {
+        return None;
     }
-    all
+    let all = match load_file(path) {
+        Ok(all) => all,
+        Err(e) => return Some(format!("kept {FILE_NAME}, its pairings weren't moved to Credential Manager: {e}")),
+    };
+    for (identifier, credentials) in &all {
+        let moved = store.get(identifier).and_then(|saved| {
+            let mut merged = credentials.clone();
+            merged.extend(saved.unwrap_or_default());
+            store.set(identifier, &merged)
+        });
+        if let Err(e) = moved {
+            return Some(format!("kept {FILE_NAME}, couldn't move the pairing with {identifier} to Credential Manager: {e}"));
+        }
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Some(format!("moved {} pairing(s) from {FILE_NAME} to Credential Manager", all.len())),
+        Err(e) => Some(format!("moved the pairings to Credential Manager, but couldn't delete {FILE_NAME}: {e}")),
+    }
 }
 
-/// Keeps a device's new credentials: in memory for this run, then in the file. Err when the file
-/// couldn't be read (it is left as it is) or written; the credentials still work until the app quits.
-pub fn remember(path: Option<&Path>, session: &mut CastCredentials, identifier: &str, credentials: DeviceCredentials) -> Result<(), String> {
+/// The credentials a cast to `identifier` uses: the saved ones plus this run's pairing (which
+/// wins). When the store can't be read, this run's pairing still works.
+pub fn credentials_for(store: &dyn Store, session: &CastCredentials, identifier: &str) -> DeviceCredentials {
+    let mut creds = store.get(identifier).ok().flatten().unwrap_or_default();
+    creds.extend(session.get(identifier).cloned().unwrap_or_default());
+    creds
+}
+
+/// Keeps a device's new credentials: in memory for this run, then in the store. Err when its saved
+/// entry couldn't be read (it is left as it is) or written; the credentials still work until the
+/// app quits.
+pub fn remember(store: &dyn Store, session: &mut CastCredentials, identifier: &str, credentials: DeviceCredentials) -> Result<(), String> {
     session.entry(identifier.to_string()).or_default().extend(credentials.clone());
-    let path = path.ok_or("there's no config folder to save it in")?;
-    let mut all = load(path)?;
-    all.entry(identifier.to_string()).or_default().extend(credentials);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
-    }
-    // Written aside and moved into place, so a crash never leaves half a file.
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&all).expect("strings always serialize"))
-        .map_err(|e| format!("couldn't write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("couldn't replace {}: {e}", path.display())
-    })
+    let mut saved = store.get(identifier)?.unwrap_or_default();
+    saved.extend(credentials);
+    store.set(identifier, &saved)
 }
 
 /// The shell's step for every sidecar event before it reaches the panel. A "paired" reply loses its
 /// credentials, which are kept (see `remember`); if they couldn't be saved the reply says
 /// `saved: false`, so the panel can tell the user. Returns a line for the log (never credentials).
-pub fn on_sidecar_event(path: Option<&Path>, session: &mut CastCredentials, event: &mut Value) -> Option<String> {
+pub fn on_sidecar_event(store: &dyn Store, session: &mut CastCredentials, event: &mut Value) -> Option<String> {
     let (identifier, credentials) = take_paired(event)?;
-    match remember(path, session, &identifier, credentials) {
+    match remember(store, session, &identifier, credentials) {
         Ok(()) => Some(format!("paired with {identifier}")),
         Err(e) => {
             event["saved"] = Value::Bool(false);
@@ -88,15 +163,15 @@ pub fn on_sidecar_event(path: Option<&Path>, session: &mut CastCredentials, even
     }
 }
 
-/// Gives a cast request the device's saved credentials (and drops any the panel sent).
-pub fn attach(command: &mut Value, saved: &CastCredentials) {
+/// Gives a cast request its device's credentials from `lookup` (and drops any the panel sent).
+pub fn attach(command: &mut Value, lookup: impl FnOnce(&str) -> DeviceCredentials) {
     if !matches!(command["cmd"].as_str(), Some("play_url" | "stream_file")) {
         return;
     }
     let Some(obj) = command.as_object_mut() else { return };
     obj.remove("credentials");
-    let device = obj.get("identifier").and_then(Value::as_str).and_then(|id| saved.get(id));
-    if let Some(creds) = device.filter(|c| !c.is_empty()) {
+    let creds = obj.get("identifier").and_then(Value::as_str).map(lookup).unwrap_or_default();
+    if !creds.is_empty() {
         obj.insert("credentials".into(), serde_json::to_value(creds).expect("strings always serialize"));
     }
 }
@@ -117,6 +192,31 @@ pub fn take_paired(event: &mut Value) -> Option<(String, DeviceCredentials)> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Mutex;
+
+    /// An in-memory store whose reads or writes can be made to fail.
+    #[derive(Default)]
+    struct Memory {
+        saved: Mutex<CastCredentials>,
+        fail_get: Mutex<Option<String>>,
+        fail_set: Mutex<Option<String>>,
+    }
+
+    impl Store for Memory {
+        fn get(&self, identifier: &str) -> Result<Option<DeviceCredentials>, String> {
+            if let Some(e) = self.fail_get.lock().unwrap().clone() {
+                return Err(e);
+            }
+            Ok(self.saved.lock().unwrap().get(identifier).cloned())
+        }
+        fn set(&self, identifier: &str, credentials: &DeviceCredentials) -> Result<(), String> {
+            if let Some(e) = self.fail_set.lock().unwrap().clone() {
+                return Err(e);
+            }
+            self.saved.lock().unwrap().insert(identifier.into(), credentials.clone());
+            Ok(())
+        }
+    }
 
     fn temp_file(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("oap-cast-creds-{name}-{}", std::process::id()));
@@ -134,54 +234,106 @@ mod tests {
     }
 
     /// TV A paired and saved in an earlier run.
-    fn saved_tv_a(name: &str) -> std::path::PathBuf {
-        let path = temp_file(name);
-        remember(Some(&path), &mut CastCredentials::new(), "tv-a", creds(&[("AirPlay", "a1")])).unwrap();
-        path
+    fn saved_tv_a() -> Memory {
+        let store = Memory::default();
+        remember(&store, &mut CastCredentials::new(), "tv-a", creds(&[("AirPlay", "a1")])).unwrap();
+        store
     }
 
     #[test]
     fn credentials_survive_a_restart_per_device() {
-        let path = temp_file("round-trip");
+        let store = Memory::default();
         let mut session = CastCredentials::new();
-        remember(Some(&path), &mut session, "tv", creds(&[("AirPlay", "a1")])).unwrap();
-        remember(Some(&path), &mut session, "speaker", creds(&[("RAOP", "r1")])).unwrap();
-        remember(Some(&path), &mut session, "tv", creds(&[("RAOP", "r2")])).unwrap();
-        remember(Some(&path), &mut session, "tv", creds(&[("AirPlay", "a2")])).unwrap();
-        // A fresh load, with no session, is what the app sees after a restart.
-        let saved = load(&path).unwrap();
-        assert_eq!(saved["tv"], creds(&[("AirPlay", "a2"), ("RAOP", "r2")]));
-        assert_eq!(saved["speaker"], creds(&[("RAOP", "r1")]));
-        assert!(!path.with_extension("json.tmp").exists());
+        remember(&store, &mut session, "tv", creds(&[("AirPlay", "a1")])).unwrap();
+        remember(&store, &mut session, "speaker", creds(&[("RAOP", "r1")])).unwrap();
+        remember(&store, &mut session, "tv", creds(&[("RAOP", "r2")])).unwrap();
+        remember(&store, &mut session, "tv", creds(&[("AirPlay", "a2")])).unwrap();
+        // No session is what the app has after a restart.
+        let fresh = CastCredentials::new();
+        assert_eq!(credentials_for(&store, &fresh, "tv"), creds(&[("AirPlay", "a2"), ("RAOP", "r2")]));
+        assert_eq!(credentials_for(&store, &fresh, "speaker"), creds(&[("RAOP", "r1")]));
+        assert!(credentials_for(&store, &fresh, "never-paired").is_empty());
+    }
+
+    #[test]
+    fn an_entry_that_cant_be_read_is_not_replaced_and_the_new_pairing_still_works() {
+        let store = saved_tv_a();
+        *store.fail_get.lock().unwrap() = Some("Credential Manager: access denied".into());
+        let mut session = CastCredentials::new();
+        let mut event = paired("tv-a", "a2");
+        let log = on_sidecar_event(&store, &mut session, &mut event).unwrap();
+        assert_eq!(event, json!({"id": 9, "event": "paired", "identifier": "tv-a", "saved": false}));
+        assert!(log.contains("wasn't saved") && !log.contains("a2"), "{log}");
+        assert_eq!(credentials_for(&store, &session, "tv-a")["AirPlay"], "a2", "usable until the app quits");
+        *store.fail_get.lock().unwrap() = None;
+        assert_eq!(store.get("tv-a").unwrap().unwrap()["AirPlay"], "a1", "the saved entry is left as it was");
+    }
+
+    #[test]
+    fn a_failed_save_says_so_and_keeps_the_old_entries() {
+        let store = saved_tv_a();
+        *store.fail_set.lock().unwrap() = Some("Credential Manager: disk full".into());
+        let mut session = CastCredentials::new();
+        let mut event = paired("tv-b", "b1");
+        let log = on_sidecar_event(&store, &mut session, &mut event).unwrap();
+        assert_eq!(event["saved"], json!(false));
+        assert!(log.contains("disk full") && !log.contains("b1"), "{log}");
+        assert_eq!(credentials_for(&store, &CastCredentials::new(), "tv-a")["AirPlay"], "a1");
+        assert_eq!(credentials_for(&store, &session, "tv-b")["AirPlay"], "b1");
+    }
+
+    #[test]
+    fn a_saved_pairing_has_no_saved_flag_and_this_runs_pairings_win() {
+        let store = saved_tv_a();
+        let mut session = CastCredentials::new();
+        let mut event = paired("tv-a", "a2");
+        assert_eq!(on_sidecar_event(&store, &mut session, &mut event).as_deref(), Some("paired with tv-a"));
+        assert!(event.get("saved").is_none());
+        session.insert("tv-a".into(), creds(&[("AirPlay", "a3")])); // newer than the store, this run only
+        assert_eq!(credentials_for(&store, &session, "tv-a")["AirPlay"], "a3");
+        assert_eq!(on_sidecar_event(&store, &mut session, &mut json!({"event": "playing"})), None);
+    }
+
+    #[test]
+    fn the_old_file_moves_into_the_store_once_and_is_deleted() {
+        let path = temp_file("migrate");
+        std::fs::write(&path, r#"{"tv": {"AirPlay": "a1", "RAOP": "r1"}, "speaker": {"RAOP": "s1"}}"#).unwrap();
+        let store = Memory::default();
+        store.set("tv", &creds(&[("AirPlay", "newer")])).unwrap(); // paired again since: the store wins
+        let log = migrate(&path, &store).unwrap();
+        assert!(log.contains("moved 2 pairing(s)"), "{log}");
+        assert!(!path.exists(), "the plaintext file is gone");
+        assert_eq!(store.get("tv").unwrap().unwrap(), creds(&[("AirPlay", "newer"), ("RAOP", "r1")]));
+        assert_eq!(store.get("speaker").unwrap().unwrap(), creds(&[("RAOP", "s1")]));
+        assert_eq!(migrate(&path, &store), None, "nothing left to move");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
-    fn a_missing_file_means_nothing_is_paired() {
-        let path = temp_file("missing");
-        assert_eq!(load(&path), Ok(CastCredentials::new()));
+    fn a_move_that_fails_keeps_the_file_for_next_time() {
+        let path = temp_file("migrate-fails");
+        let text = r#"{"tv": {"AirPlay": "a1"}}"#;
+        std::fs::write(&path, text).unwrap();
+        let store = Memory::default();
+        *store.fail_set.lock().unwrap() = Some("Credential Manager: unavailable".into());
+        let log = migrate(&path, &store).unwrap();
+        assert!(log.contains("kept") && log.contains("unavailable") && !log.contains("a1"), "{log}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "the file is left as it was");
+
+        *store.fail_set.lock().unwrap() = None;
+        *store.fail_get.lock().unwrap() = Some("Credential Manager: access denied".into());
+        assert!(migrate(&path, &store).unwrap().contains("kept"));
+        assert!(path.exists(), "an unreadable store entry is never overwritten from the file");
+
+        *store.fail_get.lock().unwrap() = None;
+        migrate(&path, &store).unwrap();
+        assert!(!path.exists());
+        assert_eq!(store.get("tv").unwrap().unwrap()["AirPlay"], "a1");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
-    fn a_corrupt_file_is_kept_and_the_new_pairing_still_works() {
-        let path = temp_file("corrupt");
-        for junk in ["{not json", "[1, 2]", r#"{"tv": "not a map"}"#, ""] {
-            std::fs::write(&path, junk).unwrap();
-            assert!(load(&path).is_err(), "{junk}");
-            let mut session = CastCredentials::new();
-            let mut event = paired("tv-b", "b1");
-            let log = on_sidecar_event(Some(&path), &mut session, &mut event).unwrap();
-            assert_eq!(event, json!({"id": 9, "event": "paired", "identifier": "tv-b", "saved": false}), "{junk}");
-            assert!(log.contains("wasn't saved") && !log.contains("b1"), "{log}");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), junk, "the file is left as it was");
-            assert_eq!(current(Some(&path), &session)["tv-b"]["AirPlay"], "b1", "usable until the app quits");
-        }
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
-    fn a_malformed_file_never_puts_its_contents_in_the_log() {
+    fn a_corrupt_file_is_kept_and_never_put_in_the_log() {
         const SENTINEL: &str = "SENTINEL-credential-7f3a91";
         let path = temp_file("sentinel");
         // Wrong shapes whose parse errors would quote the value, and broken JSON around it.
@@ -190,101 +342,71 @@ mod tests {
             format!(r#"{{"tv-a": {{"AirPlay": ["{SENTINEL}"]}}}}"#),
             format!(r#"{{"tv-a": {{"AirPlay": "{SENTINEL}" "#),
             format!(r#"["{SENTINEL}"]"#),
+            String::new(),
         ] {
             std::fs::write(&path, &junk).unwrap();
-            let err = load(&path).unwrap_err();
-            assert!(!err.contains(SENTINEL), "load error quotes the file: {err}");
-            assert!(err.contains("line 1"), "says where: {err}");
-            let mut event = paired("tv-b", "b1");
-            let log = on_sidecar_event(Some(&path), &mut CastCredentials::new(), &mut event).unwrap();
+            let log = migrate(&path, &Memory::default()).unwrap();
             assert!(!log.contains(SENTINEL), "log line quotes the file: {log}");
+            assert!(log.contains("kept") && log.contains("line 1"), "says what and where: {log}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), junk, "the file is left as it was");
         }
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// The file is there but can't be read (another program holds it open without sharing reads):
-    /// pairing TV B must not replace the file and lose TV A.
+    /// nothing is moved and the file stays.
     #[cfg(windows)]
     #[test]
-    fn a_file_that_cant_be_read_is_not_replaced() {
+    fn a_file_that_cant_be_read_is_kept() {
         use std::os::windows::fs::OpenOptionsExt;
         const FILE_SHARE_DELETE: u32 = 4;
-        let path = saved_tv_a("read-denied");
+        let path = temp_file("read-denied");
+        std::fs::write(&path, r#"{"tv-a": {"AirPlay": "a1"}}"#).unwrap();
         let holder = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_DELETE).open(&path).unwrap();
-        assert!(load(&path).is_err());
-        let mut session = CastCredentials::new();
-        let mut event = paired("tv-b", "b1");
-        on_sidecar_event(Some(&path), &mut session, &mut event);
-        assert_eq!(event["saved"], json!(false));
-        assert_eq!(current(Some(&path), &session)["tv-b"]["AirPlay"], "b1");
+        let store = Memory::default();
+        assert!(migrate(&path, &store).unwrap().contains("couldn't read"));
         drop(holder);
-        let saved = load(&path).unwrap();
-        assert_eq!(saved["tv-a"]["AirPlay"], "a1", "TV A's pairing is still there");
-        assert!(!saved.contains_key("tv-b"));
+        assert!(path.exists());
+        assert!(store.saved.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    #[test]
-    fn a_failed_write_says_so_and_keeps_the_old_file() {
-        let path = saved_tv_a("write-fails");
-        // Something in the way of the temporary file: the write fails.
-        std::fs::create_dir_all(path.with_extension("json.tmp")).unwrap();
-        let mut session = CastCredentials::new();
-        let mut event = paired("tv-b", "b1");
-        let log = on_sidecar_event(Some(&path), &mut session, &mut event).unwrap();
-        assert_eq!(event["saved"], json!(false));
-        assert!(log.contains("couldn't write"), "{log}");
-        assert_eq!(load(&path).unwrap()["tv-a"]["AirPlay"], "a1");
-        assert_eq!(current(Some(&path), &session)["tv-b"]["AirPlay"], "b1");
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    /// The new file is written but can't be moved into place (the old one is held open without
-    /// sharing delete): the old file stays and the temporary one is cleaned up.
+    /// The real Credential Manager, under a namespace of this test's own: an entry round-trips, a
+    /// device never paired reads as None, and a malformed entry is an error that doesn't quote it.
     #[cfg(windows)]
     #[test]
-    fn a_failed_rename_says_so_and_keeps_the_old_file() {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_SHARE_READ: u32 = 1;
-        let path = saved_tv_a("rename-fails");
-        let holder = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(&path).unwrap();
-        let mut session = CastCredentials::new();
-        let mut event = paired("tv-b", "b1");
-        let log = on_sidecar_event(Some(&path), &mut session, &mut event).unwrap();
-        drop(holder);
-        assert_eq!(event["saved"], json!(false));
-        assert!(log.contains("couldn't replace"), "{log}");
-        assert_eq!(load(&path).unwrap()["tv-a"]["AirPlay"], "a1");
-        assert!(!path.with_extension("json.tmp").exists());
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
-    fn a_saved_pairing_has_no_saved_flag_and_this_runs_pairings_win() {
-        let path = saved_tv_a("saved");
-        let mut session = CastCredentials::new();
-        let mut event = paired("tv-a", "a2");
-        assert_eq!(on_sidecar_event(Some(&path), &mut session, &mut event).as_deref(), Some("paired with tv-a"));
-        assert!(event.get("saved").is_none());
-        assert_eq!(current(Some(&path), &session)["tv-a"]["AirPlay"], "a2");
-        assert_eq!(on_sidecar_event(Some(&path), &mut session, &mut json!({"event": "playing"})), None);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    fn credential_manager_keeps_each_devices_pairing() {
+        const SENTINEL: &str = "SENTINEL-credential-7f3a91";
+        let store = Keyring::new(&format!("open-airplay-cast-test-{}", std::process::id()));
+        let tv = creds(&[("AirPlay", "a1"), ("RAOP", "r1")]);
+        store.set("tv", &tv).unwrap();
+        assert_eq!(store.get("tv").unwrap(), Some(tv));
+        assert_eq!(store.get("speaker").unwrap(), None);
+        store.entry("bad").unwrap().set_password(&format!(r#"{{"AirPlay": ["{SENTINEL}"]}}"#)).unwrap();
+        let err = store.get("bad").unwrap_err();
+        assert!(!err.contains(SENTINEL) && err.contains("isn't readable"), "{err}");
+        for id in ["tv", "bad"] {
+            store.delete(id).unwrap();
+        }
+        assert_eq!(store.get("tv").unwrap(), None);
     }
 
     #[test]
     fn casts_carry_only_their_own_devices_credentials() {
-        let mut saved = CastCredentials::new();
-        saved.insert("tv".into(), creds(&[("AirPlay", "a1")]));
+        let store = Memory::default();
+        store.set("tv", &creds(&[("AirPlay", "a1")])).unwrap();
+        let none = CastCredentials::new();
+        let lookup = |id: &str| credentials_for(&store, &none, id);
         let mut cast = json!({"id": 1, "cmd": "play_url", "identifier": "tv", "url": "http://x"});
-        attach(&mut cast, &saved);
+        attach(&mut cast, lookup);
         assert_eq!(cast["credentials"], json!({"AirPlay": "a1"}));
 
         let mut other = json!({"id": 2, "cmd": "stream_file", "identifier": "speaker", "path": "C:/a.mp3", "credentials": {"RAOP": "from the panel"}});
-        attach(&mut other, &saved);
+        attach(&mut other, lookup);
         assert!(other.get("credentials").is_none());
 
         let mut scan = json!({"id": 3, "cmd": "scan", "identifier": "tv"});
-        attach(&mut scan, &saved);
+        attach(&mut scan, lookup);
         assert!(scan.get("credentials").is_none());
     }
 
