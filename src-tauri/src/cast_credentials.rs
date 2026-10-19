@@ -1,5 +1,6 @@
 //! Credentials from pairing a cast device (an Apple TV or speaker that asks for a code), kept per
-//! device in Windows Credential Manager (see `Keyring`), the store the mirror sender uses too.
+//! device in Windows Credential Manager (see `Keyring`), the store the mirror sender uses too. Off
+//! Windows they stay in the plaintext file (see `FileStore`).
 //! The shell adds them to each cast request and takes them out of the sidecar's "paired" reply, so
 //! they never reach the panel or a log.
 //!
@@ -7,11 +8,11 @@
 //! can't be written. A device whose saved entry can't be read is never overwritten: that would lose
 //! the pairings in it. Either failure is reported on the "paired" reply (`saved: false`).
 //!
-//! Earlier versions kept them in a plaintext file, `cast-credentials.json`; `migrate` moves its
-//! pairings into the store once, then deletes it.
+//! Earlier versions kept them in a plaintext file, `cast-credentials.json`; on Windows `migrate`
+//! moves its pairings into Credential Manager once, then deletes it.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -35,11 +36,49 @@ pub trait Store: Send + Sync {
     fn set(&self, identifier: &str, credentials: &DeviceCredentials) -> Result<(), String>;
 }
 
+/// The plaintext `cast-credentials.json`: where pairings live off Windows, where keyring has no
+/// persistent store this app enables (its fallback keeps nothing).
+pub struct FileStore {
+    path: PathBuf,
+}
+
+impl FileStore {
+    pub fn new(path: PathBuf) -> Self {
+        FileStore { path }
+    }
+}
+
+impl Store for FileStore {
+    fn get(&self, identifier: &str) -> Result<Option<DeviceCredentials>, String> {
+        Ok(load_file(&self.path)?.remove(identifier))
+    }
+
+    /// A file that can't be read or parsed is never overwritten: that would lose the pairings in it.
+    fn set(&self, identifier: &str, credentials: &DeviceCredentials) -> Result<(), String> {
+        let path = &self.path;
+        let mut all = load_file(path)?;
+        all.insert(identifier.to_string(), credentials.clone());
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
+        }
+        // Written aside and moved into place, so a crash never leaves half a file.
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(&all).expect("strings always serialize"))
+            .map_err(|e| format!("couldn't write {}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("couldn't replace {}: {e}", path.display())
+        })
+    }
+}
+
 /// The per-user Windows Credential Manager (a generic credential per device).
+#[cfg(windows)]
 pub struct Keyring {
     service: String,
 }
 
+#[cfg(windows)]
 impl Keyring {
     pub fn new(service: &str) -> Self {
         Keyring { service: service.to_string() }
@@ -58,6 +97,7 @@ impl Keyring {
     }
 }
 
+#[cfg(windows)]
 impl Store for Keyring {
     fn get(&self, identifier: &str) -> Result<Option<DeviceCredentials>, String> {
         let text = match self.entry(identifier)?.get_password() {
@@ -75,6 +115,7 @@ impl Store for Keyring {
 }
 
 /// A keyring error in words. keyring's own messages name the failure and never the secret.
+#[cfg(windows)]
 fn describe(e: keyring::Error) -> String {
     format!("Credential Manager: {e}")
 }
@@ -104,9 +145,10 @@ fn parse_problem(e: &serde_json::Error) -> String {
 }
 
 /// Moves the old file's pairings into the store, then deletes the file. Pairings already in the
-/// store win over the file's. If the file can't be read, or any device can't be moved, the file is
-/// kept as it is and the move is tried again at the next launch. Returns a line for the log (never
-/// credentials), or None when there was no file.
+/// store win over the file's. Each move is read back: if the file can't be read, or any device
+/// can't be moved or isn't there afterwards (a store that keeps nothing), the file is kept as it is
+/// and the move is tried again at the next launch. Returns a line for the log (never credentials),
+/// or None when there was no file.
 pub fn migrate(path: &Path, store: &dyn Store) -> Option<String> {
     if !path.exists() {
         return None;
@@ -119,7 +161,11 @@ pub fn migrate(path: &Path, store: &dyn Store) -> Option<String> {
         let moved = store.get(identifier).and_then(|saved| {
             let mut merged = credentials.clone();
             merged.extend(saved.unwrap_or_default());
-            store.set(identifier, &merged)
+            store.set(identifier, &merged)?;
+            match store.get(identifier)? {
+                Some(kept) if kept == merged => Ok(()),
+                _ => Err("the store didn't keep it".to_string()),
+            }
         });
         if let Err(e) = moved {
             return Some(format!("kept {FILE_NAME}, couldn't move the pairing with {identifier} to Credential Manager: {e}"));
@@ -306,6 +352,51 @@ mod tests {
         assert_eq!(store.get("tv").unwrap().unwrap(), creds(&[("AirPlay", "newer"), ("RAOP", "r1")]));
         assert_eq!(store.get("speaker").unwrap().unwrap(), creds(&[("RAOP", "s1")]));
         assert_eq!(migrate(&path, &store), None, "nothing left to move");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Like keyring's mock backend (what it picks off Windows): every write succeeds, nothing is kept.
+    struct Forgetful;
+
+    impl Store for Forgetful {
+        fn get(&self, _: &str) -> Result<Option<DeviceCredentials>, String> {
+            Ok(None)
+        }
+        fn set(&self, _: &str, _: &DeviceCredentials) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_store_that_doesnt_keep_what_it_was_given_never_gets_the_file_deleted() {
+        let path = temp_file("forgetful");
+        let text = r#"{"tv": {"AirPlay": "a1"}}"#;
+        std::fs::write(&path, text).unwrap();
+        let log = migrate(&path, &Forgetful).unwrap();
+        assert!(log.contains("kept") && log.contains("didn't keep") && !log.contains("a1"), "{log}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "the only copy of the pairings stays");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Off Windows the pairings stay in the file, with its guarantees: per device, written aside and
+    /// moved into place, and a file that can't be parsed is never overwritten.
+    #[test]
+    fn the_file_store_keeps_each_devices_pairing_and_never_overwrites_a_bad_file() {
+        let path = temp_file("file-store");
+        let store = FileStore::new(path.clone());
+        assert_eq!(store.get("tv").unwrap(), None);
+        store.set("tv", &creds(&[("AirPlay", "a1")])).unwrap();
+        store.set("speaker", &creds(&[("RAOP", "r1")])).unwrap();
+        assert_eq!(store.get("tv").unwrap(), Some(creds(&[("AirPlay", "a1")])));
+        assert_eq!(load_file(&path).unwrap().len(), 2);
+        assert!(!path.with_extension("json.tmp").exists());
+
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(store.get("tv").is_err());
+        let mut event = paired("tv-b", "b1");
+        on_sidecar_event(&store, &mut CastCredentials::new(), &mut event);
+        assert_eq!(event["saved"], json!(false));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json", "the file is left as it was");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

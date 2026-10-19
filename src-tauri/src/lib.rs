@@ -852,7 +852,7 @@ fn ensure_sender(app: &AppHandle) -> Result<SenderSlot<'_>, String> {
         move |mut event| {
             let sidecars = &events.state::<AppState>().inner().sidecars;
             // A "paired" reply loses its credentials here; if they couldn't be saved it says so.
-            let note = cast_credentials::on_sidecar_event(&cast_store(), &mut events.state::<AppState>().cast_pairings.lock().unwrap(), &mut event);
+            let note = cast_credentials::on_sidecar_event(cast_store(&events).as_ref(), &mut events.state::<AppState>().cast_pairings.lock().unwrap(), &mut event);
             if let Some(note) = note {
                 sender_log_line(&events, &note);
             }
@@ -911,16 +911,24 @@ async fn sender_send(app: AppHandle, command: Value) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut command = command;
         let session = app.state::<AppState>().cast_pairings.lock().unwrap().clone();
-        cast_credentials::attach(&mut command, |id| cast_credentials::credentials_for(&cast_store(), &session, id));
+        cast_credentials::attach(&mut command, |id| cast_credentials::credentials_for(cast_store(&app).as_ref(), &session, id));
         send_to_sender(&app, &command)
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// What pairing a cast device gave us, per device, in Windows Credential Manager.
-fn cast_store() -> cast_credentials::Keyring {
-    cast_credentials::Keyring::new(cast_credentials::SERVICE)
+/// What pairing a cast device gave us, per device: in Windows Credential Manager, elsewhere in
+/// <app config dir>/cast-credentials.json.
+#[cfg(windows)]
+fn cast_store(_app: &AppHandle) -> Box<dyn cast_credentials::Store> {
+    Box::new(cast_credentials::Keyring::new(cast_credentials::SERVICE))
+}
+
+#[cfg(not(windows))]
+fn cast_store(app: &AppHandle) -> Box<dyn cast_credentials::Store> {
+    let dir = app.path().app_config_dir().unwrap_or_default();
+    Box::new(cast_credentials::FileStore::new(dir.join(cast_credentials::FILE_NAME)))
 }
 
 /// Starts pairing with a cast device that asked for it: it shows a code, or wants its password.
@@ -1370,9 +1378,10 @@ pub fn run() {
                 *state.prefs.lock().unwrap() = prefs;
                 *state.prefs_path.lock().unwrap() = path;
                 // Pairings an earlier version kept in <app config dir>/cast-credentials.json move to
-                // Credential Manager, once.
+                // Credential Manager, once. (Off Windows that file is still the store.)
+                #[cfg(windows)]
                 if let Some(old) = app.path().app_config_dir().ok().map(|d| d.join(cast_credentials::FILE_NAME)) {
-                    if let Some(note) = cast_credentials::migrate(&old, &cast_store()) {
+                    if let Some(note) = cast_credentials::migrate(&old, cast_store(app.handle()).as_ref()) {
                         sender_log_line(app.handle(), &note);
                     }
                 }
