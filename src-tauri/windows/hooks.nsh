@@ -44,13 +44,16 @@
   ; (open-airplay-cast:) and the mirror sender's TVs (open-airplay:). Never on an update.
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
-    nsExec::ExecToStack `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\forget-credentials.ps1" ${OAP_CREDENTIAL_PREFIXES}`
-    Pop $0 ; exit code: 0 when everything went, anything else when some is left (or PowerShell didn't run)
-    Pop $1 ; what it did, one line per prefix (counts only)
+    ; This runs as the account the uninstaller runs as. If that isn't the account signed in (a standard
+    ; user's uninstall approved by an administrator), the script names the account it cleaned and says
+    ; the signed-in user's data stayed; Tauri's folder removal acts for the same account.
+    nsExec::ExecToStack `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\forget-credentials.ps1" -AppId "${BUNDLEID}" ${OAP_CREDENTIAL_PREFIXES}`
+    Pop $0 ; 0 all done; 1 some entries left; 2 another account's data cleaned; 3 both (other: PowerShell failed)
+    Pop $1 ; what it did and what is left, in words (counts only, never the entries)
     DetailPrint "Credential Manager: $1"
     ${If} $0 <> 0
-      DetailPrint "Some saved pairings couldn't be removed from Credential Manager (exit code $0)."
-      MessageBox MB_ICONEXCLAMATION|MB_OK "Some saved pairings couldn't be removed from Windows Credential Manager.$\r$\n$\r$\n$1$\r$\nYou can remove the ones named open-airplay in Control Panel > Credential Manager > Windows Credentials." /SD IDOK
+      DetailPrint "Not all saved settings and pairings were removed (exit code $0)."
+      MessageBox MB_ICONEXCLAMATION|MB_OK "The uninstall finished, but not everything was removed.$\r$\n$\r$\n$1" /SD IDOK
     ${EndIf}
   ${EndIf}
 !macroend

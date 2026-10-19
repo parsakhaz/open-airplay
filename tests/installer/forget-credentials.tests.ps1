@@ -65,6 +65,23 @@ Test "an entry already gone when deleted is not a failure" {
   Assert-Equal $false $r.Failed 'failed'
 }
 
+Test "the same account signed in and running the uninstall needs no notice" {
+  Assert-Equal '' (Get-AccountNotice -Running 'PC\sam' -Desktop 'pc\SAM' -AppId 'org.openairplay.app') 'notice'
+  Assert-Equal '' (Get-AccountNotice -Running 'PC\sam' -Desktop $null -AppId 'org.openairplay.app') 'no desktop user found'
+}
+
+Test "an uninstall approved by another account names it and says whose data stayed" {
+  $n = Get-AccountNotice -Running 'PC\admin' -Desktop 'PC\sam' -AppId 'org.openairplay.app'
+  if ($n -notlike "*PC\admin*" -or $n -notlike "*PC\sam's settings and saved pairings were not removed*" -or $n -notlike "*org.openairplay.app*") { throw "notice: $n" }
+}
+
+Test "the exit code says what was left: 1 entries, 2 another account's data, 3 both" {
+  Assert-Equal 0 (Get-ExitCode -Failed $false -Notice '') 'clean'
+  Assert-Equal 1 (Get-ExitCode -Failed $true -Notice '') 'entries left'
+  Assert-Equal 2 (Get-ExitCode -Failed $false -Notice 'x') 'other account'
+  Assert-Equal 3 (Get-ExitCode -Failed $true -Notice 'x') 'both'
+}
+
 Test "the script exits 1 when cleanup is incomplete and 0 otherwise" {
   $script = "$PSScriptRoot\..\..\src-tauri\windows\forget-credentials.ps1"
   # A prefix no real entry has: lists nothing, deletes nothing, succeeds.
