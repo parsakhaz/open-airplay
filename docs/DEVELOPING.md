@@ -59,11 +59,10 @@ Overrides: `OAP_MIRROR_SENDER` (path to the Go mirror sender), `OAP_ENGINE` (pat
 
 - `design/tokens.css` holds the variables only, all prefixed `--oai-`: colours, type, spacing, radii, shadows, blur materials and motion timings. Light and dark follow `prefers-color-scheme`. You can force a theme with `<html data-theme="light|dark">`.
 - `design/components.css` holds the building blocks, as classes prefixed `oai-`:
-  - window chrome: `.oai-window`, `.oai-titlebar`, `.oai-window-controls`
-  - layout: `.oai-sidebar`, `.oai-toolbar`, `.oai-stage`
-  - the tray popover: `.oai-popover`, `.oai-list-row`
+  - the tray popover: `.oai-popover`, `.oai-popover-head` (`.is-sub` for a sub-page: `.oai-icon-btn` back, `.oai-dico`, `.oai-tt`/`.oai-t`/`.oai-s`), `.oai-list-row`
+  - device pages: `.oai-tiles`/`.oai-tile`, `.oai-live`/`.oai-media`, `.oai-linkbtn`, `.oai-field`, `.oai-disclose`, `.oai-group-row`, `.oai-sel` (also around a native `<select>`)
   - controls: `.oai-btn`, `.oai-switch`, `.oai-segmented`, `.oai-input`, grouped settings lists (`.oai-group`, `.oai-row`)
-  - feedback: `.oai-card`, `.oai-spinner`, `.oai-hero` (empty states), `.oai-banner`
+  - feedback: `.oai-card`, `.oai-spinner`, `.oai-banner`
 - `design/icon.svg` is the app icon. Regenerate the bundle icons with `npx tauri icon design/icon.svg -o src-tauri/icons`, then delete the mobile and Store variants.
 
 To use it in another app, such as open-airdrop-windows:

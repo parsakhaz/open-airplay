@@ -269,13 +269,13 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
         <div data-r="tiles"></div>
         <div data-r="drop"></div>
         <div data-r="link">
-          <button class="linkbtn" data-cast-action="link">Paste a link instead</button>
+          <button class="oai-linkbtn" data-cast-action="link">Paste a link instead</button>
           <div class="cast-link" hidden>
-            <div class="field">
+            <div class="oai-field">
               <input class="oai-input" data-cast-field type="text" spellcheck="false" autocomplete="off" aria-label="Link to cast" placeholder="https://">
               <button class="oai-btn is-primary" data-cast-action="cast">Cast</button>
             </div>
-            <div class="hint">A direct link to a video or song file. Enter also casts.</div>
+            <div class="oai-hint">A direct link to a video or song file. Enter also casts.</div>
           </div>
         </div>
       </div>`;
@@ -442,11 +442,11 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
     region("ban", ban);
     region("live", active && !isPairing(c) ? liveHtml(c) : "");
     renderCode(c);
-    region("tiles", tiles ? `<div class="send-tiles">${current.mirrorTile}<button class="send-tile ${dropOpen ? "is-open" : ""}" data-cast-action="open" aria-expanded="${dropOpen}"><span class="ti">${ICON.cast}</span><span><b>Cast media</b><small>A song, video or link</small></span></button></div>` : "");
+    region("tiles", tiles ? `<div class="oai-tiles">${current.mirrorTile}<button class="oai-tile ${dropOpen ? "is-open" : ""}" data-cast-action="open" aria-expanded="${dropOpen}"><span class="oai-ti">${ICON.cast}</span><span><b>Cast media</b><small>A song, video or link</small></span></button></div>` : "");
     region("drop", dropOpen ? dropHtml() : "");
     const linkRegion = root.querySelector('[data-r="link"]');
     linkRegion.hidden = !dropOpen;
-    root.querySelector(".linkbtn").hidden = page.link;
+    root.querySelector(".oai-linkbtn").hidden = page.link;
     root.querySelector(".cast-link").hidden = !page.link;
     const castBtn = root.querySelector('[data-cast-action="cast"]');
     castBtn.disabled = c.state === "connecting";
@@ -464,8 +464,8 @@ if (typeof window !== "undefined" && window.__TAURI__) window.OapCast = (() => {
     const sub = c.state === "connecting" ? `<span class="oai-spinner is-small"></span>Connecting to ${esc(c.name)}…`
       : c.state === "stopping" ? "Stopping…"
       : `Playing on ${esc(c.name)}`;
-    return `<div class="send-live"><div class="media"><span class="art">${ICON.music}</span><div><b>${esc(mediaName(c.media))}</b><small>${sub}</small></div></div>
-      <button class="oai-btn is-danger wide" data-cast-action="stop" ${c.state === "stopping" ? "disabled" : ""}>Stop</button></div>`;
+    return `<div class="oai-live"><div class="oai-media"><span class="oai-art">${ICON.music}</span><div><b>${esc(mediaName(c.media))}</b><small>${sub}</small></div></div>
+      <button class="oai-btn is-danger is-wide" data-cast-action="stop" ${c.state === "stopping" ? "disabled" : ""}>Stop</button></div>`;
   }
 
   /** A device's cast state for its row and header: { text, kind: "live" | "busy" } or null. */

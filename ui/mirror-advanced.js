@@ -56,17 +56,17 @@
       .map(([v, text]) => `<option value="${esc(v)}"${String(v) === String(value ?? "") ? " selected" : ""}>${esc(text)}</option>`)
       .join("");
     const small = row.small ? `<small>${esc(row.small)}</small>` : "";
-    return `<div class="grow-row"><label for="adv-${row.field}">${esc(row.label)}${small}</label><span class="sel"><select id="adv-${row.field}" data-field="${row.field}">${options}</select>${DOWN}</span></div>`;
+    return `<div class="oai-group-row"><label for="adv-${row.field}">${esc(row.label)}${small}</label><span class="oai-sel"><select id="adv-${row.field}" data-field="${row.field}">${options}</select>${DOWN}</span></div>`;
   }
 
   function html(o, caps, open, error) {
-    const head = `<button type="button" class="disclose${open ? " open" : ""}" aria-expanded="${open}">${CHEV}<span>Advanced</span><span class="sp"></span>${!open && allAutomatic(o) ? "<em>Automatic</em>" : ""}</button>`;
+    const head = `<button type="button" class="oai-disclose${open ? " is-open" : ""}" aria-expanded="${open}">${CHEV}<span>Advanced</span><span class="oai-spacer"></span>${!open && allAutomatic(o) ? "<em>Automatic</em>" : ""}</button>`;
     if (!open) return head;
-    return `${head}<div class="group">
+    return `${head}<div class="oai-group is-flush">
       ${ROWS.map((r) => selectRow(r, o[r.field])).join("")}
-      <div class="grow-row"><label for="adv-video_codec">Video format<small>The only one on Windows today</small></label><span class="sel dim"><select id="adv-video_codec" disabled><option>H.264</option></select>${DOWN}</span></div>
-      <div class="grow-row"><label for="adv-show_cursor">Show the pointer</label><input type="checkbox" class="oai-switch sm" id="adv-show_cursor" data-switch="show_cursor"${o.show_cursor !== false ? " checked" : ""}></div>
-      ${caps.audio ? `<div class="grow-row"><label for="adv-audio">Sound</label><input type="checkbox" class="oai-switch sm" id="adv-audio" data-switch="audio"${o.audio !== false ? " checked" : ""}></div>` : ""}
+      <div class="oai-group-row"><label for="adv-video_codec">Video format<small>The only one on Windows today</small></label><span class="oai-sel is-dim"><select id="adv-video_codec" disabled><option>H.264</option></select>${DOWN}</span></div>
+      <div class="oai-group-row"><label for="adv-show_cursor">Show the pointer</label><input type="checkbox" class="oai-switch is-small" id="adv-show_cursor" data-switch="show_cursor"${o.show_cursor !== false ? " checked" : ""}></div>
+      ${caps.audio ? `<div class="oai-group-row"><label for="adv-audio">Sound</label><input type="checkbox" class="oai-switch is-small" id="adv-audio" data-switch="audio"${o.audio !== false ? " checked" : ""}></div>` : ""}
     </div>${error ? `<div class="inline-error" role="alert">${esc(error)}</div>` : ""}`;
   }
 
@@ -113,7 +113,7 @@
     );
     const save = () => saver(state.options);
     container.addEventListener("click", (e) => {
-      if (e.target.closest(".disclose")) {
+      if (e.target.closest(".oai-disclose")) {
         state.open = !state.open;
         render();
       }
