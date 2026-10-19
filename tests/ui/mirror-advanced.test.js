@@ -43,3 +43,47 @@ test("a save that fails is reported, and the next one can succeed", async () => 
   await tick();
   assert.deepEqual(results, ["disk full", null]);
 });
+
+/** A container stand-in: Advanced only sets innerHTML and listens for clicks and changes. */
+function fakeContainer() {
+  return { innerHTML: "", addEventListener() {} };
+}
+
+test("mounting Advanced doesn't start the mirror sender; opening the Mirror sheet asks it once", async () => {
+  const { create } = require("../../ui/mirror-advanced.js");
+  const calls = [];
+  const invoke = async (cmd) => {
+    calls.push(cmd);
+    if (cmd === "get_prefs") return { mirror: {} };
+    if (cmd === "mirror_capabilities") return { audio: true };
+    throw new Error(`unexpected ${cmd}`);
+  };
+  const advanced = create(fakeContainer(), invoke);
+  await tick();
+  assert.ok(!calls.includes("mirror_capabilities"), "a boot launch must not spawn the sender");
+  assert.equal(advanced.sendsSound(), false, "Sound is unknown until the sender has been asked");
+
+  advanced.loadCapabilities();
+  advanced.loadCapabilities(); // the sheet opened again
+  await tick();
+  assert.equal(calls.filter((c) => c === "mirror_capabilities").length, 1);
+  assert.equal(advanced.sendsSound(), true);
+});
+
+test("a failed capabilities ask is tried again the next time the sheet opens", async () => {
+  const { create } = require("../../ui/mirror-advanced.js");
+  let asks = 0;
+  const invoke = async (cmd) => {
+    if (cmd === "get_prefs") return {};
+    if (cmd === "mirror_capabilities") { asks += 1; if (asks === 1) throw "not ready"; return { audio: true }; }
+    throw new Error(`unexpected ${cmd}`);
+  };
+  const advanced = create(fakeContainer(), invoke);
+  advanced.loadCapabilities();
+  await tick();
+  assert.equal(advanced.sendsSound(), false);
+  advanced.loadCapabilities();
+  await tick();
+  assert.equal(asks, 2);
+  assert.equal(advanced.sendsSound(), true);
+});

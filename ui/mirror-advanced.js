@@ -1,6 +1,7 @@
 // Advanced, folded in the Mirror sheet: the defaults for every mirror (approved device page, state 5).
-// Self-contained so the sheet only has to call MirrorAdvanced.mount(container). Every row starts on
-// Automatic; a change is saved at once with set_mirror_options and used by the next mirror_start.
+// Self-contained: the app calls MirrorAdvanced.mount(container) and the sheet calls
+// loadCapabilities() when it opens. Every row starts on Automatic; a change is saved at once with
+// set_mirror_options and used by the next mirror_start.
 // Sound appears only when the sender says it can capture this PC's sound (hello.capabilities.audio).
 (function () {
   /** Saves the options one at a time. A change made while a save is on its way is sent once that
@@ -31,11 +32,6 @@
       })();
     };
   }
-
-  if (typeof module !== "undefined" && module.exports) module.exports = { createSaver };
-  if (typeof window === "undefined" || !window.__TAURI__) return;
-
-  const { invoke } = window.__TAURI__.core;
 
   const DOWN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"/></svg>';
   const CHEV = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg>';
@@ -74,28 +70,39 @@
     </div>${error ? `<div class="inline-error" role="alert">${esc(error)}</div>` : ""}`;
   }
 
-  let current = null;   // the mounted state, for sendsSound()
-
-  // True when the next mirror sends this PC's sound: the sender can capture it and Sound is on.
-  const sendsSound = () => !!current && current.caps.audio && current.options.audio !== false;
-
-  async function mount(container) {
+  /** Mounts Advanced in `container`. The sender's capabilities are asked for only by
+   *  loadCapabilities() (when the Mirror sheet opens): asking starts the sender, and a boot launch
+   *  must stay idle. A failed ask is tried again on the next call. */
+  function create(container, invoke) {
     const state = { options: {}, caps: { audio: false }, open: false, error: null };
-    current = state;
-    try {
-      state.options = (await invoke("get_prefs")).mirror || {};
-    } catch (_) {}
+    let asked = false;
     const render = () => {
       container.innerHTML = html(state.options, state.caps, state.open, state.error);
     };
     render();
-    // The sender may still be starting; Sound shows once it has said hello.
-    invoke("mirror_capabilities")
-      .then((caps) => {
-        state.caps = caps || { audio: false };
+    invoke("get_prefs")
+      .then((prefs) => {
+        state.options = (prefs && prefs.mirror) || {};
         render();
       })
       .catch(() => {});
+
+    function loadCapabilities() {
+      if (asked) return;
+      asked = true;
+      // The sender may still be starting; Sound shows once it has said hello.
+      invoke("mirror_capabilities")
+        .then((caps) => {
+          state.caps = caps || { audio: false };
+          render();
+        })
+        .catch(() => {
+          asked = false;
+        });
+    }
+
+    // True when the next mirror sends this PC's sound: the sender can capture it and Sound is on.
+    const sendsSound = () => !!state.caps.audio && state.options.audio !== false;
 
     const saver = createSaver(
       (options) => invoke("set_mirror_options", { options }),
@@ -124,7 +131,18 @@
       }
       save();
     });
+    return { loadCapabilities, sendsSound };
   }
 
-  window.MirrorAdvanced = { mount, sendsSound };
+  if (typeof module !== "undefined" && module.exports) module.exports = { createSaver, create };
+  if (typeof window === "undefined" || !window.__TAURI__) return;
+
+  let current = null; // the mounted Advanced
+  const mount = (container) => {
+    current = create(container, window.__TAURI__.core.invoke);
+  };
+  const loadCapabilities = () => current && current.loadCapabilities();
+  const sendsSound = () => !!current && current.sendsSound();
+
+  window.MirrorAdvanced = { mount, loadCapabilities, sendsSound };
 })();

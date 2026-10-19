@@ -160,6 +160,8 @@ window.OapMirror = (() => {
     state.from = device && device.address ? device.address : null;
     if (!sending()) state.ticked = state.from ? [state.from] : [];
     loadDisplays();
+    // Asking what the sender can do starts it, so Advanced asks only once the sheet opens.
+    if (window.MirrorAdvanced) MirrorAdvanced.loadCapabilities();
   }
 
   async function loadDisplays() {
