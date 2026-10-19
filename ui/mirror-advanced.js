@@ -51,22 +51,25 @@
     return ROWS.every((r) => o[r.field] == null) && o.show_cursor == null && o.audio == null;
   }
 
-  function selectRow(row, value) {
+  function selectRow(row, value, off) {
     const options = row.choices
       .map(([v, text]) => `<option value="${esc(v)}"${String(v) === String(value ?? "") ? " selected" : ""}>${esc(text)}</option>`)
       .join("");
     const small = row.small ? `<small>${esc(row.small)}</small>` : "";
-    return `<div class="oai-group-row"><label for="adv-${row.field}">${esc(row.label)}${small}</label><span class="oai-sel"><select id="adv-${row.field}" data-field="${row.field}">${options}</select>${DOWN}</span></div>`;
+    return `<div class="oai-group-row"><label for="adv-${row.field}">${esc(row.label)}${small}</label><span class="oai-sel"><select id="adv-${row.field}" data-field="${row.field}"${off}>${options}</select>${DOWN}</span></div>`;
   }
 
-  function html(o, caps, open, error) {
+  /** `ready`: the saved options have loaded; until then the rows can't be changed (a change would
+   *  save over the options it hasn't seen). */
+  function html(o, caps, open, error, ready) {
+    const off = ready ? "" : " disabled";
     const head = `<button type="button" class="oai-disclose${open ? " is-open" : ""}" aria-expanded="${open}">${CHEV}<span>Advanced</span><span class="oai-spacer"></span>${!open && allAutomatic(o) ? "<em>Automatic</em>" : ""}</button>`;
     if (!open) return head;
     return `${head}<div class="oai-group is-flush">
-      ${ROWS.map((r) => selectRow(r, o[r.field])).join("")}
+      ${ROWS.map((r) => selectRow(r, o[r.field], off)).join("")}
       <div class="oai-group-row"><label for="adv-video_codec">Video format<small>The only one on Windows today</small></label><span class="oai-sel is-dim"><select id="adv-video_codec" disabled><option>H.264</option></select>${DOWN}</span></div>
-      <div class="oai-group-row"><label for="adv-show_cursor">Show the pointer</label><input type="checkbox" class="oai-switch is-small" id="adv-show_cursor" data-switch="show_cursor"${o.show_cursor !== false ? " checked" : ""}></div>
-      ${caps.audio ? `<div class="oai-group-row"><label for="adv-audio">Sound</label><input type="checkbox" class="oai-switch is-small" id="adv-audio" data-switch="audio"${o.audio !== false ? " checked" : ""}></div>` : ""}
+      <div class="oai-group-row"><label for="adv-show_cursor">Show the pointer</label><input type="checkbox" class="oai-switch is-small" id="adv-show_cursor" data-switch="show_cursor"${o.show_cursor !== false ? " checked" : ""}${off}></div>
+      ${caps.audio ? `<div class="oai-group-row"><label for="adv-audio">Sound</label><input type="checkbox" class="oai-switch is-small" id="adv-audio" data-switch="audio"${o.audio !== false ? " checked" : ""}${off}></div>` : ""}
     </div>${error ? `<div class="inline-error" role="alert">${esc(error)}</div>` : ""}`;
   }
 
@@ -74,18 +77,21 @@
    *  loadCapabilities() (when the Mirror sheet opens): asking starts the sender, and a boot launch
    *  must stay idle. A failed ask is tried again on the next call. */
   function create(container, invoke) {
-    const state = { options: {}, caps: { audio: false }, open: false, error: null };
+    const state = { options: {}, caps: { audio: false }, open: false, error: null, ready: false };
     let asked = false;
     const render = () => {
-      container.innerHTML = html(state.options, state.caps, state.open, state.error);
+      container.innerHTML = html(state.options, state.caps, state.open, state.error, state.ready);
     };
     render();
     invoke("get_prefs")
       .then((prefs) => {
         state.options = (prefs && prefs.mirror) || {};
-        render();
       })
-      .catch(() => {});
+      .catch(() => {}) // unreadable prefs: every row starts on Automatic, as before
+      .then(() => {
+        state.ready = true;
+        render();
+      });
 
     function loadCapabilities() {
       if (asked) return;
@@ -119,6 +125,7 @@
       }
     });
     container.addEventListener("change", (e) => {
+      if (!state.ready) return;
       const t = e.target;
       if (t.dataset.field) {
         const raw = t.value;
