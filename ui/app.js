@@ -35,6 +35,7 @@ const ui = {
   scanning: false,
   scanError: null,
   lastScan: 0,              // when the device list was last refreshed (ms)
+  panelSeen: false,         // the panel has been shown this run; until then nothing scans
   busy: new Set(),          // actions in flight; only their own controls show busy
   errors: {},               // action -> plain message shown next to its control
   findings: [],
@@ -443,9 +444,16 @@ async function scan() {
   }
 }
 
-/** Devices appear by themselves: on start, when the panel opens (if the list is old), after a network change. */
+/** Devices appear by themselves: the first time the panel opens, when it opens again (if the list is
+ *  old), and after a network change. A scan starts the cast sidecar, so nothing scans until the panel
+ *  has been shown: a boot launch stays idle. */
 function scanIfStale() {
-  if (Date.now() - ui.lastScan > RESCAN_AFTER_MS) scan();
+  if (ui.panelSeen && Date.now() - ui.lastScan > RESCAN_AFTER_MS) scan();
+}
+
+function panelShown() {
+  ui.panelSeen = true;
+  scanIfStale();
 }
 
 function selectDevice(identifier) {
@@ -620,8 +628,8 @@ listen("receiver-status", (e) => {
 
 listen("doctor-findings", (e) => { ui.findings = e.payload || []; render(); });
 
-listen("panel-shown", scanIfStale);
-listen("network-changed", () => { ui.lastScan = 0; scan(); });
+listen("panel-shown", panelShown);
+listen("network-changed", () => { ui.lastScan = 0; scanIfStale(); });
 
 OapCast.mount($("cast-media"), render, { shown: () => ui.page === "cast" });
 OapMirror.mount($("mirror-sheet"), { changed: mirrorChanged, devices: mirrorTargets, back });
@@ -638,5 +646,6 @@ MirrorAdvanced.mount($("mirror-sheet").querySelector('[data-slot="mirror-advance
     ui.errors.start = String(err);
   }
   render();
-  scan();
+  // A manual launch may have shown the panel before "panel-shown" was listened for.
+  if (await invoke("panel_visible").catch(() => false)) panelShown();
 })();

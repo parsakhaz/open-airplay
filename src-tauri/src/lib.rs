@@ -1273,6 +1273,13 @@ fn panel_fit(app: AppHandle, height: f64) {
     place_panel(&app);
 }
 
+/// Whether the panel is open now. The page asks once at load: a manual launch may show the panel
+/// before the page listens for "panel-shown".
+#[tauri::command]
+fn panel_visible(app: AppHandle) -> bool {
+    app.state::<AppState>().panel.visible.load(Ordering::SeqCst)
+}
+
 /// Esc on the home page.
 #[tauri::command]
 fn panel_hide(app: AppHandle) {
@@ -1467,7 +1474,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, sender_pair_begin, sender_pair_code, sender_pair_cancel, panel_fit, panel_hide, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays, set_mirror_options, mirror_capabilities, added_device_check, added_device_save, added_device_remove])
+        .invoke_handler(tauri::generate_handler![receiver_status, default_settings, get_prefs, set_prefs, show_video_window, doctor_findings, doctor_check, doctor_fix, receiver_start, receiver_stop, sender_send, sender_stop, sender_health, sender_pair_begin, sender_pair_code, sender_pair_cancel, panel_fit, panel_hide, panel_visible, receiver_disconnect, receiver_save_settings, receiver_dismiss_notice, receiver_control, receiver_art, receiver_block_device, receiver_forget_paired, list_speakers, mirror_status, mirror_start, mirror_code, mirror_stop, mirror_displays, set_mirror_options, mirror_capabilities, added_device_check, added_device_save, added_device_remove])
         .build(tauri::generate_context!())
         .expect("error while building open-airplay");
 
