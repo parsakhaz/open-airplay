@@ -64,6 +64,9 @@ jobs:
         shell: bash
         run: node --test tests/ui/*.test.js
 
+      - name: Uninstaller cleanup tests
+        run: node tests/installer/run.js
+
       - name: Sender tests
         shell: bash
         run: |

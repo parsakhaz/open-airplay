@@ -44,8 +44,13 @@
   ; (open-airplay-cast:) and the mirror sender's TVs (open-airplay:). Never on an update.
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
-    nsExec::ExecToLog `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\forget-credentials.ps1" ${OAP_CREDENTIAL_PREFIXES}`
-    Pop $0
-    DetailPrint "Saved pairings removed from Credential Manager: exit code $0"
+    nsExec::ExecToStack `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\forget-credentials.ps1" ${OAP_CREDENTIAL_PREFIXES}`
+    Pop $0 ; exit code: 0 when everything went, anything else when some is left (or PowerShell didn't run)
+    Pop $1 ; what it did, one line per prefix (counts only)
+    DetailPrint "Credential Manager: $1"
+    ${If} $0 <> 0
+      DetailPrint "Some saved pairings couldn't be removed from Credential Manager (exit code $0)."
+      MessageBox MB_ICONEXCLAMATION|MB_OK "Some saved pairings couldn't be removed from Windows Credential Manager.$\r$\n$\r$\n$1$\r$\nYou can remove the ones named open-airplay in Control Panel > Credential Manager > Windows Credentials." /SD IDOK
+    ${EndIf}
   ${EndIf}
 !macroend
