@@ -76,7 +76,7 @@ Var OapUpgrade
     ; user's uninstall approved by an administrator), the script names the account it cleaned and says
     ; the signed-in user's data stayed; Tauri's folder removal acts for the same account.
     nsExec::ExecToStack `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\forget-credentials.ps1" -AppId "${BUNDLEID}" ${OAP_CREDENTIAL_PREFIXES}`
-    Pop $0 ; 0 all done; 1 some entries left; 2 another account's data cleaned; 3 both (other: PowerShell failed)
+    Pop $0 ; 0 all done; 1 some entries left; 2 another (or an unidentified) account's data may remain; 3 both (other: PowerShell failed)
     Pop $1 ; what it did and what is left, in words (counts only, never the entries)
     DetailPrint "Credential Manager: $1"
     ${If} $0 <> 0

@@ -67,7 +67,14 @@ Test "an entry already gone when deleted is not a failure" {
 
 Test "the same account signed in and running the uninstall needs no notice" {
   Assert-Equal '' (Get-AccountNotice -Running 'PC\sam' -Desktop 'pc\SAM' -AppId 'org.openairplay.app') 'notice'
-  Assert-Equal '' (Get-AccountNotice -Running 'PC\sam' -Desktop $null -AppId 'org.openairplay.app') 'no desktop user found'
+}
+
+Test "when the signed-in account can't be found, the notice names the account cleaned and warns others' data may remain" {
+  foreach ($unknown in $null, '') {
+    $n = Get-AccountNotice -Running 'PC\admin' -Desktop $unknown -AppId 'org.openairplay.app'
+    if ($n -notlike "*PC\admin*" -or $n -notlike "*other accounts' settings and saved pairings may remain*" -or $n -notlike "*org.openairplay.app*") { throw "notice: $n" }
+    Assert-Equal 2 (Get-ExitCode -Failed $false -Notice $n) 'exit code'
+  }
 }
 
 Test "an uninstall approved by another account names it and says whose data stayed" {

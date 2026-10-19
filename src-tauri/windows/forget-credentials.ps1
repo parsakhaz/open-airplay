@@ -98,17 +98,26 @@ function Get-DesktopUser {
 }
 
 # '' when the cleanup acted for the signed-in user. Otherwise, a notice naming the account it acted
-# for (the one that approved the uninstall) and saying the signed-in user's data stayed.
+# for (the one that approved the uninstall) and saying the signed-in user's data stayed. When the
+# signed-in account can't be found, the notice names the account it acted for and says other accounts'
+# data may remain: it can't be told apart from an uninstall approved by another account.
 function Get-AccountNotice {
   param([string]$Running, [string]$Desktop, [string]$AppId)
-  if (-not $Desktop -or $Desktop -eq $Running) { return '' }  # -eq ignores case
+  if (-not $Desktop) {
+    return "Removed the settings and saved pairings of $Running, the account running this uninstall. " +
+      "The account signed in couldn't be identified, so other accounts' settings and saved pairings may remain. " +
+      "To remove them, sign in as that account and delete the open-airplay entries in Control Panel > " +
+      "Credential Manager > Windows Credentials and the $AppId folders in %APPDATA% and %LOCALAPPDATA%."
+  }
+  if ($Desktop -eq $Running) { return '' }  # -eq ignores case
   return "Removed the settings and saved pairings of $Running, the account that approved this uninstall. " +
     "$Desktop's settings and saved pairings were not removed. To remove them, sign in as $Desktop and delete " +
     "the open-airplay entries in Control Panel > Credential Manager > Windows Credentials and the $AppId " +
     "folders in %APPDATA% and %LOCALAPPDATA%."
 }
 
-# 0 everything went; bit 1: some entries are left; bit 2: another account's data was cleaned instead.
+# 0 everything went; bit 1: some entries are left; bit 2: the cleanup acted for another account than
+# the signed-in one, or the signed-in account couldn't be identified (Get-AccountNotice says which).
 function Get-ExitCode {
   param([bool]$Failed, [string]$Notice)
   return ([int]$Failed) + 2 * [int][bool]$Notice
