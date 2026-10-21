@@ -49,6 +49,11 @@ the [Python incident guidance](https://discuss.python.org/t/information-for-pyth
 baselines. Rebuild and distribute the sidecar to update installed apps; changing these files does
 not update an existing installer or environment.
 
+The sender explicitly supplies a certifi-backed TLS session to pyatv for connections and pairing,
+so frozen builds use the same patched CA bundle. With standard Python SSL (no startup-hook overrides),
+host-only HTTPS roots are not included; the loopback TLS regressions isolate that boundary.
+An installed OS-trust startup hook can additionally apply the host's native verification policy.
+
 A manual launch opens the tray panel and restores the receiving switch as you left it (on the first time). On the iPhone: Control Center → Screen Mirroring → pick the PC's name.
 The first launch shows a Windows Firewall prompt for `uxplay.exe`; allow it, or iPhones cannot connect.
 On a network set to **Public**, Windows allows the app only if you tick Public in that prompt.
