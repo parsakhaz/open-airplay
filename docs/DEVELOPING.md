@@ -22,7 +22,7 @@ iPhone / Mac ──AirPlay──▶ uxplay.exe (UxPlay 1.74 fork, built-in mDNS,
 
 ## Run it (Windows, development)
 
-Prerequisites: [MSYS2](https://www.msys2.org) at `C:\msys64`, Rust (rustup, MSVC toolchain), Node 20+, Python 3.10+.
+Prerequisites: [MSYS2](https://www.msys2.org) at `C:\msys64`, Rust (rustup, MSVC toolchain), Node 24.22.1 LTS, Python 3.10+.
 
 ```powershell
 # 1. Build the receiver engine (installs MSYS2 packages: gcc, cmake, GStreamer, libplist)
@@ -30,16 +30,29 @@ C:\msys64\usr\bin\bash.exe -lc "/c/path/to/open-airplay/engine/build-engine.sh"
 
 # 2. Sender sidecar. The build needs the frozen helper's folder to exist; in development the app runs
 #    the Python script, so an empty folder is enough (npm run build-sender fills it for the installer).
-python -m venv sender\.venv; sender\.venv\Scripts\python -m pip install -r sender\requirements.txt
+python -I -S -m venv sender\.venv
+sender\.venv\Scripts\python -I -m pip install --no-deps -r sender\requirements-bootstrap.txt
+sender\.venv\Scripts\python -m pip install -r sender\requirements.txt
 New-Item -ItemType Directory -Force sender\dist\oap-sender | Out-Null
 
-# 3. Mirror sender (for Mirror screen; needs Go 1.25+ and an FFmpeg with ddagrab on PATH)
+# 3. Mirror sender (for Mirror screen; needs Go 1.27.3+ and an FFmpeg with ddagrab on PATH)
 go build -o bin\open-airplay-sender.exe ./cmd/open-airplay
 
 # 4. App
 npm install
 npm run dev
 ```
+
+The sender bootstrap installs hash-verified pip 26.2.2 before downloading other dependencies;
+`requirements.txt` pins certifi 2026.10.19 for both development and the frozen sidecar. These are
+the [Python incident guidance](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576)
+baselines. Rebuild and distribute the sidecar to update installed apps; changing these files does
+not update an existing installer or environment.
+
+The sender explicitly supplies a certifi-backed TLS session to pyatv for connections and pairing,
+so frozen builds use the same patched CA bundle. With standard Python SSL (no startup-hook overrides),
+host-only HTTPS roots are not included; the loopback TLS regressions isolate that boundary.
+An installed OS-trust startup hook can additionally apply the host's native verification policy.
 
 A manual launch opens the tray panel and restores the receiving switch as you left it (on the first time). On the iPhone: Control Center → Screen Mirroring → pick the PC's name.
 The first launch shows a Windows Firewall prompt for `uxplay.exe`; allow it, or iPhones cannot connect.
@@ -110,7 +123,7 @@ npm run build                                                                   
 
 ## FairPlay desktop mirror sender (Go)
 
-The sender that mirrors this PC's desktop to an Apple TV lives in `cmd/open-airplay` (CLI), `internal/airplay` (protocol: discovery, pairing, FairPlay SAP, encrypted H.264 mirroring, capture) and `internal/daemon`. Its protocol core comes from [doubletake](https://github.com/omarroth/doubletake); provenance is in `NOTICE`. It needs Go 1.25+ and an FFmpeg build with `ddagrab` on `PATH`; usage is in the README's quick start.
+The sender that mirrors this PC's desktop to an Apple TV lives in `cmd/open-airplay` (CLI), `internal/airplay` (protocol: discovery, pairing, FairPlay SAP, encrypted H.264 mirroring, capture) and `internal/daemon`. Its protocol core comes from [doubletake](https://github.com/omarroth/doubletake); provenance is in `NOTICE`. It needs Go 1.27.3+ and an FFmpeg build with `ddagrab` on `PATH`; usage is in the README's quick start.
 
 - `go run ./cmd/open-airplay -list-displays` and `-display 0 -capture-smoke -hwaccel none -no-audio` check capture without contacting a receiver.
 - `go run ./cmd/doubletake-test-receiver -listen 127.0.0.1:7000 -profile modern -auth none` is a local receiver fixture for protocol tests. Its `-stats-interval 5s` output counts audio packets: an ALAC mirror sends about 125 per second.
@@ -126,3 +139,9 @@ go test ./...   # FairPlay mirror sender
 go vet ./...
 ```
 The engine's C tests (window sizing, maximized/full-screen reshow) run inside `engine/build-engine.sh`. On Windows, Tauri's build script needs `engine/runtime/` to exist (it is the installer's engine resource); `build-engine.sh` creates it, or `mkdir engine/runtime` is enough for running the Rust tests. The same goes for `sender/dist/oap-sender/` (made by `npm run build-sender`). CI runs all of these on Windows, plus the Rust check and tests and the Go suite on Linux.
+
+### Go security baseline
+
+Build the mirror sender and CLI helpers with Go 1.27.3 or later. Both CI setup-go steps read this minimum from go.mod. Go 1.27.3 includes the eMudhra incident crypto/x509 fix; existing installed binaries need a separate rebuild and release.
+
+Windows 10/11 remains supported. Go 1.27 raises the minimum for manually built macOS Go tools to macOS 13 Ventura; Linux checks remain in CI. See [Go release history](https://go.dev/doc/devel/release#go1.27.3) and [Go 1.27 ports](https://go.dev/doc/go1.27#ports).

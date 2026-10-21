@@ -82,7 +82,7 @@ flowchart TD
 
 ## Quick start
 
-> Requires Windows 10/11, [Go 1.25+](https://go.dev/dl/), and an [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) build with `ddagrab` on your `PATH`. The PC and the receiver must be on the same network.
+> Requires Windows 10/11, [Go 1.27.3+](https://go.dev/dl/), and an [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) build with `ddagrab` on your `PATH`. The PC and the receiver must be on the same network.
 
 **Mirror your desktop to an Apple TV**
 

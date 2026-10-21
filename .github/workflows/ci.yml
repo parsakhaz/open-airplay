@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24.22.1
           cache: npm
 
       # Some Rust tests spawn `python` as a fake engine/sender, so it must be on PATH.
@@ -70,7 +70,8 @@ jobs:
       - name: Sender tests
         shell: bash
         run: |
-          python -m venv sender/.venv
+          python -I -S -m venv sender/.venv
+          sender/.venv/Scripts/python -I -m pip install --no-deps -r sender/requirements-bootstrap.txt
           sender/.venv/Scripts/python -m pip install -r sender/requirements.txt
           sender/.venv/Scripts/python -m unittest discover -s sender/tests -v
 
@@ -123,7 +124,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24.22.1
           cache: npm
 
       # Tauri's Linux system dependencies (WebKitGTK 4.1 etc.).

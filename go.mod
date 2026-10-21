@@ -1,6 +1,6 @@
 module github.com/parsakhaz/open-airplay
 
-go 1.25.0
+go 1.27.3
 
 require (
 	github.com/aead/chacha20poly1305 v0.0.0-20201124145622-1a5aba2a8b29

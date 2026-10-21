@@ -36,8 +36,11 @@ import ipaddress
 import json
 import logging
 import socket
+import ssl
 import sys
 
+import aiohttp
+import certifi
 import pyatv
 from pyatv import exceptions
 from pyatv.const import Protocol
@@ -59,6 +62,12 @@ CONNECT_SECONDS = 12
 START_GRACE_SECONDS = 2
 # Closing a device's connection when a cast stops.
 CLOSE_SECONDS = 1.5
+
+
+def create_http_session():
+    """Use the packaged CA bundle explicitly in development and frozen builds."""
+    context = ssl.create_default_context(cafile=certifi.where())
+    return aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=context))
 
 
 class Refused(Exception):
@@ -175,8 +184,9 @@ class Sidecar:
     def __init__(self, emit=emit, scan=None, connect=None, local=local_addresses, pair=None):
         self.emit = emit
         self.scan_fn = scan or (lambda **kw: pyatv.scan(asyncio.get_running_loop(), **kw))
-        self.connect_fn = connect or (lambda conf: pyatv.connect(conf, asyncio.get_running_loop()))
-        self.pair_fn = pair or (lambda conf, protocol: pyatv.pair(conf, protocol, asyncio.get_running_loop()))
+        self.connect_fn = connect or self.connect
+        self.pair_fn = pair or self.pair
+        self.http = None
         self.local = local
         self.pairings = {}  # identifier -> Pairing in progress
         # identifier -> the current pairing attempt's number. Cancel (or a new begin) moves it on, so a
@@ -185,6 +195,17 @@ class Sidecar:
         self.jobs = {}  # identifier -> Job: at most one cast per device
         self.known = {}  # identifier -> config from the last scan, so a cast needn't scan again
         self.tasks = set()
+
+    def http_session(self):
+        if self.http is None:
+            self.http = create_http_session()
+        return self.http
+
+    async def connect(self, conf):
+        return await pyatv.connect(conf, asyncio.get_running_loop(), session=self.http_session())
+
+    async def pair(self, conf, protocol):
+        return await pyatv.pair(conf, protocol, asyncio.get_running_loop(), session=self.http_session())
 
     def dispatch(self, cmd):
         """Runs one command as its own task and returns it."""
@@ -445,6 +466,8 @@ class Sidecar:
         await self.stop(None)
         for identifier in list(self.pairings):
             await self.pair_cancel(identifier)
+        if self.http is not None:
+            await self.http.close()
 
 
 async def main():
