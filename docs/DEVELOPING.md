@@ -22,7 +22,7 @@ iPhone / Mac ──AirPlay──▶ uxplay.exe (UxPlay 1.74 fork, built-in mDNS,
 
 ## Run it (Windows, development)
 
-Prerequisites: [MSYS2](https://www.msys2.org) at `C:\msys64`, Rust (rustup, MSVC toolchain), Node 20+, Python 3.10+.
+Prerequisites: [MSYS2](https://www.msys2.org) at `C:\msys64`, Rust (rustup, MSVC toolchain), Node 24.22.1 LTS, Python 3.10+.
 
 ```powershell
 # 1. Build the receiver engine (installs MSYS2 packages: gcc, cmake, GStreamer, libplist)
@@ -30,7 +30,9 @@ C:\msys64\usr\bin\bash.exe -lc "/c/path/to/open-airplay/engine/build-engine.sh"
 
 # 2. Sender sidecar. The build needs the frozen helper's folder to exist; in development the app runs
 #    the Python script, so an empty folder is enough (npm run build-sender fills it for the installer).
-python -m venv sender\.venv; sender\.venv\Scripts\python -m pip install -r sender\requirements.txt
+python -I -S -m venv sender\.venv
+sender\.venv\Scripts\python -I -m pip install --no-deps -r sender\requirements-bootstrap.txt
+sender\.venv\Scripts\python -m pip install -r sender\requirements.txt
 New-Item -ItemType Directory -Force sender\dist\oap-sender | Out-Null
 
 # 3. Mirror sender (for Mirror screen; needs Go 1.27.3+ and an FFmpeg with ddagrab on PATH)
@@ -40,6 +42,12 @@ go build -o bin\open-airplay-sender.exe ./cmd/open-airplay
 npm install
 npm run dev
 ```
+
+The sender bootstrap installs hash-verified pip 26.2.2 before downloading other dependencies;
+`requirements.txt` pins certifi 2026.10.19 for both development and the frozen sidecar. These are
+the [Python incident guidance](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576)
+baselines. Rebuild and distribute the sidecar to update installed apps; changing these files does
+not update an existing installer or environment.
 
 A manual launch opens the tray panel and restores the receiving switch as you left it (on the first time). On the iPhone: Control Center → Screen Mirroring → pick the PC's name.
 The first launch shows a Windows Firewall prompt for `uxplay.exe`; allow it, or iPhones cannot connect.
